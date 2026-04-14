@@ -8653,6 +8653,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     if (arch == LLM_ARCH_FALCON_H1) {
                         filter_attn = [&](int32_t) { return true; };
                         filter_recr = [&](int32_t) { return true; };
+                    } else if (arch == LLM_ARCH_QWEN35) {
+                        filter_attn = [&](int32_t il) {
+                            // Reserve one extra KV-cache slot so blk.3 can run a second
+                            // attention-only pass with its own history, matching true layer
+                            // duplication during cached decoding.
+                            return !hparams.is_recurrent(il) || il == 4;
+                        };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
                         filter_attn = [&](int32_t il) {
                             return !hparams.is_recurrent(il) && hparams.n_ff(il) == 0;

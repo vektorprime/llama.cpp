@@ -2,6 +2,11 @@
 
 #include "llama-memory-recurrent.h"
 
+namespace {
+constexpr int QWEN35_DUPLICATE_ATTN_LAYER    = 3;
+constexpr int QWEN35_DUPLICATE_ATTN_KV_LAYER = 4;
+}
+
 llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_params & params) :
     llm_build_delta_net_base(params), model(model) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
@@ -26,21 +31,40 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
 
-        cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
-        cb(cur, "attn_norm", il);
-
-        ggml_build_forward_expand(gf, cur);
-
         // Determine layer type and build appropriate attention mechanism
         const bool is_recurrent = hparams.is_recurrent(il);
-        const bool duplicate_attn_pass = !is_recurrent && il == 3;
+        const bool duplicate_attn_pass = !is_recurrent && il == QWEN35_DUPLICATE_ATTN_LAYER;
 
         if (is_recurrent) {
+            cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+            cb(cur, "attn_norm", il);
+
+            ggml_build_forward_expand(gf, cur);
+
             // Linear attention layer (gated delta net)
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
         } else {
+            auto build_full_attn_pass = [&](ggml_tensor * attn_input, const char * norm_name, const char * attn_name, int kv_il) {
+                ggml_tensor * attn_norm = build_norm(attn_input, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+                cb(attn_norm, norm_name, il);
+
+                ggml_build_forward_expand(gf, attn_norm);
+
+                // [`build_layer_attn()`](src/models/qwen35.cpp:138) performs the Q/K/V projections and
+                // Q/K normalization for this pass, so calling it twice for blk.3 duplicates:
+                // - blk.3.attn_q_norm.weight
+                // - blk.3.attn_k_norm.weight
+                // - blk.3.attn_q.weight
+                // - blk.3.attn_k.weight
+                // - blk.3.attn_v.weight
+                ggml_tensor * attn_out = build_layer_attn(inp->get_attn(), attn_norm, inp_pos, sections, il, kv_il);
+                cb(attn_out, attn_name, il);
+
+                return attn_out;
+            };
+
             // Full attention layer
-            cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+            cur = build_full_attn_pass(inpSA, "attn_norm", "attn", il);
 
             // Duplicate the attention sublayer for the first full-attention block (blk.3)
             // x1 = x0 + Attn(Norm(x0))
@@ -51,13 +75,9 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
 
                 inpSA = cur;
 
-                cur = build_norm(inpSA, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
-                cb(cur, "attn_norm_dup", il);
-
-                ggml_build_forward_expand(gf, cur);
-
-                cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
-                cb(cur, "attn_dup", il);
+                // Use a dedicated KV slot so cached decoding behaves like a real extra
+                // attention layer inserted after blk.3 instead of overwriting blk.3's cache.
+                cur = build_full_attn_pass(inpSA, "attn_norm_dup", "attn_dup", QWEN35_DUPLICATE_ATTN_KV_LAYER);
             }
         }
 
@@ -140,7 +160,8 @@ ggml_tensor * llm_build_qwen35::build_layer_attn(
         ggml_tensor *             cur,
         ggml_tensor *             inp_pos,
         int *                     sections,
-        int                       il) {
+        int                       il,
+        int                       kv_il) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
 
@@ -198,10 +219,11 @@ ggml_tensor * llm_build_qwen35::build_layer_attn(
 
     // Attention computation
     const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+    const int   il_kv    = kv_il >= 0 ? kv_il : il;
 
     cur = build_attn(inp,
                 nullptr, nullptr,
-                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il_kv);
     cb(cur, "attn_pregate", il);
 
     ggml_tensor * gate_sigmoid = ggml_sigmoid(ctx0, gate);
