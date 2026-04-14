@@ -590,7 +590,9 @@ private:
                 ggml_tensor * inp_pos,
                         int * sections,
                         int   il,
-                        int   kv_il = -1);
+                        int   kv_il = -1,
+                ggml_tensor * gate_sigmoid_override = nullptr,
+                ggml_tensor ** gate_sigmoid_out = nullptr);
 
     ggml_tensor * build_layer_attn_linear(
          llm_graph_input_rs * inp,

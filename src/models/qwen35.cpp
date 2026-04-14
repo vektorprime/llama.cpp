@@ -44,7 +44,9 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
             // Linear attention layer (gated delta net)
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
         } else {
-            auto build_full_attn_pass = [&](ggml_tensor * attn_input, const char * norm_name, const char * attn_name, int kv_il) {
+            auto build_full_attn_pass = [&](ggml_tensor * attn_input, const char * norm_name, const char * attn_name, int kv_il,
+                                            ggml_tensor * gate_sigmoid_override = nullptr,
+                                            ggml_tensor ** gate_sigmoid_out = nullptr) {
                 ggml_tensor * attn_norm = build_norm(attn_input, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
                 cb(attn_norm, norm_name, il);
 
@@ -57,14 +59,20 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
                 // - blk.3.attn_q.weight
                 // - blk.3.attn_k.weight
                 // - blk.3.attn_v.weight
-                ggml_tensor * attn_out = build_layer_attn(inp->get_attn(), attn_norm, inp_pos, sections, il, kv_il);
+                // - blk.3.attn_output.weight
+                ggml_tensor * attn_out = build_layer_attn(inp->get_attn(), attn_norm, inp_pos, sections, il, kv_il,
+                        gate_sigmoid_override, gate_sigmoid_out);
                 cb(attn_out, attn_name, il);
 
                 return attn_out;
             };
 
+            ggml_tensor * blk3_gate_sigmoid = nullptr;
+
             // Full attention layer
-            cur = build_full_attn_pass(inpSA, "attn_norm", "attn", il);
+            cur = build_full_attn_pass(inpSA, "attn_norm", "attn", il,
+                    nullptr,
+                    duplicate_attn_pass ? &blk3_gate_sigmoid : nullptr);
 
             // Duplicate the attention sublayer for the first full-attention block (blk.3)
             // x1 = x0 + Attn(Norm(x0))
@@ -75,9 +83,13 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
 
                 inpSA = cur;
 
+                // Reuse the first-pass gate so the duplicated blk.3 path only replays the
+                // requested parameterized attention pieces instead of duplicating the gate path.
                 // Use a dedicated KV slot so cached decoding behaves like a real extra
                 // attention layer inserted after blk.3 instead of overwriting blk.3's cache.
-                cur = build_full_attn_pass(inpSA, "attn_norm_dup", "attn_dup", QWEN35_DUPLICATE_ATTN_KV_LAYER);
+                cur = build_full_attn_pass(inpSA, "attn_norm_dup", "attn_dup", QWEN35_DUPLICATE_ATTN_KV_LAYER,
+                        blk3_gate_sigmoid,
+                        nullptr);
             }
         }
 
@@ -161,7 +173,9 @@ ggml_tensor * llm_build_qwen35::build_layer_attn(
         ggml_tensor *             inp_pos,
         int *                     sections,
         int                       il,
-        int                       kv_il) {
+        int                       kv_il,
+        ggml_tensor *             gate_sigmoid_override,
+        ggml_tensor **            gate_sigmoid_out) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
 
@@ -226,8 +240,19 @@ ggml_tensor * llm_build_qwen35::build_layer_attn(
                 Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il_kv);
     cb(cur, "attn_pregate", il);
 
-    ggml_tensor * gate_sigmoid = ggml_sigmoid(ctx0, gate);
-    cb(gate_sigmoid, "gate_sigmoid", il);
+    ggml_tensor * gate_sigmoid = gate_sigmoid_override;
+    if (gate_sigmoid == nullptr || gate_sigmoid_out != nullptr) {
+        ggml_tensor * gate_sigmoid_cur = ggml_sigmoid(ctx0, gate);
+
+        if (gate_sigmoid_out != nullptr) {
+            *gate_sigmoid_out = gate_sigmoid_cur;
+        }
+
+        if (gate_sigmoid == nullptr) {
+            gate_sigmoid = gate_sigmoid_cur;
+            cb(gate_sigmoid, "gate_sigmoid", il);
+        }
+    }
 
     cur = ggml_mul(ctx0, cur, gate_sigmoid);
     cb(cur, "attn_gated", il);
