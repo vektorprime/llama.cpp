@@ -32,12 +32,33 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
         ggml_build_forward_expand(gf, cur);
 
         // Determine layer type and build appropriate attention mechanism
-        if (hparams.is_recurrent(il)) {
+        const bool is_recurrent = hparams.is_recurrent(il);
+        const bool duplicate_attn_pass = !is_recurrent && il == 3;
+
+        if (is_recurrent) {
             // Linear attention layer (gated delta net)
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
         } else {
             // Full attention layer
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+
+            // Duplicate the attention sublayer for the first full-attention block (blk.3)
+            // x1 = x0 + Attn(Norm(x0))
+            // x2 = x1 + Attn(Norm(x1))
+            if (duplicate_attn_pass) {
+                cur = ggml_add(ctx0, cur, inpSA);
+                cb(cur, "attn_residual_pass0", il);
+
+                inpSA = cur;
+
+                cur = build_norm(inpSA, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+                cb(cur, "attn_norm_dup", il);
+
+                ggml_build_forward_expand(gf, cur);
+
+                cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+                cb(cur, "attn_dup", il);
+            }
         }
 
         if (il == n_layer - 1 && inp_out_ids) {
