@@ -286,11 +286,10 @@ llama_kv_cache::llama_kv_cache(
         LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
     }
 
-    attn_rot_k =
-        !attn_rot_disable &&
-        n_embd_head_k_all > 0 &&
-        ggml_is_quantized(type_k) &&
-        hparams.n_embd_head_k() % 64 == 0;
+    // Keep quantized K in its native basis.
+    // This matches the KVLinC recommendation to leave keys unrotated and
+    // quantize the raw K tensor channel-wise instead of applying Hadamard.
+    attn_rot_k = false;
 
     attn_rot_v =
         !attn_rot_disable &&
