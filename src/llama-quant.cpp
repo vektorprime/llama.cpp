@@ -1695,6 +1695,26 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         } // no --dry-run
     } // main loop
 
+    // Write Q8_0_BF16_OUTLIER sidecar tensor data
+    if (q8_outlier_enabled && !params->dry_run) {
+        for (const q8_outlier_tensor_data & outliers : q8_outlier_tensors) {
+            // Write outlier_idx tensor data
+            {
+                const size_t idx_size = outliers.idx.size() * sizeof(int32_t);
+                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.idx_name.c_str(), outliers.idx.data());
+                fout.write((const char *) outliers.idx.data(), idx_size);
+                zeros(fout, GGML_PAD(idx_size, align) - idx_size);
+            }
+            // Write outlier_bf16 tensor data
+            {
+                const size_t values_size = outliers.values.size() * sizeof(ggml_bf16_t);
+                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values.data());
+                fout.write((const char *) outliers.values.data(), values_size);
+                zeros(fout, GGML_PAD(values_size, align) - values_size);
+            }
+        }
+    }
+
     if (!params->dry_run) {
         close_ofstream();
     }
