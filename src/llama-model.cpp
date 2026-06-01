@@ -1573,7 +1573,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    // Create Q8_0_BF16_OUTLIER sidecar tensors in the same context as their parent weight
+    // Create Q8_0_BF16_OUTLIER sidecar tensors in the ggml context
     // These are extra tensors in the GGUF that aren't part of the model architecture
     {
         ggml_context * cpu_ctx = ml.ctx_map.begin()->second.get();
@@ -1587,35 +1587,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 }
                 const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
                     ? GGML_TYPE_I32 : GGML_TYPE_BF16;
-
-                // Find the parent weight tensor's context so sidecar goes to the same backend
-                std::string parent_name = name;
-                size_t suffix_pos = parent_name.find(".outlier_idx");
-                if (suffix_pos != std::string::npos) {
-                    parent_name = parent_name.substr(0, suffix_pos);
-                } else {
-                    suffix_pos = parent_name.find(".outlier_bf16");
-                    if (suffix_pos != std::string::npos) {
-                        parent_name = parent_name.substr(0, suffix_pos);
-                    }
-                }
-
-                ggml_context * target_ctx = cpu_ctx; // fallback to CPU
-                for (auto & [buft, ctx_ptr] : ml.ctx_map) {
-                    for (ggml_tensor * t = ggml_get_first_tensor(ctx_ptr.get());
-                         t != nullptr; t = ggml_get_next_tensor(ctx_ptr.get(), t)) {
-                        if (parent_name == ggml_get_name(t)) {
-                            target_ctx = ctx_ptr.get();
-                            break;
-                        }
-                    }
-                }
-
-                fprintf(stderr, "[sidecar] %s -> parent=%s target_ctx=%p cpu_ctx=%p\n",
-                        name.c_str(), parent_name.c_str(), (void*)target_ctx, (void*)cpu_ctx);
-                fflush(stderr);
-
-                ggml_tensor * t = ggml_new_tensor_2d(target_ctx, type, meta->ne[0], meta->ne[1]);
+                ggml_tensor * t = ggml_new_tensor_2d(cpu_ctx, type, meta->ne[0], meta->ne[1]);
                 if (!t) {
                     LLAMA_LOG_WARN("%s: failed to create sidecar tensor %s\n", __func__, name.c_str());
                     continue;

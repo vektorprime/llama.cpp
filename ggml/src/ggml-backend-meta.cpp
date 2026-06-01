@@ -881,9 +881,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 split_state = handle_mul_mat(src_ss);
             } break;
             case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
-                // Output is a small correction — mirror across all devices
-                split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
-                fprintf(stderr, "[meta-split] MUL_MAT_OUTLIER_BLOCKS: MIRRORED src0_buf=%s src1_buf=%s src2_buf=%s\n",
+                // Run on the same backend as the activation input (src[2])
+                // Sidecar tensors (src[0], src[1]) are on CPU and will be copied
+                split_state = src_ss[2];
+                fprintf(stderr, "[meta-split] MUL_MAT_OUTLIER_BLOCKS: axis=%d src0_buf=%s src1_buf=%s src2_buf=%s\n",
+                        split_state.axis,
                         tensor->src[0] && tensor->src[0]->buffer ? (ggml_backend_buffer_is_host(tensor->src[0]->buffer) ? "host" : "device") : "none",
                         tensor->src[1] && tensor->src[1]->buffer ? (ggml_backend_buffer_is_host(tensor->src[1]->buffer) ? "host" : "device") : "none",
                         tensor->src[2] && tensor->src[2]->buffer ? (ggml_backend_buffer_is_host(tensor->src[2]->buffer) ? "host" : "device") : "none");
