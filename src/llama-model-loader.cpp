@@ -1314,25 +1314,15 @@ struct ggml_tensor * llama_model_loader::create_tensor_as_view(struct ggml_conte
 }
 
 void llama_model_loader::done_getting_tensors(bool partial) const {
-    // Count sidecar tensors (Q8_0_BF16_OUTLIER) that are in the GGUF but not created by the model
-    int n_sidecar = 0;
-    for (const auto & [name, _] : weights_map) {
-        if (name.find(".outlier_idx") != std::string::npos ||
-            name.find(".outlier_bf16") != std::string::npos) {
-            n_sidecar++;
-        }
+    if (n_created > n_tensors) {
+        throw std::runtime_error(format("%s: too many tensors created; expected %d, got %d", __func__, n_tensors, n_created));
     }
-    const int n_tensors_expected = n_tensors - n_sidecar;
-
-    if (n_created > n_tensors_expected) {
-        throw std::runtime_error(format("%s: too many tensors created; expected %d, got %d", __func__, n_tensors_expected, n_created));
-    }
-    if (n_created < n_tensors_expected) {
+    if (n_created < n_tensors) {
         if (!partial) {
-            throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors_expected, n_created));
+            throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
         }
         LLAMA_LOG_INFO("%s: partial load — used %d of %d tensors in the file (rest belong to a sibling model on the same .gguf)\n",
-                __func__, n_created, n_tensors_expected);
+                __func__, n_created, n_tensors);
     }
     if (n_tensors_moved > 0) {
         LLAMA_LOG_DEBUG("%s: tensor '%s' (%s) (and %zu others) cannot be used with preferred buffer type %s, using %s instead\n",
