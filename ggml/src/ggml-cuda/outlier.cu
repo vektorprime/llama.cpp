@@ -1,5 +1,6 @@
 #include "outlier.cuh"
 #include "common.cuh"
+#include "convert.cuh"
 #include "ggml.h"
 
 #include <cstdint>
@@ -15,19 +16,14 @@
 //
 // Each thread in the block handles one element of the 32-element dot product,
 // then the thread block does a warp reduction to get the final sum.
-//
-// For small n_blocks, we use a thread-per-block approach (each thread block
-// computes one dot product for one token).
-//
-// For the warp reduction, we use __shfl_down_sync which requires warpSize threads.
 
 #define OUTLIER_BLOCK_SIZE 32
 
 static __global__ void outlier_blocks_kernel(
-        const int32_t * __restrict__ idx,       // [2, n_blocks]
-        const half *     __restrict__ values,    // [32, n_blocks] in BF16 (stored as half)
-        const float *    __restrict__ x,         // [n_cols, n_tokens]
-        float *          __restrict__ dst,       // [n_rows_out, n_tokens]
+        const int32_t *     __restrict__ idx,       // [2, n_blocks]
+        const nv_bfloat16 * __restrict__ values,    // [32, n_blocks] in BF16
+        const float *       __restrict__ x,         // [n_cols, n_tokens]
+        float *             __restrict__ dst,       // [n_rows_out, n_tokens]
         const int64_t n_blocks,
         const int64_t n_cols,
         const int64_t n_rows_out,
@@ -41,7 +37,7 @@ static __global__ void outlier_blocks_kernel(
     }
 
     // Read block metadata
-    const int32_t row      = idx[block_idx * 2];
+    const int32_t row       = idx[block_idx * 2];
     const int32_t block_col = idx[block_idx * 2 + 1];
     const int64_t col0      = (int64_t) block_col * 32;
 
@@ -56,9 +52,8 @@ static __global__ void outlier_blocks_kernel(
     // Each thread processes element j = tid
     if (tid < 32) {
         const int64_t j = tid;
-        // Load BF16 weight (stored as half in values tensor: [32, n_blocks])
-        const half w_half = values[block_idx * 32 + j];
-        const float w = __half2float(w_half);
+        // Load BF16 weight and convert to float
+        const float w = __bfloat162float(values[block_idx * 32 + j]);
 
         // Load corresponding activation
         const int64_t x_idx = (col0 + j) + token_idx * n_cols;
@@ -82,10 +77,10 @@ static __global__ void outlier_blocks_kernel(
 
 static void outlier_blocks_cuda(
         ggml_backend_cuda_context & ctx,
-        const int32_t * idx_d,
-        const half     * values_d,
-        const float    * x_d,
-        float          * dst_d,
+        const int32_t *     idx_d,
+        const nv_bfloat16 * values_d,
+        const float *       x_d,
+        float *             dst_d,
         const int64_t n_blocks,
         const int64_t n_cols,
         const int64_t n_rows_out,
@@ -132,10 +127,10 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(idx->ne[0]  == 2);
     GGML_ASSERT(values->ne[0] == 32);
 
-    const int32_t * idx_d    = (const int32_t *) idx->data;
-    const half     * values_d = (const half *)     values->data;
-    const float    * x_d      = (const float *)    x->data;
-    float          * dst_d    = (float *)          dst->data;
+    const int32_t *     idx_d    = (const int32_t *)     idx->data;
+    const nv_bfloat16 * values_d = (const nv_bfloat16 *) values->data;
+    const float *       x_d      = (const float *)       x->data;
+    float *             dst_d    = (float *)             dst->data;
 
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols, n_rows_out, n_tokens);
