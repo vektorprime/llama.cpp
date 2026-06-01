@@ -1100,8 +1100,8 @@ void llama_model::build_outlier_info() {
                 }
                 fprintf(stderr, "\n");
             }
-            // Sample first BF16 value from values tensor
-            if (values_tensor->data) {
+            // Sample first BF16 value from values tensor (only if host-accessible)
+            if (values_tensor->data && (!values_tensor->buffer || ggml_backend_buffer_is_host(values_tensor->buffer))) {
                 const uint16_t raw_val = ((const uint16_t*)values_tensor->data)[0];
                 fprintf(stderr, "[build_outlier_info] %s: values[0] raw=0x%04x\n",
                         name.c_str(), raw_val);
