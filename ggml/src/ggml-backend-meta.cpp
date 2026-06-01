@@ -873,6 +873,10 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_MUL_MAT_ID: {
                 split_state = handle_mul_mat(src_ss);
             } break;
+            case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
+                // Output follows the activation input (src[2]) split axis
+                split_state = src_ss[2];
+            } break;
             case GGML_OP_OUT_PROD: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;
