@@ -1541,6 +1541,24 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
         }
     }
+
+    // Create Q8_0_BF16_OUTLIER sidecar tensors in the ggml context
+    // These are extra tensors in the GGUF that aren't part of the model architecture
+    {
+        ggml_context * cpu_ctx = ml.ctx_map.begin()->second.get();
+        for (const auto & [name, weight] : ml.weights_map) {
+            if (name.find(".outlier_idx") != std::string::npos ||
+                name.find(".outlier_bf16") != std::string::npos) {
+                const ggml_tensor * meta = weight.tensor;
+                const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
+                    ? GGML_TYPE_I32 : GGML_TYPE_BF16;
+                ggml_tensor * t = ggml_new_tensor_2d(cpu_ctx, type, meta->ne[0], meta->ne[1]);
+                ggml_set_name(t, name.c_str());
+                ml.n_created++;
+            }
+        }
+    }
+
     ml.done_getting_tensors();
 
     GGML_ASSERT(!(output && tok_embd &&

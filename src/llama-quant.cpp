@@ -1679,6 +1679,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
                     new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
                 }
+
+                // Zero protected outlier blocks in the base Q8_0 tensor
+                if (q8_outlier_enabled && new_type == GGML_TYPE_Q8_0) {
+                    auto it = q8_outlier_by_name.find(tm.name);
+                    if (it != q8_outlier_by_name.end()) {
+                        q8_outlier_zero_protected_blocks(new_data, nrows, n_per_row, q8_outlier_tensors[it->second]);
+                    }
+                }
+
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
             }
             total_size_org += tensor_size;
