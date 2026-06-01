@@ -1063,8 +1063,9 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
 
     // Q8_0_BF16_OUTLIER: add sparse BF16 outlier correction for protected blocks
-    // Sidecar tensors (idx, values) are already on the same backend as the weight
-    // tensor because they were created in the parent weight's ggml_context.
+    // Sidecar tensors (idx, values) are on the same backend as the weight.
+    // The op's split state follows the activation (src2) so it runs on each
+    // backend that has activation data (GPUs only when layers are offloaded).
     if (w && model.has_outlier_blocks(w)) {
         const auto * ob = model.get_outlier_info(w);
         if (ob && ob->n_blocks > 0 && ob->idx && ob->values) {

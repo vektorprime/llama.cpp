@@ -3303,7 +3303,7 @@ struct ggml_tensor * ggml_mul_mat_outlier_blocks(
     GGML_ASSERT(idx->ne[0] == 2);  // [row, block_col]
     GGML_ASSERT(values->ne[0] == 32); // block_size = 32
     GGML_ASSERT(idx->ne[1] == values->ne[1]); // same number of outlier blocks
-    GGML_ASSERT(x->ne[0] == n_cols);
+    GGML_ASSERT(x->ne[0] <= n_cols); // shard-local column count may be smaller with tensor parallelism
 
     const int64_t n_tokens = x->ne[1];
     const int64_t ne[4] = { n_rows_out, n_tokens, 1, 1 };

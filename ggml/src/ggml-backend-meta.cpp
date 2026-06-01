@@ -881,9 +881,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 split_state = handle_mul_mat(src_ss);
             } break;
             case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
-                // Output is a small correction — mirror across all devices
-                split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
-                // fprintf(stderr, "[meta-split] MUL_MAT_OUTLIER_BLOCKS: MIRRORED src0_buf=%s src1_buf=%s src2_buf=%s\n", ...);
+                // Follow activation (src2) split so the correction is split the same
+                // way as the main matmul result. Sidecar idx/values (src0/src1) are on
+                // the weight buffer. The op only runs on backends with activation data.
+                split_state = src_ss[2];
+                split_state.n_segments = 1;
             } break;
             case GGML_OP_OUT_PROD: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
