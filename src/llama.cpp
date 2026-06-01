@@ -13,9 +13,6 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
-#define GGML_COMMON_DECL_CPP
-#include "ggml-common.h"
-#include "ggml-impl.h"
 #include "gguf.h"
 
 #include <algorithm>

@@ -24,10 +24,12 @@
 static __global__ void outlier_blocks_kernel(
         const int32_t *     __restrict__ idx,       // [2, n_blocks]
         const nv_bfloat16 * __restrict__ values,    // [32, n_blocks] in BF16
-        const float *       __restrict__ x,         // [n_cols, n_tokens]
+        const float *       __restrict__ x,         // [n_cols_x, n_tokens] shard-local
         float *             __restrict__ dst,       // [n_rows_out, n_tokens]
         const int64_t n_blocks,
-        const int64_t n_cols,
+        const int64_t n_cols_all,      // full column count (all shards)
+        const int64_t n_cols_x,        // shard-local column count
+        const int64_t x_stride,        // stride between tokens in x
         const int64_t n_rows_out,
         const int64_t n_tokens) {
 
@@ -43,8 +45,13 @@ static __global__ void outlier_blocks_kernel(
     const int32_t block_col = idx[block_idx * 2 + 1];
     const int64_t col0      = (int64_t) block_col * 32;
 
-    if (col0 + 31 >= n_cols) {
-        return; // out of bounds
+    // Check if this block touches our shard: [0, n_cols_x) must overlap [col0, col0+32)
+    if (col0 >= n_cols_x || col0 + 31 < 0) {
+        return; // block entirely outside this shard
+    }
+
+    if (col0 + 31 >= n_cols_all) {
+        return; // out of bounds globally
     }
 
     // Each thread handles one element of the dot product
@@ -54,14 +61,17 @@ static __global__ void outlier_blocks_kernel(
     // Each thread processes element j = tid
     if (tid < 32) {
         const int64_t j = tid;
-        // Load BF16 weight and convert to float
-        const float w = __bfloat162float(values[block_idx * 32 + j]);
+        const int64_t col_global = col0 + j;
+        // Only participate if this column is in our shard
+        if (col_global >= 0 && col_global < n_cols_x) {
+            // Load BF16 weight and convert to float
+            const float w = __bfloat162float(values[block_idx * 32 + j]);
 
-        // Load corresponding activation
-        const int64_t x_idx = (col0 + j) + token_idx * n_cols;
-        const float a = x[x_idx];
+            // Load corresponding activation (use x_stride for correct row stride)
+            const float a = x[col_global + token_idx * x_stride];
 
-        sum = w * a;
+            sum = w * a;
+        }
     }
 
     // Warp reduction: reduce sum within the warp (32 threads)
@@ -71,7 +81,7 @@ static __global__ void outlier_blocks_kernel(
     }
 
     // Thread 0 writes the result (atomic add since multiple blocks may target the same row)
-    if (tid == 0) {
+    if (tid == 0 && row >= 0 && row < n_rows_out) {
         const int64_t dst_idx = row + token_idx * n_rows_out;
         atomicAdd(dst + dst_idx, sum);
     }
@@ -84,7 +94,9 @@ static void outlier_blocks_cuda(
         const float *       x_d,
         float *             dst_d,
         const int64_t n_blocks,
-        const int64_t n_cols,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t x_stride,
         const int64_t n_rows_out,
         const int64_t n_tokens) {
 
@@ -93,7 +105,7 @@ static void outlier_blocks_cuda(
     // Clear dst to zero first (important since we use atomicAdd)
     CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream));
 
-    if (n_blocks == 0 || n_tokens == 0) {
+    if (n_blocks == 0 || n_tokens == 0 || n_cols_x == 0) {
         return;
     }
 
@@ -102,7 +114,7 @@ static void outlier_blocks_cuda(
 
     outlier_blocks_kernel<<<grid_dim, block_dim, 0, stream>>>(
             idx_d, values_d, x_d, dst_d,
-            n_blocks, n_cols, n_rows_out, n_tokens);
+            n_blocks, n_cols_all, n_cols_x, x_stride, n_rows_out, n_tokens);
 
     CUDA_CHECK(cudaGetLastError());
 }
@@ -119,13 +131,15 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(dst->type    == GGML_TYPE_F32);
 
     const int64_t n_rows_out = ggml_get_op_params_i32(dst, 0);
-    const int64_t n_cols     = ggml_get_op_params_i32(dst, 1);
+    const int64_t n_cols_all = ggml_get_op_params_i32(dst, 1);  // full column count
     const int64_t n_blocks   = idx->ne[1];
     const int64_t n_tokens   = x->ne[1];
+    const int64_t n_cols_x   = x->ne[0];   // shard-local column count
+    const int64_t x_stride   = x->nb[1] / (int64_t)sizeof(float);  // actual stride (may differ for views)
 
     GGML_ASSERT(dst->ne[0] == n_rows_out);
     GGML_ASSERT(dst->ne[1] == n_tokens);
-    GGML_ASSERT(x->ne[0]    == n_cols);
+    GGML_ASSERT(n_cols_x    <= n_cols_all);
     GGML_ASSERT(idx->ne[0]  == 2);
     GGML_ASSERT(values->ne[0] == 32);
 
@@ -144,8 +158,8 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
         if (values->buffer) val_buf_loc = ggml_backend_buffer_is_host(values->buffer) ? "host" : "device";
         if (x->buffer)      x_buf_loc   = ggml_backend_buffer_is_host(x->buffer)      ? "host" : "device";
         if (dst->buffer)    dst_buf_loc = ggml_backend_buffer_is_host(dst->buffer)    ? "host" : "device";
-        fprintf(stderr, "[CUDA] ggml_cuda_op_mul_mat_outlier_blocks: n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols=%lld\n",
-                (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols);
+        fprintf(stderr, "[CUDA] ggml_cuda_op_mul_mat_outlier_blocks: n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld x_stride=%lld\n",
+                (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)x_stride);
         fprintf(stderr, "[CUDA]   buffers: idx=%s values=%s x=%s dst=%s\n",
                 idx_buf_loc, val_buf_loc, x_buf_loc, dst_buf_loc);
         // Copy a small sample from device to host and print
@@ -178,7 +192,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     }
 
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
-            n_blocks, n_cols, n_rows_out, n_tokens);
+            n_blocks, n_cols_all, n_cols_x, x_stride, n_rows_out, n_tokens);
 
     // DEBUG: Copy back a few output values
     {
