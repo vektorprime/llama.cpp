@@ -1066,8 +1066,15 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     if (w && model.has_outlier_blocks(w)) {
         const auto * ob = model.get_outlier_info(w);
         if (ob && ob->n_blocks > 0 && ob->idx && ob->values) {
+            // Sidecar tensors are on CPU. Copy them to the graph context (GPU)
+            // so the CUDA kernel can access them.
+            ggml_tensor * idx_gpu = ggml_cpy(ctx0, ob->idx,
+                    ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, ob->idx->ne[0], ob->idx->ne[1]));
+            ggml_tensor * values_gpu = ggml_cpy(ctx0, ob->values,
+                    ggml_new_tensor_2d(ctx0, GGML_TYPE_BF16, ob->values->ne[0], ob->values->ne[1]));
+
             ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
-                    ctx0, ob->idx, ob->values, cur,
+                    ctx0, idx_gpu, values_gpu, cur,
                     ob->n_rows_out, ob->n_cols);
             res = ggml_add(ctx0, res, corr);
         }
