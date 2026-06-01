@@ -13,6 +13,9 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
+#include "ggml-impl.h"
+#define GGML_COMMON_DECL_CPP
+#include "ggml-common.h"
 #include "gguf.h"
 
 #include <algorithm>
@@ -335,6 +338,65 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         model_ptr->build_outlier_info();
     fprintf(stderr, "[load] build_outlier_info done, outlier_info.size()=%zu\n", model_ptr->outlier_info.size());
     fflush(stderr);
+
+        // Patch Q8_0 weights with BF16 outlier values
+        // This avoids needing a runtime correction op
+        for (auto & [weight, info] : model_ptr->outlier_info) {
+            if (!info.idx || !info.values || !weight || weight->type != GGML_TYPE_Q8_0) {
+                continue;
+            }
+            if (!ggml_backend_buffer_is_host(weight->buffer) &&
+                !ggml_backend_buffer_is_host(info.idx->buffer)) {
+                // Both on GPU — skip patching (shouldn't happen with current CPU-sidecar design)
+                continue;
+            }
+
+            const int32_t * idx_data = (const int32_t *) info.idx->data;
+            const ggml_bf16_t * val_data = (const ggml_bf16_t *) info.values->data;
+            block_q8_0 * q8_data = (block_q8_0 *) weight->data;
+
+            if (!idx_data || !val_data || !q8_data) {
+                continue;
+            }
+
+            int64_t n_patched = 0;
+            for (int64_t ib = 0; ib < info.n_blocks; ib++) {
+                int32_t row = idx_data[ib * 2];
+                int32_t block_col = idx_data[ib * 2 + 1];
+                if (row < 0 || row >= info.n_rows_out || block_col < 0) {
+                    continue;
+                }
+                int64_t block_idx = (int64_t)row * (info.n_cols / 32) + block_col;
+                if (block_idx >= (int64_t)weight->ne[0] * weight->ne[1] / 32) {
+                    continue;
+                }
+
+                // Read 32 BF16 values and quantize to Q8_0
+                float vals[32];
+                float amax = 0.0f;
+                for (int j = 0; j < 32; j++) {
+                    vals[j] = GGML_BF16_TO_FP32(val_data[ib * 32 + j]);
+                    float abs_val = fabsf(vals[j]);
+                    if (abs_val > amax) amax = abs_val;
+                }
+                if (amax == 0.0f) {
+                    // All zeros — leave the Q8_0 block as-is (already zeroed)
+                    n_patched++;
+                    continue;
+                }
+
+                float d = amax / 127.0f;
+                q8_data[block_idx].d = GGML_FP32_TO_FP16(d);
+                for (int j = 0; j < 32; j++) {
+                    int8_t q = (int8_t) roundf(vals[j] / d);
+                    q8_data[block_idx].qs[j] = q;
+                }
+                n_patched++;
+            }
+            fprintf(stderr, "[patch] %s: patched %lld/%lld blocks\n",
+                    info.name.c_str(), (long long)n_patched, (long long)info.n_blocks);
+            fflush(stderr);
+        }
 
         return {0, model_ptr.release()};
     } catch (const std::exception & err) {

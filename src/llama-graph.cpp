@@ -1062,35 +1062,8 @@ ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w_s) const {
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
 
-    // Q8_0_BF16_OUTLIER: add sparse BF16 outlier correction for protected blocks
-    if (w && model.has_outlier_blocks(w)) {
-        const auto * ob = model.get_outlier_info(w);
-        if (ob && ob->n_blocks > 0 && ob->idx && ob->values) {
-            // DEBUG
-            fprintf(stderr, "[build_lora_mm] %s: adding outlier correction: n_blocks=%lld n_rows_out=%lld n_cols=%lld\n",
-                    w->name ? w->name : "(unnamed)",
-                    (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
-            const char * idx_buf_loc = "none";
-            const char * val_buf_loc = "none";
-            const char * w_buf_loc   = "none";
-            if (ob->idx->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(ob->idx->buffer)    ? "host" : "device";
-            if (ob->values->buffer) val_buf_loc = ggml_backend_buffer_is_host(ob->values->buffer) ? "host" : "device";
-            if (w->buffer)          w_buf_loc   = ggml_backend_buffer_is_host(w->buffer)          ? "host" : "device";
-            fprintf(stderr, "[build_lora_mm] %s: buffers: idx=%s values=%s weight=%s\n",
-                    w->name ? w->name : "(unnamed)", idx_buf_loc, val_buf_loc, w_buf_loc);
-            fprintf(stderr, "[build_lora_mm] %s: ptrs: idx=%p values=%p weight=%p\n",
-                    w->name ? w->name : "(unnamed)", (void*)ob->idx, (void*)ob->values, (void*)w);
-            fflush(stderr);
-
-            ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
-                    ctx0, ob->idx, ob->values, cur,
-                    ob->n_rows_out, ob->n_cols);
-            // Force the correction to be on the same backend as res by adding a cpy
-            // This ensures the CPU-computed correction is copied to GPU
-            ggml_tensor * corr_cpy = ggml_cont(ctx0, ggml_cpy(ctx0, corr, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, corr->ne[0], corr->ne[1])));
-            res = ggml_add(ctx0, res, corr_cpy);
-        }
-    }
+    // Q8_0_BF16_OUTLIER: outlier correction is pre-patched into Q8_0 weights during model loading
+    // No runtime correction needed — the Q8_0 weights already contain the correct values
 
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);
