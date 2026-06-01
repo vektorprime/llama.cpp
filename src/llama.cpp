@@ -345,16 +345,29 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             if (!info.idx || !info.values || !weight || weight->type != GGML_TYPE_Q8_0) {
                 continue;
             }
-            if (!ggml_backend_buffer_is_host(weight->buffer) &&
-                !ggml_backend_buffer_is_host(info.idx->buffer)) {
-                continue;
-            }
 
             const int32_t * idx_data = (const int32_t *) info.idx->data;
             const ggml_bf16_t * val_data = (const ggml_bf16_t *) info.values->data;
-            block_q8_0 * q8_data = (block_q8_0 *) weight->data;
 
-            if (!idx_data || !val_data || !q8_data) {
+            if (!idx_data || !val_data) {
+                continue;
+            }
+
+            // For device tensors, we need to get the data to host, patch, and set back
+            bool weight_on_host = weight->buffer && ggml_backend_buffer_is_host(weight->buffer);
+            size_t weight_nbytes = ggml_nbytes(weight);
+            std::vector<uint8_t> weight_buf;
+            block_q8_0 * q8_data = nullptr;
+
+            if (weight_on_host) {
+                q8_data = (block_q8_0 *) weight->data;
+            } else {
+                weight_buf.resize(weight_nbytes);
+                ggml_backend_tensor_get(weight, weight_buf.data(), 0, weight_nbytes);
+                q8_data = (block_q8_0 *) weight_buf.data();
+            }
+
+            if (!q8_data) {
                 continue;
             }
 
@@ -392,8 +405,15 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                 }
                 n_patched++;
             }
-            fprintf(stderr, "[patch] %s: patched %lld/%lld blocks\n",
-                    info.name.c_str(), (long long)n_patched, (long long)info.n_blocks);
+
+            // Write back to device if needed
+            if (!weight_on_host) {
+                ggml_backend_tensor_set(weight, weight_buf.data(), 0, weight_nbytes);
+            }
+
+            fprintf(stderr, "[patch] %s: patched %lld/%lld blocks (on_%s)\n",
+                    info.name.c_str(), (long long)n_patched, (long long)info.n_blocks,
+                    weight_on_host ? "host" : "device");
             fflush(stderr);
         }
 
