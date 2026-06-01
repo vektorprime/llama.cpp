@@ -1085,7 +1085,10 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
                     ctx0, ob->idx, ob->values, cur,
                     ob->n_rows_out, ob->n_cols);
-            res = ggml_add(ctx0, res, corr);
+            // Force the correction to be on the same backend as res by adding a cpy
+            // This ensures the CPU-computed correction is copied to GPU
+            ggml_tensor * corr_cpy = ggml_cont(ctx0, ggml_cpy(ctx0, corr, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, corr->ne[0], corr->ne[1])));
+            res = ggml_add(ctx0, res, corr_cpy);
         }
     }
 
