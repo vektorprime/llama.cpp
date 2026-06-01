@@ -72,6 +72,7 @@ Runtime:
 | `ggml/src/ggml-cuda/ggml-cuda.cu:5429` | Added `GGML_OP_MUL_MAT_OUTLIER_BLOCKS` to `supports_op` (returns true) |
 | `ggml/src/ggml-cuda/ggml-cuda.cu:5448` | Added to `get_op_batch_size` (returns `op->ne[2]`) |
 
+
 ## Bugs Found and Fixed
 
 | # | Bug | Symptom | Fix |
@@ -81,6 +82,8 @@ Runtime:
 | 3 | `model` field at position 1 broke brace-init | Compile error in `llama-context.cpp:2310` | Moved `model` to end of `llm_graph_params` |
 | 4 | `n_created`/`n_tensors` mismatch | `too many tensors created; expected 866, got 1612` | Create sidecar tensors with `n_created++` so counts match |
 | 5 | BF16 values converted with `__half2float` (F16) | Silent wrong results | Changed to `nv_bfloat16*` + `__bfloat162float()` |
+| 6 | No split state handler for new op | `GGML_BACKEND_SPLIT_AXIS_UNKNOWN` crash during warmup | Added `GGML_OP_MUL_MAT_OUTLIER_BLOCKS` case returning `MIRRORED` |
+| 7 | `ggml_add` can't combine MIRRORED + non-MIRRORED sources | Same UNKNOWN crash (persisted after fix 6) | Modified `handle_bin_bcast` to use non-MIRRORED axis when one source is MIRRORED |
 
 ## Usage
 

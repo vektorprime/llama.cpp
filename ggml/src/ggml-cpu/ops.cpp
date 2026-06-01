@@ -4457,6 +4457,66 @@ void ggml_compute_forward_out_prod(
     }
 }
 
+// ggml_compute_forward_mul_mat_outlier_blocks
+
+void ggml_compute_forward_mul_mat_outlier_blocks(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * idx    = dst->src[0];
+    const ggml_tensor * values = dst->src[1];
+    const ggml_tensor * x      = dst->src[2];
+
+    GGML_ASSERT(idx->type    == GGML_TYPE_I32);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16);
+    GGML_ASSERT(x->type      == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type    == GGML_TYPE_F32);
+
+    const int64_t n_rows_out = ggml_get_op_params_i32(dst, 0);
+    const int64_t n_cols     = ggml_get_op_params_i32(dst, 1);
+    const int64_t n_blocks   = idx->ne[1];
+    const int64_t n_tokens   = x->ne[1];
+
+    GGML_ASSERT(dst->ne[0] == n_rows_out);
+    GGML_ASSERT(dst->ne[1] == n_tokens);
+
+    if (params->ith > 0) {
+        return;
+    }
+
+    // Zero the output
+    float * dst_data = (float *) dst->data;
+    memset(dst_data, 0, n_rows_out * n_tokens * sizeof(float));
+
+    if (n_blocks == 0 || n_tokens == 0) {
+        return;
+    }
+
+    const int32_t * idx_data    = (const int32_t *) idx->data;
+    const ggml_bf16_t * values_data = (const ggml_bf16_t *) values->data;
+    const float * x_data        = (const float *) x->data;
+
+    // For each outlier block, compute dot product of 32 BF16 weights × 32 F32 activations
+    for (int64_t ib = 0; ib < n_blocks; ib++) {
+        const int32_t row       = idx_data[ib * 2];
+        const int32_t block_col = idx_data[ib * 2 + 1];
+        const int64_t col0      = (int64_t) block_col * 32;
+
+        if (row < 0 || row >= n_rows_out || col0 + 31 >= n_cols) {
+            continue; // out of bounds
+        }
+
+        for (int64_t it = 0; it < n_tokens; it++) {
+            float sum = 0.0f;
+            for (int64_t j = 0; j < 32; j++) {
+                const float w = GGML_BF16_TO_FP32(values_data[ib * 32 + j]);
+                const float a = x_data[(col0 + j) + it * n_cols];
+                sum += w * a;
+            }
+            dst_data[row + it * n_rows_out] += sum;
+        }
+    }
+}
+
 // ggml_compute_forward_scale
 
 static void ggml_compute_forward_scale_f32(

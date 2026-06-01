@@ -1132,18 +1132,8 @@ Tasks:
 6. Add correctness tests against CPU.
 ```
 
-### Phase E: Metal support
 
-Goal: practical support on Apple Silicon.
 
-Tasks:
-
-```text
-1. Add Metal sparse block correction kernel.
-2. Validate BF16 support or choose an internal F16 fallback.
-3. Add tests against CPU.
-4. Benchmark with different protected block fractions.
-```
 
 ### Phase F: upstream hardening
 

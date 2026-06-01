@@ -2107,6 +2107,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 // nop
             } break;
+        case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
+            {
+                ggml_compute_forward_mul_mat_outlier_blocks(params, tensor);
+            } break;
         case GGML_OP_COUNT:
             {
                 GGML_ABORT("fatal error");
@@ -2297,6 +2301,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CONCAT:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
         case GGML_OP_OUT_PROD:
             {
                 n_tasks = n_threads;
@@ -2818,6 +2823,10 @@ struct ggml_cplan ggml_graph_plan(
                         if (node->src[1]->type != vec_dot_type) {
                             cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                         }
+                    } break;
+                case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
+                    {
+                        cur = 0;
                     } break;
                 case GGML_OP_MUL_MAT_ID:
                     {
