@@ -13,9 +13,9 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
-#include "ggml-impl.h"
 #define GGML_COMMON_DECL_CPP
 #include "ggml-common.h"
+#include "ggml-impl.h"
 #include "gguf.h"
 
 #include <algorithm>
@@ -347,7 +347,6 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             }
             if (!ggml_backend_buffer_is_host(weight->buffer) &&
                 !ggml_backend_buffer_is_host(info.idx->buffer)) {
-                // Both on GPU — skip patching (shouldn't happen with current CPU-sidecar design)
                 continue;
             }
 
@@ -360,13 +359,14 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             }
 
             int64_t n_patched = 0;
+            int64_t blocks_per_row = info.n_cols / 32;
             for (int64_t ib = 0; ib < info.n_blocks; ib++) {
                 int32_t row = idx_data[ib * 2];
                 int32_t block_col = idx_data[ib * 2 + 1];
                 if (row < 0 || row >= info.n_rows_out || block_col < 0) {
                     continue;
                 }
-                int64_t block_idx = (int64_t)row * (info.n_cols / 32) + block_col;
+                int64_t block_idx = (int64_t)row * blocks_per_row + block_col;
                 if (block_idx >= (int64_t)weight->ne[0] * weight->ne[1] / 32) {
                     continue;
                 }
@@ -380,7 +380,6 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                     if (abs_val > amax) amax = abs_val;
                 }
                 if (amax == 0.0f) {
-                    // All zeros — leave the Q8_0 block as-is (already zeroed)
                     n_patched++;
                     continue;
                 }
