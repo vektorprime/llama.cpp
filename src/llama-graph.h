@@ -586,8 +586,6 @@ using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor
 class llm_graph_result;
 
 struct llm_graph_params {
-    const llama_model * model = nullptr;
-
     llm_arch arch = LLM_ARCH_UNKNOWN;
 
     llama_hparams hparams;
@@ -627,6 +625,8 @@ struct llm_graph_params {
     llm_graph_cb cb;
 
     llm_graph_result * res;
+
+    const llama_model * model = nullptr;
 
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
