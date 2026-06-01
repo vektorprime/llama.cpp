@@ -2830,7 +2830,6 @@ struct ggml_cplan ggml_graph_plan(
                 case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
                     {
                         cur = 0;
-                        // DEBUG
                         fprintf(stderr, "[ggml_graph_plan] MUL_MAT_OUTLIER_BLOCKS: n_tasks=%d ne[0]=%lld ne[1]=%lld\n",
                                 n_tasks, (long long)node->ne[0], (long long)node->ne[1]);
                         fflush(stderr);

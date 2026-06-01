@@ -2982,9 +2982,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             ggml_cuda_mul_mat_id(ctx, dst);
             break;
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
-            fprintf(stderr, "[CUDA-dispatch] MUL_MAT_OUTLIER_BLOCKS: name=%s ne[0]=%lld ne[1]=%lld\n",
-                    dst->name ? dst->name : "(null)", (long long)dst->ne[0], (long long)dst->ne[1]);
-            fflush(stderr);
+            // fprintf(stderr, "[CUDA-dispatch] MUL_MAT_OUTLIER_BLOCKS: name=%s ne[0]=%lld ne[1]=%lld\n", dst->name ? dst->name : "(null)", (long long)dst->ne[0], (long long)dst->ne[1]); fflush(stderr);
             ggml_cuda_op_mul_mat_outlier_blocks(ctx, dst);
             break;
         case GGML_OP_OUT_PROD:
