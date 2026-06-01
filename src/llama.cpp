@@ -339,81 +339,24 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
     fprintf(stderr, "[load] build_outlier_info done, outlier_info.size()=%zu\n", model_ptr->outlier_info.size());
     fflush(stderr);
 
-        // Patch Q8_0 weights with BF16 outlier values
-        // This avoids needing a runtime correction op
+        // Copy sidecar tensors from CPU to all GPU backends so CUDA kernel can access them
         for (auto & [weight, info] : model_ptr->outlier_info) {
-            if (!info.idx || !info.values || !weight || weight->type != GGML_TYPE_Q8_0) {
-                continue;
+            if (info.idx && info.idx->buffer && ggml_backend_buffer_is_host(info.idx->buffer)) {
+                // Read CPU data
+                size_t idx_nbytes = ggml_nbytes(info.idx);
+                std::vector<uint8_t> idx_buf(idx_nbytes);
+                memcpy(idx_buf.data(), info.idx->data, idx_nbytes);
+                // Write to all backends via tensor_set (Meta backend mirrors to all GPUs)
+                ggml_backend_tensor_set(info.idx, idx_buf.data(), 0, idx_nbytes);
+                fprintf(stderr, "[copy-sidecar] %s idx: %zu bytes copied to GPU\n", info.name.c_str(), idx_nbytes);
             }
-
-            const int32_t * idx_data = (const int32_t *) info.idx->data;
-            const ggml_bf16_t * val_data = (const ggml_bf16_t *) info.values->data;
-
-            if (!idx_data || !val_data) {
-                continue;
+            if (info.values && info.values->buffer && ggml_backend_buffer_is_host(info.values->buffer)) {
+                size_t val_nbytes = ggml_nbytes(info.values);
+                std::vector<uint8_t> val_buf(val_nbytes);
+                memcpy(val_buf.data(), info.values->data, val_nbytes);
+                ggml_backend_tensor_set(info.values, val_buf.data(), 0, val_nbytes);
+                fprintf(stderr, "[copy-sidecar] %s values: %zu bytes copied to GPU\n", info.name.c_str(), val_nbytes);
             }
-
-            // For device tensors, we need to get the data to host, patch, and set back
-            bool weight_on_host = weight->buffer && ggml_backend_buffer_is_host(weight->buffer);
-            size_t weight_nbytes = ggml_nbytes(weight);
-            std::vector<uint8_t> weight_buf;
-            block_q8_0 * q8_data = nullptr;
-
-            if (weight_on_host) {
-                q8_data = (block_q8_0 *) weight->data;
-            } else {
-                weight_buf.resize(weight_nbytes);
-                ggml_backend_tensor_get(weight, weight_buf.data(), 0, weight_nbytes);
-                q8_data = (block_q8_0 *) weight_buf.data();
-            }
-
-            if (!q8_data) {
-                continue;
-            }
-
-            int64_t n_patched = 0;
-            int64_t blocks_per_row = info.n_cols / 32;
-            for (int64_t ib = 0; ib < info.n_blocks; ib++) {
-                int32_t row = idx_data[ib * 2];
-                int32_t block_col = idx_data[ib * 2 + 1];
-                if (row < 0 || row >= info.n_rows_out || block_col < 0) {
-                    continue;
-                }
-                int64_t block_idx = (int64_t)row * blocks_per_row + block_col;
-                if (block_idx >= (int64_t)weight->ne[0] * weight->ne[1] / 32) {
-                    continue;
-                }
-
-                // Read 32 BF16 values and quantize to Q8_0
-                float vals[32];
-                float amax = 0.0f;
-                for (int j = 0; j < 32; j++) {
-                    vals[j] = GGML_BF16_TO_FP32(val_data[ib * 32 + j]);
-                    float abs_val = fabsf(vals[j]);
-                    if (abs_val > amax) amax = abs_val;
-                }
-                if (amax == 0.0f) {
-                    n_patched++;
-                    continue;
-                }
-
-                float d = amax / 127.0f;
-                q8_data[block_idx].d = GGML_FP32_TO_FP16(d);
-                for (int j = 0; j < 32; j++) {
-                    int8_t q = (int8_t) roundf(vals[j] / d);
-                    q8_data[block_idx].qs[j] = q;
-                }
-                n_patched++;
-            }
-
-            // Write back to device if needed
-            if (!weight_on_host) {
-                ggml_backend_tensor_set(weight, weight_buf.data(), 0, weight_nbytes);
-            }
-
-            fprintf(stderr, "[patch] %s: patched %lld/%lld blocks (on_%s)\n",
-                    info.name.c_str(), (long long)n_patched, (long long)info.n_blocks,
-                    weight_on_host ? "host" : "device");
             fflush(stderr);
         }
 
