@@ -581,6 +581,29 @@ struct llama_model {
     // for keeping track of associated LoRA adapters
     std::unordered_set<llama_adapter_lora *> loras;
 
+    // Q8_0_BF16_OUTLIER: sparse outlier block correction sidecars
+    // maps base weight tensor name -> outlier block info (CSR layout)
+    // populated by llama_model::build_outlier_info() after tensor loading
+    struct llama_outlier_block_info {
+        std::string     name;              // base tensor name
+        ggml_tensor *   idx    = nullptr;  // [2, n_blocks] i32  (row, block_col per block)
+        ggml_tensor *   values = nullptr;  // [32, n_blocks] bf16
+        int64_t         n_blocks = 0;
+        int64_t         n_rows_out = 0;
+        int64_t         n_cols = 0;
+
+        // CSR layout for efficient sparse correction:
+        // row_ptr[row]..row_ptr[row+1] gives range into block_col / values for that output row
+        std::vector<int32_t> row_ptr;      // [n_rows_out + 1]
+        std::vector<int32_t> block_col;    // [n_blocks]
+    };
+
+    void build_outlier_info();
+    bool has_outlier_blocks(ggml_tensor * w) const;
+    const llama_outlier_block_info * get_outlier_info(ggml_tensor * w) const;
+
+    std::unordered_map<ggml_tensor *, llama_outlier_block_info> outlier_info;
+
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;
 

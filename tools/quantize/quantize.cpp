@@ -66,6 +66,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q5_K_M",   LLAMA_FTYPE_MOSTLY_Q5_K_M,   " 5.33G, +0.0569 ppl @ Llama-3-8B",  },
     { "Q6_K",     LLAMA_FTYPE_MOSTLY_Q6_K,     " 6.14G, +0.0217 ppl @ Llama-3-8B",  },
     { "Q8_0",     LLAMA_FTYPE_MOSTLY_Q8_0,     " 7.96G, +0.0026 ppl @ Llama-3-8B",  },
+    { "Q8_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER, " mostly Q8_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
     { "F16",      LLAMA_FTYPE_MOSTLY_F16,      "14.00G, +0.0020 ppl @ Mistral-7B",  },
     { "BF16",     LLAMA_FTYPE_MOSTLY_BF16,     "14.00G, -0.0050 ppl @ Mistral-7B",  },
     { "F32",      LLAMA_FTYPE_ALL_F32,         "26.00G              @ 7B",          },
@@ -126,7 +127,7 @@ static bool try_parse_ftype(const std::string & ftype_str_in, llama_ftype & ftyp
 static void usage(const char * executable) {
     printf("usage: %s [--help] [--allow-requantize] [--leave-output-tensor] [--pure] [--imatrix] [--include-weights]\n", executable);
     printf("       [--exclude-weights] [--output-tensor-type] [--token-embedding-type] [--tensor-type] [--tensor-type-file]\n");
-    printf("       [--prune-layers] [--keep-split] [--override-kv] [--dry-run]\n");
+    printf("       [--prune-layers] [--keep-split] [--override-kv] [--dry-run] [--outlier-blocks bf16]\n");
     printf("       model-f32.gguf [model-quant.gguf] type [nthreads]\n\n");
     printf("  --allow-requantize\n");
     printf("                                      allow requantizing tensors that have already been quantized\n");
@@ -166,6 +167,22 @@ static void usage(const char * executable) {
     printf("  --dry-run\n");
     printf("                                      calculate and show the final quantization size without performing quantization\n");
     printf("                                      example: llama-quantize --dry-run model-f32.gguf Q4_K\n\n");
+    printf("  --outlier-blocks bf16\n");
+    printf("                                      enable sparse BF16 sidecars for protected Q8_0 outlier blocks\n");
+    printf("  --outlier-ratio N\n");
+    printf("                                      protect blocks whose largest value is at least N times the second-largest value (default: 16)\n");
+    printf("  --outlier-nonmax-rel-rmse X\n");
+    printf("                                      minimum Q8_0 relative RMSE on non-largest values before protecting a block (default: 0.01)\n");
+    printf("  --outlier-max-frac F\n");
+    printf("                                      maximum protected block fraction per tensor (default: 0.02)\n");
+    printf("  --outlier-include-weights REGEX\n");
+    printf("                                      only apply outlier protection to matching tensors\n");
+    printf("  --outlier-exclude-weights REGEX\n");
+    printf("                                      do not apply outlier protection to matching tensors\n");
+    printf("  --outlier-report PATH\n");
+    printf("                                      write a JSON report with protected block counts and estimated bpw\n");
+    printf("  --outlier-store full\n");
+    printf("                                      store full BF16 protected blocks and zero the Q8_0 base block (default)\n\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
     printf("-----------------------------------------------------------------------------\n");
     printf(" allowed quantization types\n");
@@ -507,6 +524,9 @@ int llama_quantize(int argc, char ** argv) {
     std::vector<llama_model_kv_override> kv_overrides;
     std::vector<tensor_type_option> tensor_type_opts;
     std::vector<int> prune_layers;
+    std::string q8_outlier_include_weights;
+    std::string q8_outlier_exclude_weights;
+    std::string q8_outlier_report_path;
 
     for (; arg_idx < argc && strncmp(argv[arg_idx], "--", 2) == 0; arg_idx++) {
         if (strcmp(argv[arg_idx], "--leave-output-tensor") == 0) {
@@ -571,6 +591,58 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--keep-split") == 0) {
             params.keep_split = true;
+        } else if (strcmp(argv[arg_idx], "--outlier-blocks") == 0) {
+            if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "bf16")) {
+                ++arg_idx;
+                params.q8_outlier_enable = true;
+            } else {
+                fprintf(stderr, "%s: --outlier-blocks currently supports only 'bf16'\n", __func__);
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-ratio") == 0) {
+            if (arg_idx < argc-1) {
+                params.q8_outlier_ratio = std::stof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-nonmax-rel-rmse") == 0) {
+            if (arg_idx < argc-1) {
+                params.q8_outlier_nonmax_rel_rmse = std::stof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-max-frac") == 0) {
+            if (arg_idx < argc-1) {
+                params.q8_outlier_max_frac = std::stof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-include-weights") == 0) {
+            if (arg_idx < argc-1) {
+                q8_outlier_include_weights = argv[++arg_idx];
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-exclude-weights") == 0) {
+            if (arg_idx < argc-1) {
+                q8_outlier_exclude_weights = argv[++arg_idx];
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-report") == 0) {
+            if (arg_idx < argc-1) {
+                q8_outlier_report_path = argv[++arg_idx];
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-store") == 0) {
+            if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "full")) {
+                ++arg_idx;
+                params.q8_outlier_store = LLAMA_Q8_OUTLIER_STORE_FULL;
+            } else {
+                fprintf(stderr, "%s: --outlier-store currently supports only 'full'\n", __func__);
+                usage(argv[0]);
+            }
         } else {
             usage(argv[0]);
         }
@@ -583,6 +655,14 @@ int llama_quantize(int argc, char ** argv) {
     if (!included_weights.empty() && !excluded_weights.empty()) {
         usage(argv[0]);
     }
+    if (!q8_outlier_include_weights.empty() && !q8_outlier_exclude_weights.empty()) {
+        fprintf(stderr, "%s: --outlier-include-weights and --outlier-exclude-weights cannot be used together\n", __func__);
+        usage(argv[0]);
+    }
+
+    params.q8_outlier_include_weights = q8_outlier_include_weights.empty() ? nullptr : q8_outlier_include_weights.c_str();
+    params.q8_outlier_exclude_weights = q8_outlier_exclude_weights.empty() ? nullptr : q8_outlier_exclude_weights.c_str();
+    params.q8_outlier_report_path     = q8_outlier_report_path.empty()     ? nullptr : q8_outlier_report_path.c_str();
 
     std::vector<std::string> imatrix_datasets;
     std::unordered_map<std::string, std::vector<float>> imatrix_data;
@@ -706,6 +786,10 @@ int llama_quantize(int argc, char ** argv) {
             fprintf(stderr, "%s: invalid nthread '%s' (%s)\n", __func__, argv[arg_idx], e.what());
             return 1;
         }
+    }
+
+    if (params.ftype == LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER) {
+        params.q8_outlier_enable = true;
     }
 
     if (!params.dry_run) {

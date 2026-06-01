@@ -583,6 +583,8 @@ extern "C" {
 
         GGML_OP_GLU,
 
+        GGML_OP_MUL_MAT_OUTLIER_BLOCKS,
+
         GGML_OP_COUNT,
     };
 
@@ -1429,6 +1431,21 @@ extern "C" {
     GGML_API void ggml_mul_mat_set_hint(
             struct ggml_tensor * a,
             enum ggml_op_hint    hint);
+
+    // sparse outlier block correction matmul for Q8_0_BF16_OUTLIER
+    // idx:    [2, n_outlier_blocks], i32  (row, block_col)
+    // values: [32, n_outlier_blocks], bf16  (the original bf16 values)
+    // x:      [n_cols, n_tokens], the activation input
+    // n_rows_out: number of output rows (matches the base weight's ne[1])
+    // n_cols:     number of columns (matches the base weight's ne[0])
+    // result: [n_rows_out, n_tokens]
+    GGML_API struct ggml_tensor * ggml_mul_mat_outlier_blocks(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * idx,
+            struct ggml_tensor  * values,
+            struct ggml_tensor  * x,
+            int64_t               n_rows_out,
+            int64_t               n_cols);
 
     // indirect matrix multiplication
     GGML_API struct ggml_tensor * ggml_mul_mat_id(

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -884,11 +885,238 @@ struct common_speculative_impl_ngram_map_k : public common_speculative_impl {
     }
 };
 
+static const char * const common_speculative_common_texts[] = {
+    "a", "an", "the",
+    "is", "are", "was", "were", "am", "be", "been", "being",
+    "have", "has", "had", "having",
+    "do", "does", "did", "doing",
+    "can", "could", "may", "might", "must", "shall", "should", "will", "would",
+    "of", "for", "to", "in", "on", "at", "by", "from", "with", "about", "as", "into", "like", "through",
+    "after", "over", "between", "out", "against", "during", "without", "before", "under", "around", "among",
+    "across", "behind", "beyond", "near", "within", "upon",
+    "it", "this", "that", "these", "those",
+    "they", "them", "their", "theirs",
+    "we", "us", "our", "ours",
+    "you", "your", "yours",
+    "he", "him", "his",
+    "she", "her", "hers",
+    "very", "quite", "rather", "somewhat", "really", "extremely", "highly", "especially", "particularly",
+    "totally", "completely", "absolutely", "entirely", "fully", "deeply", "greatly", "strongly", "seriously",
+    "incredibly", "remarkably", "unusually", "fairly", "pretty", "too", "so",
+    "and", "or", "but", "yet", "nor", "because", "although", "though", "while", "whereas", "since",
+    "unless", "if", "when", "whenever", "where", "wherever", "whether",
+    "just", "actually", "basically", "literally", "simply", "generally", "usually", "probably", "possibly",
+    "maybe", "perhaps", "arguably", "kind of", "sort of", "almost", "nearly", "essentially", "apparently",
+    "then", "there", "here", "now", "often", "always", "never", "sometimes", "still", "already", "again",
+    "also", "only", "even", "ever",
+    "thing", "things", "stuff", "item", "items", "issue", "issues", "area", "areas", "aspect", "aspects",
+    "factor", "factors", "way", "ways", "process", "system", "information", "data", "content",
+    "get", "got", "make", "made", "take", "took", "give", "gave", "put", "set", "use", "used", "go",
+    "went", "come", "came", "help", "helped", "provide", "provided", "include", "included", "involve", "involved",
+    "in order to", "due to the fact that", "in the event that", "at this point in time", "for the purpose of",
+    "with regard to", "in relation to", "as a result of", "in terms of", "the fact that",
+    "anything", "something", "everything", "nothing", "someone", "somebody", "everyone", "everybody",
+    "no one", "nobody", "anyone", "anybody",
+};
+
+static std::string common_speculative_capitalize_first_ascii(std::string text) {
+    for (char & ch : text) {
+        const unsigned char uch = static_cast<unsigned char>(ch);
+        if (std::isalpha(uch)) {
+            ch = static_cast<char>(std::toupper(uch));
+            break;
+        }
+    }
+
+    return text;
+}
+
+static void common_speculative_add_tokenized_variant(
+        const llama_vocab * vocab,
+        const std::string & text,
+        std::vector<llama_tokens> & variants) {
+    llama_tokens tokens = common_tokenize(vocab, text, false, false);
+    if (tokens.empty()) {
+        return;
+    }
+    if (std::find(variants.begin(), variants.end(), tokens) != variants.end()) {
+        return;
+    }
+
+    variants.push_back(std::move(tokens));
+}
+
+static std::vector<llama_tokens> common_speculative_tokenized_variants(
+        const llama_vocab * vocab,
+        const char * text) {
+    std::vector<llama_tokens> variants;
+
+    const std::string raw(text);
+    common_speculative_add_tokenized_variant(vocab, raw, variants);
+    common_speculative_add_tokenized_variant(vocab, " " + raw, variants);
+
+    const std::string cap = common_speculative_capitalize_first_ascii(raw);
+    if (cap != raw) {
+        common_speculative_add_tokenized_variant(vocab, cap, variants);
+        common_speculative_add_tokenized_variant(vocab, " " + cap, variants);
+    }
+
+    return variants;
+}
+
+struct common_ngram_mod_phrase_trie {
+    struct node {
+        bool terminal = false;
+        std::map<llama_token, size_t> next;
+    };
+
+    std::vector<node> nodes = { node{} };
+    size_t max_len = 0;
+    size_t n_phrases = 0;
+
+    void add(const llama_tokens & phrase) {
+        if (phrase.size() < 2) {
+            return;
+        }
+
+        size_t cur = 0;
+        for (llama_token token : phrase) {
+            auto it = nodes[cur].next.find(token);
+            if (it == nodes[cur].next.end()) {
+                const size_t next = nodes.size();
+                nodes.push_back(node{});
+                it = nodes[cur].next.emplace(token, next).first;
+            }
+            cur = it->second;
+        }
+
+        if (!nodes[cur].terminal) {
+            nodes[cur].terminal = true;
+            n_phrases++;
+        }
+        max_len = std::max(max_len, phrase.size());
+    }
+
+    bool draft(
+            const llama_tokens & prompt,
+            llama_token sampled,
+            size_t n_max,
+            llama_tokens & result) const {
+        result.clear();
+
+        if (n_max == 0 || max_len < 2) {
+            return false;
+        }
+
+        const size_t cur_len = prompt.size() + 1;
+        const size_t max_prefix = std::min(max_len - 1, cur_len);
+        if (max_prefix < 2) {
+            return false;
+        }
+
+        auto token_at = [&](size_t i) -> llama_token {
+            return i < prompt.size() ? prompt[i] : sampled;
+        };
+
+        for (size_t prefix_len = max_prefix; prefix_len >= 2; --prefix_len) {
+            size_t node_idx = 0;
+            bool match = true;
+
+            for (size_t i = cur_len - prefix_len; i < cur_len; ++i) {
+                const llama_token token = token_at(i);
+                const auto it = nodes[node_idx].next.find(token);
+                if (it == nodes[node_idx].next.end()) {
+                    match = false;
+                    break;
+                }
+                node_idx = it->second;
+            }
+
+            if (!match || nodes[node_idx].next.empty()) {
+                continue;
+            }
+
+            size_t cur = node_idx;
+            while (result.size() < n_max && nodes[cur].next.size() == 1) {
+                const auto it = nodes[cur].next.begin();
+                result.push_back(it->first);
+                cur = it->second;
+                if (nodes[cur].terminal) {
+                    break;
+                }
+            }
+
+            if (!result.empty()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+};
+
+struct common_ngram_mod_common_tokens {
+    bool filter_enabled = false;
+    bool phrases_enabled = false;
+
+    size_t n_allowed = 0;
+
+    std::vector<uint8_t> allowed;
+    common_ngram_mod_phrase_trie phrases;
+
+    bool token_allowed(llama_token token) const {
+        return !filter_enabled ||
+            (token >= 0 && token < (llama_token) allowed.size() && allowed[token]);
+    }
+};
+
+static common_ngram_mod_common_tokens common_ngram_mod_common_tokens_init(
+        const llama_vocab * vocab,
+        bool filter_enabled,
+        bool phrases_enabled) {
+    common_ngram_mod_common_tokens result;
+
+    if (vocab == nullptr || (!filter_enabled && !phrases_enabled)) {
+        return result;
+    }
+
+    result.filter_enabled = filter_enabled;
+    result.phrases_enabled = phrases_enabled;
+    result.allowed.resize(llama_vocab_n_tokens(vocab), 0);
+
+    for (const char * text : common_speculative_common_texts) {
+        const bool is_phrase = std::strchr(text, ' ') != nullptr;
+        const auto variants = common_speculative_tokenized_variants(vocab, text);
+
+        for (const llama_tokens & tokens : variants) {
+            if (filter_enabled) {
+                for (llama_token token : tokens) {
+                    if (token < 0 || token >= (llama_token) result.allowed.size()) {
+                        continue;
+                    }
+                    if (!result.allowed[token]) {
+                        result.allowed[token] = 1;
+                        result.n_allowed++;
+                    }
+                }
+            }
+
+            if (phrases_enabled && is_phrase) {
+                result.phrases.add(tokens);
+            }
+        }
+    }
+
+    return result;
+}
+
 struct common_speculative_impl_ngram_mod : public common_speculative_impl {
     common_params_speculative_ngram_mod params;
 
     // shared across all sequences
     common_ngram_mod mod;
+
+    common_ngram_mod_common_tokens common_tokens;
 
     // enable trace logging if LLAMA_TRACE is set
     const bool verbose;
@@ -920,6 +1148,26 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
                 this->params.n_match, this->params.n_max, this->params.n_min);
         LOG_INF("%s: - mod size=%zu (%.3f MB)\n", __func__,
                 mod.size(), (float)(mod.size_bytes())/1024/1024);
+
+        const llama_vocab * vocab = nullptr;
+        if (params.draft.ctx_tgt != nullptr) {
+            vocab = llama_model_get_vocab(llama_get_model(params.draft.ctx_tgt));
+        }
+
+        common_tokens = common_ngram_mod_common_tokens_init(
+                vocab,
+                this->params.common_word_filter,
+                this->params.common_phrase_draft);
+
+        if ((this->params.common_word_filter || this->params.common_phrase_draft) && vocab == nullptr) {
+            LOG_WRN("%s: common-word ngram_mod addons disabled because target vocab is unavailable\n", __func__);
+        }
+
+        LOG_INF("%s: - common_word_filter=%d (%zu tokens), common_phrase_draft=%d (%zu phrases)\n", __func__,
+                (int) common_tokens.filter_enabled,
+                common_tokens.n_allowed,
+                (int) common_tokens.phrases_enabled,
+                common_tokens.phrases.n_phrases);
 
         if (this->params.n_match < 16) {
             LOG_WRN("%s: ngram_mod n_match=%d is too small - poor quality is possible, "
@@ -968,6 +1216,17 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         sinfo.n_draft_last = 0;
 
         const size_t cur_len = prompt.size();
+        const int32_t n_max = dparams.n_max > 0 ? std::min(params.n_max, dparams.n_max) : params.n_max;
+        if (n_max <= 0) {
+            return;
+        }
+
+        if (common_tokens.phrases_enabled &&
+                common_tokens.phrases.draft(prompt, dparams.id_last, n_max, result)) {
+            sinfo.n_draft_last = result.size();
+            return;
+        }
+
         if (cur_len < mod.get_n()) {
             return;
         }
@@ -983,16 +1242,17 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             sinfo.i_last = cur_len - n;
         }
 
-        result.resize(n + params.n_max);
+        result.resize(n + n_max);
         for (size_t i = 0; i < n - 1; ++i) {
             result[i] = prompt.at(cur_len - n + 1 + i);
         }
         result[n - 1] = dparams.id_last;
 
-        for (int i = 0; i < params.n_max; ++i) {
+        const int32_t n_min = common_tokens.filter_enabled ? std::min(params.n_min, 1) : params.n_min;
+        for (int i = 0; i < n_max; ++i) {
             const llama_token token = mod.get(result.data() + i);
-            if (token == common_ngram_mod::EMPTY) {
-                if (i < params.n_min) {
+            if (token == common_ngram_mod::EMPTY || !common_tokens.token_allowed(token)) {
+                if (i < n_min) {
                     result.clear();
                     return;
                 }

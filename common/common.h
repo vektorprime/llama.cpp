@@ -330,6 +330,9 @@ struct common_params_speculative_ngram_mod {
 
     int32_t n_max = 64;
     int32_t n_min = 48;
+
+    bool common_word_filter = true; // restrict ngram-mod drafts to common English word/phrase tokens
+    bool common_phrase_draft = true; // draft continuations of common English phrase prefixes
 };
 
 struct common_params_speculative_ngram_map {

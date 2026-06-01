@@ -85,6 +85,11 @@ Currently, a single hash pool is shared across all server slots, so different re
 llama-server ... --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
 ```
 
+This fork also adds two lightweight `ngram-mod` addons:
+
+- `--spec-ngram-mod-common-words` restricts ngram-mod draft tokens to a built-in bucket tokenized from common English words and phrases.
+- `--spec-ngram-mod-common-phrases` drafts deterministic continuations for built-in common phrase prefixes such as `in order to` or `with regard to`.
+
 Applications:
 
 - Iterating over a block of text/code (e.g. in llama.vim)
@@ -204,6 +209,10 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
                                         minimum number of ngram tokens to use for ngram-based speculative decoding (default: 48)
 --spec-ngram-mod-n-max                  N
                                         maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64)
+--spec-ngram-mod-common-words
+--no-spec-ngram-mod-common-words        enable/disable the built-in common English token bucket filter
+--spec-ngram-mod-common-phrases
+--no-spec-ngram-mod-common-phrases      enable/disable built-in common English phrase-prefix drafts
 ```
 
 ### n-gram Simple Parameters

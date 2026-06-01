@@ -976,6 +976,120 @@ llama_model::~llama_model() {
     }
 }
 
+void llama_model::build_outlier_info() {
+    outlier_info.clear();
+
+    for (const auto & [name, tensor] : tensors_by_name) {
+        // Look for outlier sidecar tensors: name.outlier_idx and name.outlier_bf16
+        const std::string idx_name    = name + ".outlier_idx";
+        const std::string values_name = name + ".outlier_bf16";
+
+        auto it_idx    = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
+                            [&](const auto & p) { return p.first == idx_name; });
+        auto it_values = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
+                            [&](const auto & p) { return p.first == values_name; });
+
+        if (it_idx == tensors_by_name.end() || it_values == tensors_by_name.end()) {
+            continue;
+        }
+
+        ggml_tensor * idx_tensor    = it_idx->second;
+        ggml_tensor * values_tensor = it_values->second;
+
+        // Validate shapes
+        if (idx_tensor->type != GGML_TYPE_I32 || values_tensor->type != GGML_TYPE_BF16) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s due to unexpected types\n", __func__, name.c_str());
+            continue;
+        }
+        if (idx_tensor->ne[0] != 2 || values_tensor->ne[0] != 32) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s due to unexpected shapes\n", __func__, name.c_str());
+            continue;
+        }
+
+        const int64_t n_blocks = idx_tensor->ne[1];
+        if (n_blocks != values_tensor->ne[1]) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx and values block count mismatch\n", __func__, name.c_str());
+            continue;
+        }
+
+        llama_outlier_block_info info;
+        info.name       = name;
+        info.idx        = idx_tensor;
+        info.values     = values_tensor;
+        info.n_blocks   = n_blocks;
+        info.n_rows_out = tensor->ne[1];
+        info.n_cols     = tensor->ne[0];
+
+        // Build CSR layout
+        // Read idx data: [2, n_blocks] -> (row, block_col) per block
+        // idx might be on CPU or GPU; we need CPU data for CSR
+        const int32_t * idx_data = nullptr;
+        std::vector<int32_t> idx_data_buf;
+
+        if (idx_tensor->buffer && ggml_backend_buffer_is_host(idx_tensor->buffer)) {
+            // Already on CPU
+            idx_data = (const int32_t *) idx_tensor->data;
+        } else {
+            // Need to copy from GPU to CPU
+            idx_data_buf.resize(n_blocks * 2);
+            if (idx_tensor->data) {
+                memcpy(idx_data_buf.data(), idx_tensor->data, n_blocks * 2 * sizeof(int32_t));
+            } else {
+                LLAMA_LOG_WARN("%s: cannot read outlier idx data for %s (no data pointer)\n", __func__, name.c_str());
+                continue;
+            }
+            idx_data = idx_data_buf.data();
+        }
+
+        // Build row_ptr: count blocks per row
+        info.row_ptr.resize(info.n_rows_out + 1, 0);
+        for (int64_t k = 0; k < n_blocks; k++) {
+            int32_t row = idx_data[k * 2];
+            if (row < 0 || row >= info.n_rows_out) {
+                LLAMA_LOG_WARN("%s: outlier idx row out of range for %s\n",
+                        __func__, name.c_str());
+                info.row_ptr.clear();
+                break;
+            }
+            info.row_ptr[row + 1]++;
+        }
+
+        if (info.row_ptr.empty()) {
+            continue;
+        }
+
+        // Prefix sum to get row_ptr
+        for (int64_t r = 0; r < info.n_rows_out; r++) {
+            info.row_ptr[r + 1] += info.row_ptr[r];
+        }
+
+        // Build block_col list from sorted blocks
+        info.block_col.resize(n_blocks, 0);
+        std::vector<int32_t> row_cursor = info.row_ptr; // copy for cursor
+        for (int64_t k = 0; k < n_blocks; k++) {
+            int32_t row = idx_data[k * 2];
+            int32_t bcol = idx_data[k * 2 + 1];
+            int32_t pos = row_cursor[row]++;
+            info.block_col[pos] = bcol;
+        }
+
+        outlier_info[tensor] = std::move(info);
+
+        LLAMA_LOG_INFO("%s: Q8_0_BF16_OUTLIER: %s has %lld protected blocks, %lld rows, %lld cols\n",
+                __func__, name.c_str(), (long long) n_blocks,
+                (long long) info.n_rows_out, (long long) info.n_cols);
+    }
+}
+
+bool llama_model::has_outlier_blocks(ggml_tensor * w) const {
+    return outlier_info.find(w) != outlier_info.end();
+}
+
+const llama_model::llama_outlier_block_info * llama_model::get_outlier_info(ggml_tensor * w) const {
+    auto it = outlier_info.find(w);
+    return it != outlier_info.end() ? &it->second : nullptr;
+}
+
 void llama_model_base::load_stats(llama_model_loader & ml) {
     pimpl->n_elements = ml.n_elements;
     pimpl->n_bytes = ml.n_bytes;
@@ -2129,6 +2243,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
 }
 
 ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
+    // provide model reference to graph context for outlier block correction
+    const_cast<llm_graph_params &>(params).model = this;
     std::unique_ptr<llm_graph_context> llm = build_arch_graph(params);
 
     // add on pooling layer

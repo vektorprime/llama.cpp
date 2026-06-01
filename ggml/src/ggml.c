@@ -1078,9 +1078,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+    "MUL_MAT_OUTLIER_BLOCKS",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1188,9 +1189,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+    "mul_mat_outlier_blocks(idx,values,x)",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3272,6 +3274,51 @@ void ggml_mul_mat_set_hint(
     const int32_t hint_i32 = (int32_t) hint;
 
     ggml_set_op_params_i32(a, 1, hint_i32);
+}
+
+// ggml_mul_mat_outlier_blocks
+
+/*
+    c = ggml_mul_mat_outlier_blocks(ctx, idx, values, x, n_rows_out, n_cols);
+
+    idx    -> [2, n_outlier_blocks], i32  (row, block_col)
+    values -> [32, n_outlier_blocks], bf16
+    x      -> [n_cols, n_tokens]
+    c      -> [n_rows_out, n_tokens]
+
+    Sparse BF16 outlier correction for Q8_0_BF16_OUTLIER:
+    For each protected block, compute dot product of the original BF16 values
+    with the corresponding activation slice, and accumulate into the output row.
+*/
+struct ggml_tensor * ggml_mul_mat_outlier_blocks(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * idx,
+        struct ggml_tensor  * values,
+        struct ggml_tensor  * x,
+        int64_t               n_rows_out,
+        int64_t               n_cols) {
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16);
+    GGML_ASSERT(x->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->ne[0] == 2);  // [row, block_col]
+    GGML_ASSERT(values->ne[0] == 32); // block_size = 32
+    GGML_ASSERT(idx->ne[1] == values->ne[1]); // same number of outlier blocks
+    GGML_ASSERT(x->ne[0] == n_cols);
+
+    const int64_t n_tokens = x->ne[1];
+    const int64_t ne[4] = { n_rows_out, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 2, ne);
+
+    result->op     = GGML_OP_MUL_MAT_OUTLIER_BLOCKS;
+    result->src[0] = idx;
+    result->src[1] = values;
+    result->src[2] = x;
+
+    // store n_rows_out and n_cols in op_params as i32
+    ggml_set_op_params_i32(result, 0, (int32_t) n_rows_out);
+    ggml_set_op_params_i32(result, 1, (int32_t) n_cols);
+
+    return result;
 }
 
 // ggml_mul_mat_id
@@ -6824,6 +6871,9 @@ static void ggml_compute_backward(
                 ggml_add_or_set(ctx, cgraph, isrc0, ggml_cross_entropy_loss_back(ctx, grad, src0, src1));
             }
             GGML_ASSERT(!src1_needs_grads && "backward pass for labels not implemented");
+        } break;
+        case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
+            // no backward pass needed for inference
         } break;
         case GGML_OP_GLU: {
             switch (ggml_get_glu_op(tensor)) {

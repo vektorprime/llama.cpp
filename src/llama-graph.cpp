@@ -1000,6 +1000,7 @@ void llm_graph_result::set_params(const llm_graph_params & params) {
 //
 
 llm_graph_context::llm_graph_context(const llm_graph_params & params) :
+    model            (*params.model),
     arch             (params.arch),
     hparams          (params.hparams),
     cparams          (params.cparams),
@@ -1060,6 +1061,17 @@ ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * cur,
           ggml_tensor * w_s) const {
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
+
+    // Q8_0_BF16_OUTLIER: add sparse BF16 outlier correction for protected blocks
+    if (w && model.has_outlier_blocks(w)) {
+        const auto * ob = model.get_outlier_info(w);
+        if (ob && ob->n_blocks > 0 && ob->idx && ob->values) {
+            ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
+                    ctx0, ob->idx, ob->values, cur,
+                    ob->n_rows_out, ob->n_cols);
+            res = ggml_add(ctx0, res, corr);
+        }
+    }
 
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);

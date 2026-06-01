@@ -155,6 +155,7 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER = 41, // except 1d tensors, plus sparse BF16 outlier sidecars
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -401,6 +402,11 @@ extern "C" {
         size_t size;
     };
 
+    enum llama_q8_outlier_store {
+        LLAMA_Q8_OUTLIER_STORE_FULL  = 0,
+        LLAMA_Q8_OUTLIER_STORE_DELTA = 1,
+    };
+
     // model quantization parameters
     typedef struct llama_model_quantize_params {
         int32_t nthread;                                            // number of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()
@@ -417,6 +423,14 @@ extern "C" {
         const struct llama_model_kv_override * kv_overrides;        // pointer to kv overrides
         const struct llama_model_tensor_override * tt_overrides;    // pointer to tensor overrides
         const int32_t * prune_layers;                               // pointer to layer indices to prune
+        bool q8_outlier_enable;                                     // enable Q8_0 + sparse BF16 outlier sidecars
+        float q8_outlier_ratio;                                     // max/second-max dominance threshold
+        float q8_outlier_nonmax_rel_rmse;                           // non-outlier relative RMSE threshold
+        float q8_outlier_max_frac;                                  // maximum protected block fraction per tensor
+        enum llama_q8_outlier_store q8_outlier_store;                // storage mode; FULL is implemented
+        const char * q8_outlier_report_path;                        // optional JSON report path
+        const char * q8_outlier_include_weights;                    // optional regex of tensors to include
+        const char * q8_outlier_exclude_weights;                    // optional regex of tensors to exclude
     } llama_model_quantize_params;
 
     typedef struct llama_logit_bias {

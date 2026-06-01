@@ -18,6 +18,7 @@ struct ggml_tensor;
 
 struct llama_cparams;
 struct llama_layer;
+struct llama_model;
 
 struct llama_memory_context_i;
 
@@ -585,6 +586,8 @@ using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor
 class llm_graph_result;
 
 struct llm_graph_params {
+    const llama_model * model = nullptr;
+
     llm_arch arch = LLM_ARCH_UNKNOWN;
 
     llama_hparams hparams;
@@ -775,6 +778,8 @@ struct llm_graph_qkv {
 };
 
 struct llm_graph_context {
+    const llama_model & model;
+
     const llm_arch arch;
 
     const llama_hparams & hparams;

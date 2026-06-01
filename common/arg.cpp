@@ -3674,6 +3674,24 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.ngram_mod.n_match = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-mod-common-words"},
+        {"--no-spec-ngram-mod-common-words"},
+        string_format("restrict ngram-mod drafts to a built-in common English token bucket (default: %s)",
+                      params.speculative.ngram_mod.common_word_filter ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.speculative.ngram_mod.common_word_filter = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-mod-common-phrases"},
+        {"--no-spec-ngram-mod-common-phrases"},
+        string_format("draft built-in common English phrase-prefix continuations with ngram-mod (default: %s)",
+                      params.speculative.ngram_mod.common_phrase_draft ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.speculative.ngram_mod.common_phrase_draft = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
     add_opt(common_arg(
         {"--spec-ngram-simple-size-n"}, "N",
