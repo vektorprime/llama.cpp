@@ -4,6 +4,8 @@
 #include "ggml.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <vector>
 
 // Kernel: sparse BF16 outlier block correction for Q8_0_BF16_OUTLIER
 //
@@ -132,6 +134,57 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
+    // DEBUG: Log shapes and sample data
+    {
+        const char * idx_buf_loc = "none";
+        const char * val_buf_loc = "none";
+        const char * x_buf_loc   = "none";
+        const char * dst_buf_loc = "none";
+        if (idx->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(idx->buffer)    ? "host" : "device";
+        if (values->buffer) val_buf_loc = ggml_backend_buffer_is_host(values->buffer) ? "host" : "device";
+        if (x->buffer)      x_buf_loc   = ggml_backend_buffer_is_host(x->buffer)      ? "host" : "device";
+        if (dst->buffer)    dst_buf_loc = ggml_backend_buffer_is_host(dst->buffer)    ? "host" : "device";
+        fprintf(stderr, "[CUDA] ggml_cuda_op_mul_mat_outlier_blocks: n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols=%lld\n",
+                (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols);
+        fprintf(stderr, "[CUDA]   buffers: idx=%s values=%s x=%s dst=%s\n",
+                idx_buf_loc, val_buf_loc, x_buf_loc, dst_buf_loc);
+        // Copy a small sample from device to host and print
+        if (n_blocks > 0) {
+            std::vector<int32_t> idx_host(std::min(n_blocks * 2, (int64_t)10));
+            CUDA_CHECK(cudaMemcpy(idx_host.data(), idx_d, idx_host.size() * sizeof(int32_t), cudaMemcpyDeviceToHost));
+            fprintf(stderr, "[CUDA]   first %lld idx entries (GPU->Host copy):", (long long)(idx_host.size()/2));
+            for (size_t i = 0; i < idx_host.size()/2; i++) {
+                fprintf(stderr, " [%zu]=(row=%d, block_col=%d)",
+                        i, idx_host[i*2], idx_host[i*2+1]);
+            }
+            fprintf(stderr, "\n");
+        }
+        if (values_d) {
+            std::vector<uint16_t> val_host(std::min((int64_t)4, n_blocks * 32));
+            CUDA_CHECK(cudaMemcpy(val_host.data(), values_d, val_host.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+            fprintf(stderr, "[CUDA]   values raw (GPU->Host copy):");
+            for (size_t j = 0; j < val_host.size(); j++) {
+                nv_bfloat16 v; memcpy(&v, &val_host[j], sizeof(v));
+                fprintf(stderr, " 0x%04x=%.6f", val_host[j], __bfloat162float(v));
+            }
+            fprintf(stderr, "\n");
+        }
+        if (x_d) {
+            std::vector<float> x_host(3);
+            CUDA_CHECK(cudaMemcpy(x_host.data(), x_d, 3 * sizeof(float), cudaMemcpyDeviceToHost));
+            fprintf(stderr, "[CUDA]   x[0..2] (GPU->Host): %f %f %f\n", x_host[0], x_host[1], x_host[2]);
+        }
+        fflush(stderr);
+    }
+
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols, n_rows_out, n_tokens);
+
+    // DEBUG: Copy back a few output values
+    {
+        std::vector<float> dst_host(3);
+        CUDA_CHECK(cudaMemcpy(dst_host.data(), dst_d, 3 * sizeof(float), cudaMemcpyDeviceToHost));
+        fprintf(stderr, "[CUDA]   dst after kernel dst[0..2]: %f %f %f\n", dst_host[0], dst_host[1], dst_host[2]);
+        fflush(stderr);
+    }
 }

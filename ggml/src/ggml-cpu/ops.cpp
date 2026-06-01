@@ -4479,6 +4479,47 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     GGML_ASSERT(dst->ne[0] == n_rows_out);
     GGML_ASSERT(dst->ne[1] == n_tokens);
 
+    // DEBUG: Always log on thread 0
+    if (params->ith == 0) {
+        const char * idx_buf_loc = "none";
+        const char * val_buf_loc = "none";
+        const char * x_buf_loc   = "none";
+        const char * dst_buf_loc = "none";
+        if (idx->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(idx->buffer)    ? "host" : "device";
+        if (values->buffer) val_buf_loc = ggml_backend_buffer_is_host(values->buffer) ? "host" : "device";
+        if (x->buffer)      x_buf_loc   = ggml_backend_buffer_is_host(x->buffer)      ? "host" : "device";
+        if (dst->buffer)    dst_buf_loc = ggml_backend_buffer_is_host(dst->buffer)    ? "host" : "device";
+        fprintf(stderr, "[CPU] ggml_compute_forward_mul_mat_outlier_blocks: ith=%d n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols=%lld\n",
+                params->ith, (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols);
+        fprintf(stderr, "[CPU]   buffers: idx=%s values=%s x=%s dst=%s\n",
+                idx_buf_loc, val_buf_loc, x_buf_loc, dst_buf_loc);
+        // Sample first few idx entries
+        if (n_blocks > 0 && idx->data) {
+            const int32_t * idx_data = (const int32_t *) idx->data;
+            int64_t sample = n_blocks < 5 ? n_blocks : 5;
+            fprintf(stderr, "[CPU]   first %lld idx entries:", (long long)sample);
+            for (int64_t i = 0; i < sample; i++) {
+                fprintf(stderr, " [%lld]=(row=%d, block_col=%d)",
+                        (long long)i, idx_data[i*2], idx_data[i*2+1]);
+            }
+            fprintf(stderr, "\n");
+        }
+        // Sample first BF16 value
+        if (values->data) {
+            const ggml_bf16_t * val_data = (const ggml_bf16_t *) values->data;
+            float v0 = GGML_BF16_TO_FP32(val_data[0]);
+            fprintf(stderr, "[CPU]   values[0] raw=0x%04x as_f32=%f\n",
+                    (unsigned int)((const uint16_t*)val_data)[0], v0);
+        }
+        // Sample first activation
+        if (x->data) {
+            const float * x_data = (const float *) x->data;
+            fprintf(stderr, "[CPU]   x[0]=%f x[1]=%f x[2]=%f\n",
+                    x_data[0], x_data[1], x_data[2]);
+        }
+        fflush(stderr);
+    }
+
     if (params->ith > 0) {
         return;
     }
@@ -4494,6 +4535,17 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int32_t * idx_data    = (const int32_t *) idx->data;
     const ggml_bf16_t * values_data = (const ggml_bf16_t *) values->data;
     const float * x_data        = (const float *) x->data;
+
+    // DEBUG: Log first block's first few weights
+    fprintf(stderr, "[CPU]   first block (ib=0) weight sample: ");
+    for (int j = 0; j < 4 && j < 32; j++) {
+        fprintf(stderr, "w[%d]=%f ", j, GGML_BF16_TO_FP32(values_data[j]));
+    }
+    fprintf(stderr, "\n");
+    // DEBUG: Log first token's first few activation values
+    fprintf(stderr, "[CPU]   first token activation sample: x[0]=%f x[n_cols]=%f\n",
+            x_data[0], x_data[n_cols]);
+    fflush(stderr);
 
     // For each outlier block, compute dot product of 32 BF16 weights × 32 F32 activations
     for (int64_t ib = 0; ib < n_blocks; ib++) {
@@ -4515,6 +4567,12 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
             dst_data[row + it * n_rows_out] += sum;
         }
     }
+
+    // DEBUG: Log first few output values
+    fprintf(stderr, "[CPU]   dst after compute: dst[0]=%f dst[1]=%f dst[2]=%f dst[n_rows_out]=%f\n",
+            dst_data[0], dst_data[1], dst_data[2],
+            (n_rows_out < n_rows_out * n_tokens) ? dst_data[n_rows_out] : 0.0f);
+    fflush(stderr);
 }
 
 // ggml_compute_forward_scale

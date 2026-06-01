@@ -1066,6 +1066,18 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     if (w && model.has_outlier_blocks(w)) {
         const auto * ob = model.get_outlier_info(w);
         if (ob && ob->n_blocks > 0 && ob->idx && ob->values) {
+            // DEBUG
+            fprintf(stderr, "[build_lora_mm] %s: adding outlier correction: n_blocks=%lld n_rows_out=%lld n_cols=%lld\n",
+                    w->name ? w->name : "(unnamed)",
+                    (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
+            const char * idx_buf_loc = "none";
+            const char * val_buf_loc = "none";
+            if (ob->idx->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(ob->idx->buffer)    ? "host" : "device";
+            if (ob->values->buffer) val_buf_loc = ggml_backend_buffer_is_host(ob->values->buffer) ? "host" : "device";
+            fprintf(stderr, "[build_lora_mm] %s: sidecar buffers: idx=%s values=%s\n",
+                    w->name ? w->name : "(unnamed)", idx_buf_loc, val_buf_loc);
+            fflush(stderr);
+
             ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
                     ctx0, ob->idx, ob->values, cur,
                     ob->n_rows_out, ob->n_cols);

@@ -1075,6 +1075,35 @@ void llama_model::build_outlier_info() {
 
         outlier_info[tensor] = std::move(info);
 
+        // DEBUG: Log buffer locations and data samples
+        {
+            const char * idx_buf_loc = "none";
+            const char * val_buf_loc = "none";
+            const char * wt_buf_loc  = "none";
+            if (idx_tensor->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(idx_tensor->buffer)    ? "host" : "device";
+            if (values_tensor->buffer) val_buf_loc = ggml_backend_buffer_is_host(values_tensor->buffer) ? "host" : "device";
+            if (tensor->buffer)        wt_buf_loc  = ggml_backend_buffer_is_host(tensor->buffer)        ? "host" : "device";
+            fprintf(stderr, "[build_outlier_info] %s: buffers: idx=%s values=%s weight=%s\n",
+                    name.c_str(), idx_buf_loc, val_buf_loc, wt_buf_loc);
+            if (n_blocks > 0 && idx_data) {
+                int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                fprintf(stderr, "[build_outlier_info] %s: first %lld idx:",
+                        name.c_str(), (long long)sample);
+                for (int64_t i = 0; i < sample; i++) {
+                    fprintf(stderr, " [%lld]=(row=%d,block_col=%d)",
+                            (long long)i, idx_data[i*2], idx_data[i*2+1]);
+                }
+                fprintf(stderr, "\n");
+            }
+            // Sample first BF16 value from values tensor
+            if (values_tensor->data) {
+                const uint16_t raw_val = ((const uint16_t*)values_tensor->data)[0];
+                fprintf(stderr, "[build_outlier_info] %s: values[0] raw=0x%04x\n",
+                        name.c_str(), raw_val);
+            }
+            fflush(stderr);
+        }
+
         LLAMA_LOG_INFO("%s: Q8_0_BF16_OUTLIER: %s has %lld protected blocks, %lld rows, %lld cols\n",
                 __func__, name.c_str(), (long long) n_blocks,
                 (long long) info.n_rows_out, (long long) info.n_cols);
