@@ -333,6 +333,8 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
 
         // build Q8_0_BF16_OUTLIER sidecar index after tensor loading
         model_ptr->build_outlier_info();
+    fprintf(stderr, "[load] build_outlier_info done, outlier_info.size()=%zu\n", model_ptr->outlier_info.size());
+    fflush(stderr);
 
         return {0, model_ptr.release()};
     } catch (const std::exception & err) {

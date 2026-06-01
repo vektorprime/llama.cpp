@@ -1072,10 +1072,14 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                     (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
             const char * idx_buf_loc = "none";
             const char * val_buf_loc = "none";
+            const char * w_buf_loc   = "none";
             if (ob->idx->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(ob->idx->buffer)    ? "host" : "device";
             if (ob->values->buffer) val_buf_loc = ggml_backend_buffer_is_host(ob->values->buffer) ? "host" : "device";
-            fprintf(stderr, "[build_lora_mm] %s: sidecar buffers: idx=%s values=%s\n",
-                    w->name ? w->name : "(unnamed)", idx_buf_loc, val_buf_loc);
+            if (w->buffer)          w_buf_loc   = ggml_backend_buffer_is_host(w->buffer)          ? "host" : "device";
+            fprintf(stderr, "[build_lora_mm] %s: buffers: idx=%s values=%s weight=%s\n",
+                    w->name ? w->name : "(unnamed)", idx_buf_loc, val_buf_loc, w_buf_loc);
+            fprintf(stderr, "[build_lora_mm] %s: ptrs: idx=%p values=%p weight=%p\n",
+                    w->name ? w->name : "(unnamed)", (void*)ob->idx, (void*)ob->values, (void*)w);
             fflush(stderr);
 
             ggml_tensor * corr = ggml_mul_mat_outlier_blocks(

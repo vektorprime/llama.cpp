@@ -883,6 +883,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
                 // Output is a small correction — mirror across all devices
                 split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
+                fprintf(stderr, "[meta-split] MUL_MAT_OUTLIER_BLOCKS: MIRRORED src0_buf=%s src1_buf=%s src2_buf=%s\n",
+                        tensor->src[0] && tensor->src[0]->buffer ? (ggml_backend_buffer_is_host(tensor->src[0]->buffer) ? "host" : "device") : "none",
+                        tensor->src[1] && tensor->src[1]->buffer ? (ggml_backend_buffer_is_host(tensor->src[1]->buffer) ? "host" : "device") : "none",
+                        tensor->src[2] && tensor->src[2]->buffer ? (ggml_backend_buffer_is_host(tensor->src[2]->buffer) ? "host" : "device") : "none");
+                fflush(stderr);
             } break;
             case GGML_OP_OUT_PROD: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);

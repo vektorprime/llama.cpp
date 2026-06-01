@@ -572,6 +572,7 @@ llama_model_loader::llama_model_loader(
         // Save tensors data offset of the main file.
         // For subsidiary files, `meta` tensor data offset must not be used,
         // so we build a unified tensors index for weights.
+        int n_sidecar = 0;
         for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
             std::string tensor_name = std::string(cur->name);
             // make sure there is no duplicated tensor names
@@ -581,7 +582,14 @@ llama_model_loader::llama_model_loader(
             n_elements += ggml_nelements(cur);
             n_bytes    += ggml_nbytes(cur);
             weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), 0, metadata, cur));
+            if (tensor_name.find(".outlier_idx") != std::string::npos ||
+                tensor_name.find(".outlier_bf16") != std::string::npos) {
+                n_sidecar++;
+            }
         }
+        fprintf(stderr, "[loader] GGUF has %d tensors total, %d sidecar tensors\n",
+                (int)weights_map.size(), n_sidecar);
+        fflush(stderr);
         uint16_t n_split = 0;
         get_key(llm_kv(LLM_KV_SPLIT_COUNT), n_split, false);
 
@@ -1524,6 +1532,19 @@ bool llama_model_loader::load_all_data(
         if (weight == nullptr) {
             // this can happen with split experts models
             continue;
+        }
+
+        // DEBUG: log sidecar tensor loading
+        {
+            std::string tname = ggml_get_name(cur);
+            if (tname.find(".outlier_idx") != std::string::npos ||
+                tname.find(".outlier_bf16") != std::string::npos) {
+                const char * buf_loc = "none";
+                if (cur->buffer) buf_loc = ggml_backend_buffer_is_host(cur->buffer) ? "host" : "device";
+                fprintf(stderr, "[load_data] %s: nbytes=%zu buffer=%s data=%p\n",
+                        tname.c_str(), ggml_nbytes(cur), buf_loc, (void*)cur->data);
+                fflush(stderr);
+            }
         }
 
         if (progress_callback) {

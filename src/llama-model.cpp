@@ -1085,6 +1085,8 @@ void llama_model::build_outlier_info() {
             if (tensor->buffer)        wt_buf_loc  = ggml_backend_buffer_is_host(tensor->buffer)        ? "host" : "device";
             fprintf(stderr, "[build_outlier_info] %s: buffers: idx=%s values=%s weight=%s\n",
                     name.c_str(), idx_buf_loc, val_buf_loc, wt_buf_loc);
+            fprintf(stderr, "[build_outlier_info] %s: ptrs: idx=%p values=%p weight=%p\n",
+                    name.c_str(), (void*)idx_tensor, (void*)values_tensor, (void*)tensor);
             if (n_blocks > 0 && idx_data) {
                 int64_t sample = n_blocks < 3 ? n_blocks : 3;
                 fprintf(stderr, "[build_outlier_info] %s: first %lld idx:",
@@ -1579,6 +1581,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             if (name.find(".outlier_idx") != std::string::npos ||
                 name.find(".outlier_bf16") != std::string::npos) {
                 const ggml_tensor * meta = weight.tensor;
+                if (!meta) {
+                    LLAMA_LOG_WARN("%s: skipping sidecar tensor %s (no metadata)\n", __func__, name.c_str());
+                    continue;
+                }
                 const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
                     ? GGML_TYPE_I32 : GGML_TYPE_BF16;
 
@@ -1605,7 +1611,15 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     }
                 }
 
+                fprintf(stderr, "[sidecar] %s -> parent=%s target_ctx=%p cpu_ctx=%p\n",
+                        name.c_str(), parent_name.c_str(), (void*)target_ctx, (void*)cpu_ctx);
+                fflush(stderr);
+
                 ggml_tensor * t = ggml_new_tensor_2d(target_ctx, type, meta->ne[0], meta->ne[1]);
+                if (!t) {
+                    LLAMA_LOG_WARN("%s: failed to create sidecar tensor %s\n", __func__, name.c_str());
+                    continue;
+                }
                 ggml_set_name(t, name.c_str());
                 ml.n_created++;
             }
@@ -1614,17 +1628,28 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     ml.done_getting_tensors();
 
+    fprintf(stderr, "[load] done_getting_tensors OK, n_created=%d\n", ml.n_created);
+    fflush(stderr);
+
     GGML_ASSERT(!(output && tok_embd &&
             strcmp(output->name, tok_embd->name) == 0 &&
             output->type == GGML_TYPE_NVFP4));
     // populate tensors_by_name
     for (auto & [_, ctx_ptr] : ml.ctx_map) {
+        int count = 0;
         for (auto * cur = ggml_get_first_tensor(ctx_ptr.get()); cur != NULL; cur = ggml_get_next_tensor(ctx_ptr.get(), cur)) {
             tensors_by_name.emplace_back(ggml_get_name(cur), cur);
+            count++;
         }
+        fprintf(stderr, "[tensors_by_name] context has %d tensors\n", count);
+        fflush(stderr);
     }
+    fprintf(stderr, "[tensors_by_name] total tensors: %zu\n", tensors_by_name.size());
+    fflush(stderr);
 
     ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+    fprintf(stderr, "[load] init_mappings done\n");
+    fflush(stderr);
     pimpl->mappings.reserve(ml.mappings.size());
 
     // create the backend buffers
@@ -1641,6 +1666,23 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         // skip contexts without tensors
         if (ggml_get_first_tensor(ctx) == nullptr) {
             continue;
+        }
+
+        // DEBUG: count tensors per context
+        {
+            int n_tensors = 0;
+            int n_sidecar = 0;
+            for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+                n_tensors++;
+                std::string tname = ggml_get_name(t);
+                if (tname.find(".outlier_idx") != std::string::npos ||
+                    tname.find(".outlier_bf16") != std::string::npos) {
+                    n_sidecar++;
+                }
+            }
+            fprintf(stderr, "[load] context buft=%s: %d tensors, %d sidecar\n",
+                    ggml_backend_buft_name(buft), n_tensors, n_sidecar);
+            fflush(stderr);
         }
 
         llama_buf_map buf_map;

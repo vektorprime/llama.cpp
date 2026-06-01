@@ -2109,6 +2109,9 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
             {
+                fprintf(stderr, "[CPU-dispatch] MUL_MAT_OUTLIER_BLOCKS: name=%s ne[0]=%lld ne[1]=%lld\n",
+                        tensor->name ? tensor->name : "(null)", (long long)tensor->ne[0], (long long)tensor->ne[1]);
+                fflush(stderr);
                 ggml_compute_forward_mul_mat_outlier_blocks(params, tensor);
             } break;
         case GGML_OP_COUNT:
