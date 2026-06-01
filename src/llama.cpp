@@ -333,29 +333,6 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
 
         // build Q8_0_BF16_OUTLIER sidecar index after tensor loading
         model_ptr->build_outlier_info();
-    fprintf(stderr, "[load] build_outlier_info done, outlier_info.size()=%zu\n", model_ptr->outlier_info.size());
-    fflush(stderr);
-
-        // Copy sidecar tensors from CPU to all GPU backends so CUDA kernel can access them
-        for (auto & [weight, info] : model_ptr->outlier_info) {
-            if (info.idx && info.idx->buffer && ggml_backend_buffer_is_host(info.idx->buffer)) {
-                // Read CPU data
-                size_t idx_nbytes = ggml_nbytes(info.idx);
-                std::vector<uint8_t> idx_buf(idx_nbytes);
-                memcpy(idx_buf.data(), info.idx->data, idx_nbytes);
-                // Write to all backends via tensor_set (Meta backend mirrors to all GPUs)
-                ggml_backend_tensor_set(info.idx, idx_buf.data(), 0, idx_nbytes);
-                fprintf(stderr, "[copy-sidecar] %s idx: %zu bytes copied to GPU\n", info.name.c_str(), idx_nbytes);
-            }
-            if (info.values && info.values->buffer && ggml_backend_buffer_is_host(info.values->buffer)) {
-                size_t val_nbytes = ggml_nbytes(info.values);
-                std::vector<uint8_t> val_buf(val_nbytes);
-                memcpy(val_buf.data(), info.values->data, val_nbytes);
-                ggml_backend_tensor_set(info.values, val_buf.data(), 0, val_nbytes);
-                fprintf(stderr, "[copy-sidecar] %s values: %zu bytes copied to GPU\n", info.name.c_str(), val_nbytes);
-            }
-            fflush(stderr);
-        }
 
         return {0, model_ptr.release()};
     } catch (const std::exception & err) {

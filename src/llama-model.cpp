@@ -1029,16 +1029,19 @@ void llama_model::build_outlier_info() {
         if (idx_tensor->buffer && ggml_backend_buffer_is_host(idx_tensor->buffer)) {
             // Already on CPU
             idx_data = (const int32_t *) idx_tensor->data;
-        } else {
-            // Need to copy from GPU to CPU
+        } else if (idx_tensor->buffer) {
+            // On a device (GPU) — use backend API to read data
             idx_data_buf.resize(n_blocks * 2);
-            if (idx_tensor->data) {
-                memcpy(idx_data_buf.data(), idx_tensor->data, n_blocks * 2 * sizeof(int32_t));
-            } else {
-                LLAMA_LOG_WARN("%s: cannot read outlier idx data for %s (no data pointer)\n", __func__, name.c_str());
-                continue;
-            }
+            ggml_backend_tensor_get(idx_tensor, idx_data_buf.data(), 0, n_blocks * 2 * sizeof(int32_t));
             idx_data = idx_data_buf.data();
+        } else if (idx_tensor->data) {
+            // No buffer but has data pointer (mmap fallback)
+            idx_data_buf.resize(n_blocks * 2);
+            memcpy(idx_data_buf.data(), idx_tensor->data, n_blocks * 2 * sizeof(int32_t));
+            idx_data = idx_data_buf.data();
+        } else {
+            LLAMA_LOG_WARN("%s: cannot read outlier idx data for %s (no data pointer)\n", __func__, name.c_str());
+            continue;
         }
 
         // Build row_ptr: count blocks per row
@@ -1575,26 +1578,60 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     // Create Q8_0_BF16_OUTLIER sidecar tensors in the ggml context
     // These are extra tensors in the GGUF that aren't part of the model architecture
+    // They must be placed in the SAME ggml_context as their parent weight tensor
+    // so that load_all_data() places them on the same backend (GPU).
     {
-        ggml_context * cpu_ctx = ml.ctx_map.begin()->second.get();
-        for (const auto & [name, weight] : ml.weights_map) {
-            if (name.find(".outlier_idx") != std::string::npos ||
-                name.find(".outlier_bf16") != std::string::npos) {
-                const ggml_tensor * meta = weight.tensor;
-                if (!meta) {
-                    LLAMA_LOG_WARN("%s: skipping sidecar tensor %s (no metadata)\n", __func__, name.c_str());
-                    continue;
+        // Helper: find which context a named parent tensor is in
+        auto find_parent_ctx = [&](const std::string & parent_name) -> ggml_context * {
+            for (auto & [buft, ctx_ptr] : ml.ctx_map) {
+                ggml_context * ctx = ctx_ptr.get();
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+                    if (parent_name == ggml_get_name(t)) {
+                        return ctx;
+                    }
                 }
-                const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
-                    ? GGML_TYPE_I32 : GGML_TYPE_BF16;
-                ggml_tensor * t = ggml_new_tensor_2d(cpu_ctx, type, meta->ne[0], meta->ne[1]);
-                if (!t) {
-                    LLAMA_LOG_WARN("%s: failed to create sidecar tensor %s\n", __func__, name.c_str());
-                    continue;
-                }
-                ggml_set_name(t, name.c_str());
-                ml.n_created++;
             }
+            return nullptr;
+        };
+
+        for (const auto & [name, weight] : ml.weights_map) {
+            if (name.find(".outlier_idx") == std::string::npos &&
+                name.find(".outlier_bf16") == std::string::npos) {
+                continue;
+            }
+
+            const ggml_tensor * meta = weight.tensor;
+            if (!meta) {
+                LLAMA_LOG_WARN("%s: skipping sidecar tensor %s (no metadata)\n", __func__, name.c_str());
+                continue;
+            }
+
+            // Determine parent tensor name: strip .outlier_idx or .outlier_bf16 suffix
+            std::string parent_name;
+            if (name.find(".outlier_idx") != std::string::npos) {
+                parent_name = name.substr(0, name.find(".outlier_idx"));
+            } else {
+                parent_name = name.substr(0, name.find(".outlier_bf16"));
+            }
+
+            // Find the context that holds the parent weight tensor
+            ggml_context * sidecar_ctx = find_parent_ctx(parent_name);
+            if (!sidecar_ctx) {
+                // Parent not found in any context — fall back to first (CPU) context
+                sidecar_ctx = ml.ctx_map.begin()->second.get();
+                LLAMA_LOG_WARN("%s: parent tensor %s not found, placing sidecar %s in CPU context\n",
+                        __func__, parent_name.c_str(), name.c_str());
+            }
+
+            const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
+                ? GGML_TYPE_I32 : GGML_TYPE_BF16;
+            ggml_tensor * t = ggml_new_tensor_2d(sidecar_ctx, type, meta->ne[0], meta->ne[1]);
+            if (!t) {
+                LLAMA_LOG_WARN("%s: failed to create sidecar tensor %s\n", __func__, name.c_str());
+                continue;
+            }
+            ggml_set_name(t, name.c_str());
+            ml.n_created++;
         }
     }
 
