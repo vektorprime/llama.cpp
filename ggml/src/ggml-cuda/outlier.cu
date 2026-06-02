@@ -141,10 +141,17 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const int64_t n_cols_x   = x->ne[0];
     const int64_t x_stride   = x->nb[1] / (int64_t)sizeof(float);
 
-    // Compute shard column offset from view (0 if not a view)
+    // Compute shard column offset from CUDA device index.
+    // When tensor parallelism splits activations, each GPU gets a contiguous
+    // shard but the idx data uses global column indices. We need to know
+    // which global column range this GPU owns.
     int64_t col_offset = 0;
     if (x->view_src && x->view_offs > 0) {
         col_offset = x->view_offs / (int64_t)sizeof(float);
+    } else if (n_cols_x < n_cols_all) {
+        // Activation is split but not a view — compute offset from device index.
+        // Assumes equal shard sizes and device ordering matching shard order.
+        col_offset = ctx.device * n_cols_x;
     }
 
     GGML_ASSERT(dst->ne[0] == n_rows_out);
