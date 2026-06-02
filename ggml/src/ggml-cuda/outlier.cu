@@ -29,6 +29,7 @@ static __global__ void outlier_blocks_kernel(
         const int64_t n_blocks,
         const int64_t n_cols_all,      // full column count (all shards)
         const int64_t n_cols_x,        // shard-local column count
+        const int64_t col_offset,      // starting column of this shard in global space
         const int64_t x_stride,        // stride between tokens in x
         const int64_t n_rows_out,
         const int64_t n_tokens) {
@@ -45,8 +46,9 @@ static __global__ void outlier_blocks_kernel(
     const int32_t block_col = idx[block_idx * 2 + 1];
     const int64_t col0      = (int64_t) block_col * 32;
 
-    // Check if this block touches our shard: [0, n_cols_x) must overlap [col0, col0+32)
-    if (col0 >= n_cols_x || col0 + 31 < 0) {
+    // Check if this block touches our shard: [col_offset, col_offset + n_cols_x)
+    // must overlap [col0, col0 + 32)
+    if (col0 + 31 < col_offset || col0 >= col_offset + n_cols_x) {
         return; // block entirely outside this shard
     }
 
@@ -63,12 +65,13 @@ static __global__ void outlier_blocks_kernel(
         const int64_t j = tid;
         const int64_t col_global = col0 + j;
         // Only participate if this column is in our shard
-        if (col_global >= 0 && col_global < n_cols_x) {
+        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
             // Load BF16 weight and convert to float
             const float w = __bfloat162float(values[block_idx * 32 + j]);
 
             // Load corresponding activation (use x_stride for correct row stride)
-            const float a = x[col_global + token_idx * x_stride];
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token_idx * x_stride];
 
             sum = w * a;
         }
@@ -96,6 +99,7 @@ static void outlier_blocks_cuda(
         const int64_t n_blocks,
         const int64_t n_cols_all,
         const int64_t n_cols_x,
+        const int64_t col_offset,
         const int64_t x_stride,
         const int64_t n_rows_out,
         const int64_t n_tokens) {
@@ -114,7 +118,7 @@ static void outlier_blocks_cuda(
 
     outlier_blocks_kernel<<<grid_dim, block_dim, 0, stream>>>(
             idx_d, values_d, x_d, dst_d,
-            n_blocks, n_cols_all, n_cols_x, x_stride, n_rows_out, n_tokens);
+            n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
 
     CUDA_CHECK(cudaGetLastError());
 }
@@ -137,6 +141,12 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const int64_t n_cols_x   = x->ne[0];
     const int64_t x_stride   = x->nb[1] / (int64_t)sizeof(float);
 
+    // Compute shard column offset from view (0 if not a view)
+    int64_t col_offset = 0;
+    if (x->view_src && x->view_offs > 0) {
+        col_offset = x->view_offs / (int64_t)sizeof(float);
+    }
+
     GGML_ASSERT(dst->ne[0] == n_rows_out);
     GGML_ASSERT(dst->ne[1] == n_tokens);
     GGML_ASSERT(n_cols_x    <= n_cols_all);
@@ -150,8 +160,8 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
 
 #if 1 // DEBUG — verify kernel data
     {
-        fprintf(stderr, "[CUDA] n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld x_stride=%lld\n",
-                (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)x_stride);
+        fprintf(stderr, "[CUDA] n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld x_stride=%lld\n",
+                (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset, (long long)x_stride);
         if (n_blocks > 0) {
             std::vector<int32_t> idx_host(std::min(n_blocks * 2, (int64_t)10));
             CUDA_CHECK(cudaMemcpy(idx_host.data(), idx_d, idx_host.size() * sizeof(int32_t), cudaMemcpyDeviceToHost));
@@ -178,5 +188,5 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
 #endif
 
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
-            n_blocks, n_cols_all, n_cols_x, x_stride, n_rows_out, n_tokens);
+            n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
 }

@@ -1576,62 +1576,67 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    // Create Q8_0_BF16_OUTLIER sidecar tensors in the ggml context
-    // These are extra tensors in the GGUF that aren't part of the model architecture
-    // They must be placed in the SAME ggml_context as their parent weight tensor
-    // so that load_all_data() places them on the same backend (GPU).
+    // Create Q8_0_BF16_OUTLIER sidecar tensors in the parent weight's ggml context.
+    // This ensures they're on the same GPU backend as the weight, loaded directly
+    // from GGUF without any CPU→GPU copies.
     {
-        // Helper: find which context a named parent tensor is in
-        auto find_parent_ctx = [&](const std::string & parent_name) -> ggml_context * {
-            for (auto & [buft, ctx_ptr] : ml.ctx_map) {
-                ggml_context * ctx = ctx_ptr.get();
+        int n_sidecar_extra = 0; // extra copies beyond the first (for tensor split)
+        for (auto & [buft, ctx_ptr] : ml.ctx_map) {
+            ggml_context * ctx = ctx_ptr.get();
+            // Skip CPU context — sidecars only needed on GPU
+            bool is_cpu = (ctx == ml.ctx_map.begin()->second.get());
+            if (is_cpu && ml.ctx_map.size() > 1) {
+                continue;
+            }
+            for (const auto & [name, weight] : ml.weights_map) {
+                if (name.find(".outlier_idx") == std::string::npos &&
+                    name.find(".outlier_bf16") == std::string::npos) {
+                    continue;
+                }
+                const ggml_tensor * meta = weight.tensor;
+                if (!meta) continue;
+
+                // Only create in this context if the parent weight is here
+                std::string parent_name;
+                if (name.find(".outlier_idx") != std::string::npos) {
+                    parent_name = name.substr(0, name.find(".outlier_idx"));
+                } else {
+                    parent_name = name.substr(0, name.find(".outlier_bf16"));
+                }
+                bool parent_found = false;
                 for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
                     if (parent_name == ggml_get_name(t)) {
-                        return ctx;
+                        parent_found = true;
+                        break;
                     }
                 }
-            }
-            return nullptr;
-        };
+                if (!parent_found) continue;
 
-        for (const auto & [name, weight] : ml.weights_map) {
-            if (name.find(".outlier_idx") == std::string::npos &&
-                name.find(".outlier_bf16") == std::string::npos) {
-                continue;
+                const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
+                    ? GGML_TYPE_I32 : GGML_TYPE_BF16;
+                ggml_tensor * t = ggml_new_tensor_2d(ctx, type, meta->ne[0], meta->ne[1]);
+                if (!t) continue;
+                ggml_set_name(t, name.c_str());
+                ml.n_created++;
+                if (!is_cpu) n_sidecar_extra++; // count GPU copies
             }
-
-            const ggml_tensor * meta = weight.tensor;
-            if (!meta) {
-                LLAMA_LOG_WARN("%s: skipping sidecar tensor %s (no metadata)\n", __func__, name.c_str());
-                continue;
-            }
-
-            // Determine parent tensor name: strip .outlier_idx or .outlier_bf16 suffix
-            std::string parent_name;
-            if (name.find(".outlier_idx") != std::string::npos) {
-                parent_name = name.substr(0, name.find(".outlier_idx"));
-            } else {
-                parent_name = name.substr(0, name.find(".outlier_bf16"));
-            }
-
-            // Find the context that holds the parent weight tensor
-            ggml_context * sidecar_ctx = find_parent_ctx(parent_name);
-            if (!sidecar_ctx) {
-                // Parent not found in any context — fall back to first (CPU) context
-                sidecar_ctx = ml.ctx_map.begin()->second.get();
-                LLAMA_LOG_WARN("%s: parent tensor %s not found, placing sidecar %s in CPU context\n",
-                        __func__, parent_name.c_str(), name.c_str());
-            }
-
-            const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
-                ? GGML_TYPE_I32 : GGML_TYPE_BF16;
-            ggml_tensor * t = ggml_new_tensor_2d(sidecar_ctx, type, meta->ne[0], meta->ne[1]);
-            if (!t) {
-                LLAMA_LOG_WARN("%s: failed to create sidecar tensor %s\n", __func__, name.c_str());
-                continue;
-            }
-            ggml_set_name(t, name.c_str());
-            ml.n_created++;
+        }
+        // Account for duplicates: each sidecar tensor exists once per GPU context.
+        // n_tensors counts each once. Subtract the first-GPU copies (already counted)
+        // and add back the total GPU copies.
+        // Actually, n_tensors already includes the sidecar count from weights_map.
+        // The first GPU context's copies are the "originals". Extra GPU contexts
+        // create duplicates. We need n_tensors >= n_created.
+        // n_created = n_arch_tensors + n_sidecar_unique * n_gpu_contexts
+        // n_tensors  = n_arch_tensors + n_sidecar_unique
+        // We need to add n_sidecar_unique * (n_gpu_contexts - 1) to n_tensors.
+        // n_sidecar_extra = n_sidecar_unique * n_gpu_contexts (all GPU copies)
+        // n_gpu_contexts = ml.ctx_map.size() - 1 (excluding CPU)
+        // n_sidecar_unique = n_sidecar_extra / n_gpu_contexts
+        int n_gpu_ctx = (int)ml.ctx_map.size() - 1;
+        if (n_gpu_ctx > 1 && n_sidecar_extra > 0) {
+            int n_sidecar_unique = n_sidecar_extra / n_gpu_ctx;
+            ml.n_tensors += n_sidecar_unique * (n_gpu_ctx - 1);
         }
     }
 
