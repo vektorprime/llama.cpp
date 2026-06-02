@@ -903,6 +903,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 } else if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_0 &&
                            src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_0) {
                     split_state = {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+                } else if (src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_0 &&
+                           src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                    // Activation split along reduction dimension (columns) →
+                    // each GPU computes a partial sum that needs all-reduce.
+                    split_state = {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
                 } else {
                     split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
                 }

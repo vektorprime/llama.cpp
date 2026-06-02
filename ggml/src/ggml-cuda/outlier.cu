@@ -165,9 +165,8 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
-#if 1 // DEBUG — verify kernel data
+#if 0 // DEBUG — verify kernel data (no sync — crashes during graph capture)
     {
-        cudaDeviceSynchronize();
         if (n_blocks > 0 && n_tokens > 0) {
             std::vector<int32_t> idx_host(2);
             std::vector<uint16_t> val_host(32);
@@ -176,9 +175,6 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
             CUDA_CHECK(cudaMemcpy(val_host.data(), values_d, 32*sizeof(uint16_t), cudaMemcpyDeviceToHost));
             int32_t row0 = idx_host[0], bcol0 = idx_host[1];
             int64_t col0 = (int64_t)bcol0 * 32;
-            fprintf(stderr, "[CUDA] n_blocks=%lld row=%d block_col=%d col0=%lld col_offset=%lld n_cols_x=%lld n_cols_all=%lld\n",
-                    (long long)n_blocks, row0, bcol0, (long long)col0,
-                    (long long)col_offset, (long long)n_cols_x, (long long)n_cols_all);
             if (col0 + 31 >= col_offset && col0 < col_offset + n_cols_x && col0 + 31 < n_cols_all) {
                 int64_t col_local = col0 - col_offset;
                 CUDA_CHECK(cudaMemcpy(x_host.data(), x_d + col_local, 32*sizeof(float), cudaMemcpyDeviceToHost));
@@ -186,11 +182,9 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
                 for (int j = 0; j < 32; j++) {
                     float w = __bfloat162float(*(const nv_bfloat16*)&val_host[j]);
                     expected_dot += w * x_host[j];
-                    if (j < 4) {
-                        fprintf(stderr, "[CUDA]   j=%d w=%f a=%f\n", j, w, x_host[j]);
-                    }
                 }
-                fprintf(stderr, "[CUDA] expected_dot=%f\n", expected_dot);
+                fprintf(stderr, "[CUDA] n_blocks=%lld row=%d block_col=%d col0=%lld expected_dot=%f\n",
+                        (long long)n_blocks, row0, bcol0, (long long)col0, expected_dot);
             }
         }
         fflush(stderr);
