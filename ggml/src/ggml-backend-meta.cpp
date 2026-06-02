@@ -881,11 +881,14 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 split_state = handle_mul_mat(src_ss);
             } break;
             case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
-                // Follow activation (src2) split so the correction is split the same
-                // way as the main matmul result. Sidecar idx/values (src0/src1) are on
-                // the weight buffer. The op only runs on backends with activation data.
-                split_state = src_ss[2];
-                split_state.n_segments = 1;
+                // Follow activation (src2) split. Convert explicit axis to PARTIAL
+                // (like handle_mul_mat does) so downstream per-row ops don't assert.
+                // Sidecar idx/values are on the weight buffer.
+                if (src_ss[2].axis >= 0 && src_ss[2].axis < GGML_MAX_DIMS) {
+                    split_state = {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+                } else {
+                    split_state = src_ss[2];
+                }
             } break;
             case GGML_OP_OUT_PROD: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
