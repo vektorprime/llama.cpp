@@ -597,6 +597,13 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             GGML_ASSERT(split_states_equal(src_ss[0], src_ss[1]));
             return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
         }
+        // After all-reduce, PARTIAL data is effectively MIRRORED — treat as such.
+        if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
+            return {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+        }
+        if (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
+            return {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+        }
         GGML_ABORT("fatal error");
         //return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
     };
