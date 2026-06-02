@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <mutex>
 #include <regex>
 #include <thread>
 #include <unordered_map>
@@ -900,6 +901,22 @@ static bool q8_outlier_block_is_candidate(
     }
 
     score = ratio * rel_rmse;
+
+    // DEBUG: log first few candidates
+    {
+        static std::mutex log_mutex;
+        static int log_count = 0;
+        std::lock_guard<std::mutex> lock(log_mutex);
+        if (log_count < 5) {
+            fprintf(stderr, "[q8_outlier] CANDIDATE #%d: max_abs=%f second_abs=%f ratio=%f rel_rmse=%f score=%f\n",
+                    log_count, max_abs, second_abs, ratio, rel_rmse, score);
+            fprintf(stderr, "[q8_outlier]   block[0..3]: %f %f %f %f\n",
+                    block[0], block[1], block[2], block[3]);
+            fflush(stderr);
+            log_count++;
+        }
+    }
+
     return true;
 }
 
@@ -916,6 +933,8 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
     result.values_name = name + ".outlier_bf16";
 
     if (n_per_row % LLAMA_Q8_OUTLIER_BLOCK_SIZE != 0) {
+        LLAMA_LOG_INFO("%s: %s — n_per_row=%lld not divisible by %d, skipping\n",
+                __func__, name.c_str(), (long long)n_per_row, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
         return result;
     }
 
@@ -924,6 +943,11 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
 
     std::vector<q8_outlier_candidate> candidates;
     candidates.reserve((size_t) std::min<int64_t>(result.n_blocks_total, 1024));
+
+    int64_t n_ratio_pass = 0;
+    int64_t n_rmse_pass = 0;
+    float max_ratio_seen = 0.0f;
+    float max_rmse_seen = 0.0f;
 
     for (int64_t row = 0; row < nrows; ++row) {
         const float * row_data = f32_data + row * n_per_row;
@@ -956,6 +980,12 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
             candidates.resize(max_blocks);
         }
     }
+
+    LLAMA_LOG_INFO("%s: %s — total_blocks=%lld candidates=%lld max=%lld protected=%lld (%.3f%%)\n",
+            __func__, name.c_str(),
+            (long long)result.n_blocks_total, (long long)candidates.size(),
+            (long long)max_blocks, (long long)candidates.size(),
+            result.n_blocks_total > 0 ? 100.0 * candidates.size() / result.n_blocks_total : 0.0);
 
     std::sort(candidates.begin(), candidates.end(),
             [](const q8_outlier_candidate & a, const q8_outlier_candidate & b) {
