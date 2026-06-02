@@ -165,7 +165,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
-#if 1 // DEBUG — verify kernel data (no sync — crashes during graph capture)
+#if 0 // DEBUG — verify kernel data (no sync — crashes during graph capture)
     {
         if (n_blocks > 0 && n_tokens > 0) {
             std::vector<int32_t> idx_host(2);

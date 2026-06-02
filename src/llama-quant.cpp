@@ -1025,6 +1025,8 @@ static void q8_outlier_zero_protected_blocks(
     const size_t block_size = ggml_type_size(GGML_TYPE_Q8_0);
     uint8_t * data = (uint8_t *) q8_data;
 
+    int64_t n_zeroed = 0;
+
     for (int64_t row = 0; row < nrows; ++row) {
         for (int64_t block_col = 0; block_col < outliers.n_blocks_per_row; ++block_col) {
             const int64_t key = row * outliers.n_blocks_per_row + block_col;
@@ -1033,8 +1035,24 @@ static void q8_outlier_zero_protected_blocks(
             }
 
             std::memset(data + row * row_size + block_col * block_size, 0, block_size);
+            n_zeroed++;
+
+            // DEBUG: verify first few zeroed blocks
+            if (n_zeroed <= 3) {
+                uint8_t * block_ptr = data + row * row_size + block_col * block_size;
+                fprintf(stderr, "[q8_zero] row=%lld block_col=%lld offset=%zu zeroed %zu bytes: %02x %02x %02x %02x...\n",
+                        (long long)row, (long long)block_col,
+                        (size_t)(row * row_size + block_col * block_size),
+                        block_size,
+                        block_ptr[0], block_ptr[1], block_ptr[2], block_ptr[3]);
+                fflush(stderr);
+            }
         }
     }
+
+    fprintf(stderr, "[q8_zero] %s: zeroed %lld blocks (row_size=%zu block_size=%zu)\n",
+            outliers.name.c_str(), (long long)n_zeroed, row_size, block_size);
+    fflush(stderr);
 }
 
 static void q8_outlier_add_tensor_meta(
