@@ -1109,9 +1109,10 @@ void llama_model::build_outlier_info() {
             fflush(stderr);
         }
 
-        LLAMA_LOG_INFO("%s: Q8_0_BF16_OUTLIER: %s has %lld protected blocks, %lld rows, %lld cols\n",
+        LLAMA_LOG_INFO("%s: Q8_0_BF16_OUTLIER: %s has %lld protected blocks, %lld rows, %lld cols (tensor ne[0]=%lld ne[1]=%lld)\n",
                 __func__, name.c_str(), (long long) n_blocks,
-                (long long) info.n_rows_out, (long long) info.n_cols);
+                (long long) info.n_rows_out, (long long) info.n_cols,
+                (long long)tensor->ne[0], (long long)tensor->ne[1]);
     }
 }
 
