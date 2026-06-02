@@ -165,7 +165,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
-#if 1 // DEBUG — verify kernel data
+#if 0 // DEBUG — verify kernel data
     {
         fprintf(stderr, "[CUDA] n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld x_stride=%lld\n",
                 (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset, (long long)x_stride);
