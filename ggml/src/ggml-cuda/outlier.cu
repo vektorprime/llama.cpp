@@ -165,30 +165,34 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
-#if 0 // DEBUG — verify kernel data
+#if 1 // DEBUG — verify kernel computation
     {
         fprintf(stderr, "[CUDA] n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld x_stride=%lld\n",
                 (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset, (long long)x_stride);
-        if (n_blocks > 0) {
-            std::vector<int32_t> idx_host(std::min(n_blocks * 2, (int64_t)10));
-            CUDA_CHECK(cudaMemcpy(idx_host.data(), idx_d, idx_host.size() * sizeof(int32_t), cudaMemcpyDeviceToHost));
-            fprintf(stderr, "[CUDA] first %lld idx:", (long long)(idx_host.size()/2));
-            for (size_t i = 0; i < idx_host.size()/2; i++)
-                fprintf(stderr, " [%zu]=(%d,%d)", i, idx_host[i*2], idx_host[i*2+1]);
-            fprintf(stderr, "\n");
-        }
-        if (values_d) {
-            std::vector<uint16_t> val_host(4);
-            CUDA_CHECK(cudaMemcpy(val_host.data(), values_d, 4*sizeof(uint16_t), cudaMemcpyDeviceToHost));
-            fprintf(stderr, "[CUDA] values: 0x%04x 0x%04x 0x%04x 0x%04x\n", val_host[0], val_host[1], val_host[2], val_host[3]);
-        }
-        if (x_d && n_tokens > 0) {
-            std::vector<float> x_host(std::min(n_cols_x, (int64_t)8));
-            CUDA_CHECK(cudaMemcpy(x_host.data(), x_d, x_host.size() * sizeof(float), cudaMemcpyDeviceToHost));
-            fprintf(stderr, "[CUDA] x[0..%zu]:", x_host.size()-1);
-            for (size_t i = 0; i < x_host.size(); i++)
-                fprintf(stderr, " %f", x_host[i]);
-            fprintf(stderr, "\n");
+        if (n_blocks > 0 && n_tokens > 0) {
+            // Read first block's idx, values, and compute expected dot product
+            std::vector<int32_t> idx_host(2);
+            std::vector<uint16_t> val_host(32);
+            std::vector<float> x_host(32);
+            CUDA_CHECK(cudaMemcpy(idx_host.data(), idx_d, 2*sizeof(int32_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(val_host.data(), values_d, 32*sizeof(uint16_t), cudaMemcpyDeviceToHost));
+            int32_t row0 = idx_host[0], bcol0 = idx_host[1];
+            int64_t col0 = (int64_t)bcol0 * 32;
+            if (col0 + 31 >= col_offset && col0 < col_offset + n_cols_x && col0 + 31 < n_cols_all) {
+                int64_t col_local = col0 - col_offset;
+                CUDA_CHECK(cudaMemcpy(x_host.data(), x_d + col_local, 32*sizeof(float), cudaMemcpyDeviceToHost));
+                float expected_dot = 0.0f;
+                for (int j = 0; j < 32; j++) {
+                    float w = __bfloat162float(*(const nv_bfloat16*)&val_host[j]);
+                    expected_dot += w * x_host[j];
+                }
+                fprintf(stderr, "[CUDA] block0: row=%d block_col=%d col0=%lld col_local=%lld expected_dot=%f\n",
+                        row0, bcol0, (long long)col0, (long long)col_local, expected_dot);
+                CUDA_CHECK(cudaDeviceSynchronize());
+                std::vector<float> dst_host(1);
+                CUDA_CHECK(cudaMemcpy(dst_host.data(), dst_d + row0, sizeof(float), cudaMemcpyDeviceToHost));
+                fprintf(stderr, "[CUDA] dst[%d]=%f (after kernel, token 0)\n", row0, dst_host[0]);
+            }
         }
         fflush(stderr);
     }
