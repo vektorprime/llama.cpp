@@ -148,7 +148,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
-#if 0 // DEBUG
+#if 1 // DEBUG — verify kernel data
     {
         fprintf(stderr, "[CUDA] n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld x_stride=%lld\n",
                 (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)x_stride);
@@ -164,6 +164,14 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
             std::vector<uint16_t> val_host(4);
             CUDA_CHECK(cudaMemcpy(val_host.data(), values_d, 4*sizeof(uint16_t), cudaMemcpyDeviceToHost));
             fprintf(stderr, "[CUDA] values: 0x%04x 0x%04x 0x%04x 0x%04x\n", val_host[0], val_host[1], val_host[2], val_host[3]);
+        }
+        if (x_d && n_tokens > 0) {
+            std::vector<float> x_host(std::min(n_cols_x, (int64_t)8));
+            CUDA_CHECK(cudaMemcpy(x_host.data(), x_d, x_host.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            fprintf(stderr, "[CUDA] x[0..%zu]:", x_host.size()-1);
+            for (size_t i = 0; i < x_host.size(); i++)
+                fprintf(stderr, " %f", x_host[i]);
+            fprintf(stderr, "\n");
         }
         fflush(stderr);
     }
