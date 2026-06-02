@@ -165,12 +165,9 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const float *       x_d      = (const float *)       x->data;
     float *             dst_d    = (float *)             dst->data;
 
-#if 1 // DEBUG — verify kernel computation
+#if 1 // DEBUG — verify kernel data (no sync — crashes during graph capture)
     {
-        fprintf(stderr, "[CUDA] n_blocks=%lld n_tokens=%lld n_rows_out=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld x_stride=%lld\n",
-                (long long)n_blocks, (long long)n_tokens, (long long)n_rows_out, (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset, (long long)x_stride);
         if (n_blocks > 0 && n_tokens > 0) {
-            // Read first block's idx, values, and compute expected dot product
             std::vector<int32_t> idx_host(2);
             std::vector<uint16_t> val_host(32);
             std::vector<float> x_host(32);
@@ -186,12 +183,8 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
                     float w = __bfloat162float(*(const nv_bfloat16*)&val_host[j]);
                     expected_dot += w * x_host[j];
                 }
-                fprintf(stderr, "[CUDA] block0: row=%d block_col=%d col0=%lld col_local=%lld expected_dot=%f\n",
-                        row0, bcol0, (long long)col0, (long long)col_local, expected_dot);
-                CUDA_CHECK(cudaDeviceSynchronize());
-                std::vector<float> dst_host(1);
-                CUDA_CHECK(cudaMemcpy(dst_host.data(), dst_d + row0, sizeof(float), cudaMemcpyDeviceToHost));
-                fprintf(stderr, "[CUDA] dst[%d]=%f (after kernel, token 0)\n", row0, dst_host[0]);
+                fprintf(stderr, "[CUDA] n_blocks=%lld row=%d block_col=%d col0=%lld expected_dot=%f\n",
+                        (long long)n_blocks, row0, bcol0, (long long)col0, expected_dot);
             }
         }
         fflush(stderr);
