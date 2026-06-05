@@ -82,6 +82,11 @@ void quantize_row_q8_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
 #endif
 }
 
+void quantize_row_q8_16(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    block_q8_16 * GGML_RESTRICT y = vy;
+    quantize_row_q8_16_ref(x, y, k);
+}
+
 void quantize_row_q8_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
     assert(k % QK8_1 == 0);
     const int nb = k / QK8_1;
