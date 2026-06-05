@@ -207,6 +207,29 @@ static __device__ void cpy_blck_f32_q8_0(const char * cxi, char * cdsti) {
     quantize_f32_q8_0_block((const float *)cxi, (block_q8_0 *)cdsti);
 }
 
+static __device__ void quantize_f32_q8_16_block(const float * __restrict__ x, block_q8_16 * __restrict__ y) {
+    float amax = 0.0f;
+
+    for (int j = 0; j < QK8_16B; j++) {
+        const float v = x[j];
+        amax = fmaxf(amax, fabsf(v));
+    }
+
+    const float d = amax / ((1 << 7) - 1);
+    const float id = d ? 1.0f/d : 0.0f;
+
+    y->d = d;
+
+    for (int j = 0; j < QK8_16B; ++j) {
+        const float x0 = x[j]*id;
+        y->qs[j] = roundf(x0);
+    }
+}
+
+static __device__ void cpy_blck_f32_q8_16(const char * cxi, char * cdsti) {
+    quantize_f32_q8_16_block((const float *)cxi, (block_q8_16 *)cdsti);
+}
+
 static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
     quantize_f32_iq4_nl_block((const float *)cxi, (block_iq4_nl *)cdsti);
 }
