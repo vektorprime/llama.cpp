@@ -2551,6 +2551,11 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
 }
 
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    if (src0->type == GGML_TYPE_Q8_16B) {
+        GGML_LOG_INFO("Q8_16B mul_mat ENTER: src0_ne=[%lld,%lld] src1_ne=[%lld,%lld]\n",
+            (long long)src0->ne[0], (long long)src0->ne[1],
+            (long long)src1->ne[0], (long long)src1->ne[1]);
+    }
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
 
     // If src0 is a temporary compute buffer it may have some padding that needs to be cleared for mul_mat_vec_q or mul_mat_q.
