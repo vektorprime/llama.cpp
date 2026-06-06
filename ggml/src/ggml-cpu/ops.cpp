@@ -636,19 +636,23 @@ static void ggml_compute_forward_add_q_f32(
         float * src1_row = (float *)((char *) src1->data + (i11*nb11 + i12*nb12 + i13*nb13));
         void  * dst_row  = (void *) ((char *)  dst->data + ( i1*nb1  +  i2*nb2  +  i3*nb3));
 
-        assert(ne00 % 32 == 0);
+        if (src0->type != GGML_TYPE_Q8_16B) {
+            assert(ne00 % 32 == 0);
+        } else {
+            assert(ne00 % 16 == 0);
+        }
 
-    // unquantize row from src0 to temp buffer
-    dequantize_row_q(src0_row, wdata, ne0);
-    // add src1
-    ggml_vec_acc_f32(ne0, wdata, src1_row);
-    // quantize row to dst
-    if (quantize_row_q != NULL) {
-        quantize_row_q(wdata, dst_row, ne0);
-    } else {
-        memcpy(dst_row, wdata, ne0*nb0);
+        // unquantize row from src0 to temp buffer
+        dequantize_row_q(src0_row, wdata, ne00);
+        // add src1
+        ggml_vec_acc_f32(ne00, wdata, src1_row);
+        // quantize row to dst
+        if (quantize_row_q != NULL) {
+            quantize_row_q(wdata, dst_row, ne00);
+        } else {
+            memcpy(dst_row, wdata, ne0*nb0);
+        }
     }
-}
 }
 
 void ggml_compute_forward_add(
@@ -969,21 +973,21 @@ static void ggml_compute_forward_add1_q_f32(
         const int i2 = (ir - i3*ne2*ne1)/ne1;
         const int i1 = (ir - i3*ne2*ne1 - i2*ne1);
 
-    void  * src0_row = (void *) ((char *) src0->data + (i1*nb01 + i2*nb02 + i3*nb03));
-    void  * dst_row  = (void *) ((char *)  dst->data + ( i1*nb1  +  i2*nb2  +  i3*nb0 ));
+        void  * src0_row = (void *) ((char *) src0->data + (i1*nb01 + i2*nb02 + i3*nb03));
+        void  * dst_row  = (void *) ((char *)  dst->data + ( i1*nb1  +  i2*nb2  +  i3*nb0 ));
 
-    if (src0->type != GGML_TYPE_Q8_16B) {
-        assert(ne0 % 32 == 0);
-    } else {
-        assert(ne0 % 16 == 0);
-    }
+        if (src0->type != GGML_TYPE_Q8_16B) {
+            assert(ne00 % 32 == 0);
+        } else {
+            assert(ne00 % 16 == 0);
+        }
 
-    // unquantize row from src0 to temp buffer
-        dequantize_row_q(src0_row, wdata, ne0);
+        // unquantize row from src0 to temp buffer
+        dequantize_row_q(src0_row, wdata, ne00);
         // add src1
-        ggml_vec_acc1_f32(ne0, wdata, v);
+        ggml_vec_acc1_f32(ne00, wdata, v);
         // quantize row to dst
-        quantize_row_q(wdata, dst_row, ne0);
+        quantize_row_q(wdata, dst_row, ne00);
     }
 }
 
