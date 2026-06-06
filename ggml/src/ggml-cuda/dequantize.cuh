@@ -101,7 +101,7 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
 static __device__ __forceinline__ void dequantize_q8_16(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q8_16 * x = (const block_q8_16 *) vx;
 
-    const float d = x[ib].d;
+    const float d = __half2float(x[ib].d);
 
     v.x = x[ib].qs[iqs + 0];
     v.y = x[ib].qs[iqs + 1];
