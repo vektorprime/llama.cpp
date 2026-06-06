@@ -1630,6 +1630,9 @@ static void ggml_cuda_op_mul_mat_cublas(
     const char * src1_ddq_i, float * dst_dd_i, const int64_t row_low, const int64_t row_high, const int64_t src1_ncols,
     const int64_t src1_padded_row_size, cudaStream_t stream) {
 
+    if (src0->type == GGML_TYPE_Q8_16B) {
+        GGML_LOG_INFO("Q8_16B cublas ENTER: src0_type=%d src1_type=%d\n", src0->type, src1->type);
+    }
     GGML_ASSERT(src0_dd_i  != nullptr);
     GGML_ASSERT(src1_ddf_i != nullptr);
     GGML_ASSERT(dst_dd_i   != nullptr);
