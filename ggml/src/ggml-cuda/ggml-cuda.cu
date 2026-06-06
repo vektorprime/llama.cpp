@@ -1696,10 +1696,10 @@ static void ggml_cuda_op_mul_mat_cublas(
             size_t ne = row_diff*ne00;
             src0_as_f16.alloc(ne);
             if (src0->type == GGML_TYPE_Q8_16B) {
-                GGML_LOG_INFO("Q8_16B cublas convert: ne00=%lld row_diff=%lld ne=%zu type_size=%zu blck_size=%zu src0_bytes=%zu\n",
+                GGML_LOG_INFO("Q8_16B cublas fp16: ne00=%lld row_diff=%lld ne=%zu type_size=%zu blck_size=%zu contiguous=%d\n",
                     (long long)ne00, (long long)row_diff, ne,
                     (size_t)ggml_type_size(src0->type), (size_t)ggml_blck_size(src0->type),
-                    (size_t)ggml_nbytes(src0));
+                    ggml_is_contiguous(src0));
             }
             to_fp16_cuda(src0_dd_i, src0_as_f16.get(), ne, stream);
         }
@@ -1760,6 +1760,10 @@ static void ggml_cuda_op_mul_mat_cublas(
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(src0->type);
             GGML_ASSERT(to_fp32_cuda != nullptr);
             src0_ddq_as_f32.alloc(row_diff*ne00);
+            if (src0->type == GGML_TYPE_Q8_16B) {
+                GGML_LOG_INFO("Q8_16B cublas fp32 (use_fp16=%d): ne00=%lld row_diff=%lld\n",
+                    use_fp16, (long long)ne00, (long long)row_diff);
+            }
             to_fp32_cuda(src0_dd_i, src0_ddq_as_f32.get(), row_diff*ne00, stream);
         }
         if (src1->type != GGML_TYPE_F32) {
