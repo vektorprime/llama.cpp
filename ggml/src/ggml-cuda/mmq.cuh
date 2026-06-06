@@ -226,8 +226,10 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
 #define MMQ_MMA_TILE_X_K_Q2_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K                           + 4)
 #define MMQ_MMA_TILE_X_K_Q3_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/2                         + 4)
 #define MMQ_MMA_TILE_X_K_Q6_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI6_K   + MMQ_TILE_NE_K/8 + 7)
+#define MMQ_MMA_TILE_X_K_Q8_16B (2*MMQ_TILE_NE_K + 2*MMQ_TILE_NE_K/QI8_16B + 4)
 
 static_assert(MMQ_MMA_TILE_X_K_Q8_0 % 8 == 4, "Wrong padding.");
+static_assert(MMQ_MMA_TILE_X_K_Q8_16B % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q8_1 % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q2_K % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q3_K % 8 == 4, "Wrong padding.");
@@ -245,7 +247,7 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
         case GGML_TYPE_Q5_0:    return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q5_1:    return MMQ_MMA_TILE_X_K_Q8_1;
         case GGML_TYPE_Q8_0:    return MMQ_MMA_TILE_X_K_Q8_0;
-        case GGML_TYPE_Q8_16B:  return MMQ_MMA_TILE_X_K_Q8_0;
+        case GGML_TYPE_Q8_16B:  return MMQ_MMA_TILE_X_K_Q8_16B;
         // tile sizes are the same for Q8_1 and FP4 for blackwell
         case GGML_TYPE_MXFP4:   return MMQ_MMA_TILE_X_K_Q8_1;
 #if defined(BLACKWELL_MMA_AVAILABLE)
@@ -869,8 +871,8 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         const block_q8_16 * bxi = (const block_q8_16 *) x + kbx0 + i*stride + kbx;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + 0             + txi] = get_int_b2(bxi[0].qs,                   kqsx);
-        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + MMQ_TILE_NE_K + txi] = get_int_b2(bxi[MMQ_TILE_NE_K/QI8_16B].qs, kqsx);
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_16B + 0             + txi] = get_int_b2(bxi[0].qs,                   kqsx);
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_16B + MMQ_TILE_NE_K + txi] = get_int_b2(bxi[MMQ_TILE_NE_K/QI8_16B].qs, kqsx);
 #else
         x_qs[i*(2*MMQ_TILE_NE_K + 1) + 0             + txi] = get_int_b2(bxi[0].qs,                   kqsx);
         x_qs[i*(2*MMQ_TILE_NE_K + 1) + MMQ_TILE_NE_K + txi] = get_int_b2(bxi[MMQ_TILE_NE_K/QI8_16B].qs, kqsx);
@@ -892,7 +894,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         const block_q8_16 * bxi = (const block_q8_16 *) x + kbx0 + i*stride + kbxd;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*MMQ_MMA_TILE_X_K_Q8_0                 + kbxd] = bxi->d;
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_16B                 + kbxd] = bxi->d;
 #else
         x_df[i*(2*MMQ_TILE_NE_K/QI8_16B) + i/(QI8_16B/2) + kbxd] = bxi->d;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
@@ -1421,7 +1423,7 @@ static __device__ __forceinline__ void vec_dot_q8_16_q8_1_mma(
         tile_A A[ntx];
 #pragma unroll
         for (int n = 0; n < ntx; ++n) {
-            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_Q8_0 + k0, MMQ_MMA_TILE_X_K_Q8_0);
+            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_Q8_16B + k0, MMQ_MMA_TILE_X_K_Q8_16B);
         }
 
 #pragma unroll
@@ -1445,7 +1447,7 @@ static __device__ __forceinline__ void vec_dot_q8_16_q8_1_mma(
 #pragma unroll
                 for (int l = 0; l < tile_C::ne; ++l) {
                     const int i = i0 + n*tile_A::I + tile_C::get_i(l);
-                    const float dA = x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + k0/QI8_16B];
+                    const float dA = x_df[i*MMQ_MMA_TILE_X_K_Q8_16B + k0/QI8_16B];
                     sum[(j0/tile_C::J + n)*tile_C::ne + l] += C.x[l]*dA*dB;
                 }
             }
@@ -1479,7 +1481,7 @@ static __device__ __forceinline__ void vec_dot_q8_16_q8_1_mma(
         for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += QI8_16B) {
             const int k0 = k00 + k01;
 
-            load_ldmatrix(A[n][k01/QI8_16B], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_Q8_0 + k0, MMQ_MMA_TILE_X_K_Q8_0);
+            load_ldmatrix(A[n][k01/QI8_16B], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_Q8_16B + k0, MMQ_MMA_TILE_X_K_Q8_16B);
         }
 
 #pragma unroll
@@ -1490,7 +1492,7 @@ static __device__ __forceinline__ void vec_dot_q8_16_q8_1_mma(
             for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += QI8_16B) {
                 const int k0 = k00 + k01;
 
-                dA[n][l][k01/QI8_16B] = x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + k0/QI8_16B];
+                dA[n][l][k01/QI8_16B] = x_df[i*MMQ_MMA_TILE_X_K_Q8_16B + k0/QI8_16B];
             }
         }
     }

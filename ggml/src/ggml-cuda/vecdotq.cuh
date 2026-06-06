@@ -819,10 +819,12 @@ static __device__ __forceinline__ float vec_dot_q8_16_q8_1(
     int v[VDR_Q8_0_Q8_1_MMVQ];
     int u[VDR_Q8_0_Q8_1_MMVQ];
 
+    const int q8_1_offset = (kbx & 1) * (QI8_1 / 2);
+
 #pragma unroll
     for (int i = 0; i < VDR_Q8_0_Q8_1_MMVQ; ++i) {
         v[i] = get_int_b2(bq8_16->qs, iqs + i);
-        u[i] = get_int_b4(bq8_1->qs, iqs + i);
+        u[i] = get_int_b4(bq8_1->qs, iqs + i + q8_1_offset);
     }
 
     return vec_dot_q8_0_q8_1_impl<float, VDR_Q8_0_Q8_1_MMVQ>(v, u, bq8_16->d, __low2half(bq8_1->ds));
