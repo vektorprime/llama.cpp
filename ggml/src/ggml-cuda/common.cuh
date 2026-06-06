@@ -1004,7 +1004,7 @@ template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q8_16B> {
     static constexpr int qk = QK8_16B;
     static constexpr int qr = 1;
-    static constexpr int qi = QK8_16B / (4 * qr);
+    static constexpr int qi = 8; // Same as Q8_0 for MMVQ thread distribution
 };
 
 template<>
