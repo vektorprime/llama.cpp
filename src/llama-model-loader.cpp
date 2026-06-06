@@ -1403,7 +1403,7 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
 
     if (cur->type == GGML_TYPE_Q8_16B && ggml_nelements(cur) > 0) {
         const uint8_t * raw = (const uint8_t *)cur->data;
-        LLAMA_LOG_INFO("Q8_16B load '%s': ne=[%lld,%lld,%lld,%lld] nbytes=%zu type_size=%zu blck_size=%zu raw[0..5]=%02x %02x %02x %02x %02x %02x\n",
+        LLAMA_LOG_INFO("Q8_16B load '%s': ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "] nbytes=%zu type_size=%zu blck_size=%zu raw[0..5]=%02x %02x %02x %02x %02x %02x\n",
             ggml_get_name(cur),
             cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3],
             (size_t)ggml_nbytes(cur),
