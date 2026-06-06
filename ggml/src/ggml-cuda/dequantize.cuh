@@ -110,7 +110,16 @@ static __device__ __forceinline__ void dequantize_q8_16(const void * vx, const i
     v.y *= d;
 
     if (ib == 0 && iqs == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
-        printf("Q8_16B dequantize: block[0].d=%f qs[0..3]=%d %d %d %d result=%f %f\n",
-            d, (int)x[0].qs[0], (int)x[0].qs[1], (int)x[0].qs[2], (int)x[0].qs[3], v.x, v.y);
+        // Print raw bytes of d to verify half vs float interpretation
+        uint16_t d_raw = *((uint16_t*)&x[0].d);
+        float d_as_float_raw = *(float*)&x[0].d; // reads 4 bytes as float
+        printf("Q8_16B block[0]: d_raw=0x%04x d_half=%f d_4byte=%f qs=%d %d %d %d block_size=%zu\n",
+            d_raw, __half2float(x[0].d), d_as_float_raw,
+            (int)x[0].qs[0], (int)x[0].qs[1], (int)x[0].qs[2], (int)x[0].qs[3],
+            sizeof(block_q8_16));
+        // Also print a few more blocks to verify stride
+        printf("Q8_16B block[1]: d_raw=0x%04x d_half=%f qs=%d %d %d %d\n",
+            *((uint16_t*)&x[1].d), __half2float(x[1].d),
+            (int)x[1].qs[0], (int)x[1].qs[1], (int)x[1].qs[2], (int)x[1].qs[3]);
     }
 }
