@@ -2645,6 +2645,11 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     } else {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
     }
+    if (src0->type == GGML_TYPE_Q8_16B) {
+        GGML_LOG_INFO("Q8_16B mul_mat path: vec_f=%d f=%d vec_q=%d q=%d cublas=%d\n",
+            use_mul_mat_vec_f, use_mul_mat_f, use_mul_mat_vec_q, use_mul_mat_q,
+            !use_mul_mat_vec_f && !use_mul_mat_f && !use_mul_mat_vec_q && !use_mul_mat_q);
+    }
 }
 
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
