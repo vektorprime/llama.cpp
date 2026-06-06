@@ -108,4 +108,9 @@ static __device__ __forceinline__ void dequantize_q8_16(const void * vx, const i
 
     v.x *= d;
     v.y *= d;
+
+    if (ib == 0 && iqs == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+        printf("Q8_16B dequantize: block[0].d=%f qs[0..3]=%d %d %d %d result=%f %f\n",
+            d, (int)x[0].qs[0], (int)x[0].qs[1], (int)x[0].qs[2], (int)x[0].qs[3], v.x, v.y);
+    }
 }

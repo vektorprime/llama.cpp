@@ -1695,6 +1695,12 @@ static void ggml_cuda_op_mul_mat_cublas(
             GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = row_diff*ne00;
             src0_as_f16.alloc(ne);
+            if (src0->type == GGML_TYPE_Q8_16B) {
+                GGML_LOG_INFO("Q8_16B cublas convert: ne00=%lld row_diff=%lld ne=%zu type_size=%zu blck_size=%zu src0_bytes=%zu\n",
+                    (long long)ne00, (long long)row_diff, ne,
+                    (size_t)ggml_type_size(src0->type), (size_t)ggml_blck_size(src0->type),
+                    (size_t)ggml_nbytes(src0));
+            }
             to_fp16_cuda(src0_dd_i, src0_as_f16.get(), ne, stream);
         }
         const half * src0_ptr = src0->type == GGML_TYPE_F16 ? (const half *) src0_dd_i : src0_as_f16.get();

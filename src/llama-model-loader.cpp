@@ -1401,6 +1401,16 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
         file->read_raw(cur->data, ggml_nbytes(cur));
     }
 
+    if (cur->type == GGML_TYPE_Q8_16B && ggml_nelements(cur) > 0) {
+        const block_q8_16 * b = (const block_q8_16 *)cur->data;
+        LLAMA_LOG_INFO("Q8_16B load '%s': ne=[%lld,%lld,%lld,%lld] nbytes=%zu block[0].d=%f qs[0..3]=%d %d %d %d\n",
+            ggml_get_name(cur),
+            cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3],
+            (size_t)ggml_nbytes(cur),
+            (float)GGML_FP16_TO_FP32(b[0].d),
+            (int)b[0].qs[0], (int)b[0].qs[1], (int)b[0].qs[2], (int)b[0].qs[3]);
+    }
+
     if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, ggml_nbytes(cur))) {
         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
     }
