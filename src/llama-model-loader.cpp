@@ -1402,13 +1402,13 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     }
 
     if (cur->type == GGML_TYPE_Q8_16B && ggml_nelements(cur) > 0) {
-        const block_q8_16 * b = (const block_q8_16 *)cur->data;
-        LLAMA_LOG_INFO("Q8_16B load '%s': ne=[%lld,%lld,%lld,%lld] nbytes=%zu block[0].d=%f qs[0..3]=%d %d %d %d\n",
+        const uint8_t * raw = (const uint8_t *)cur->data;
+        LLAMA_LOG_INFO("Q8_16B load '%s': ne=[%lld,%lld,%lld,%lld] nbytes=%zu type_size=%zu blck_size=%zu raw[0..5]=%02x %02x %02x %02x %02x %02x\n",
             ggml_get_name(cur),
             cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3],
             (size_t)ggml_nbytes(cur),
-            (float)GGML_FP16_TO_FP32(b[0].d),
-            (int)b[0].qs[0], (int)b[0].qs[1], (int)b[0].qs[2], (int)b[0].qs[3]);
+            (size_t)ggml_type_size(cur->type), (size_t)ggml_blck_size(cur->type),
+            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
     }
 
     if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, ggml_nbytes(cur))) {
