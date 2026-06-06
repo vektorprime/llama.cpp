@@ -1718,6 +1718,16 @@ static void ggml_cuda_op_mul_mat_cublas(
         }
         const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddf_i : src1_as_f16.get();
 
+        // Debug: print first few src1 input values for Q8_16B
+        if (src0->type == GGML_TYPE_Q8_16B && row_diff == 2048) {
+            float host_src1[8] = {0};
+            CUDA_CHECK(cudaMemcpy(host_src1, src1_ddf_i, 8*sizeof(float), cudaMemcpyDeviceToHost));
+            GGML_LOG_INFO("Q8_16B IN  src1[0..7]=%f %f %f %f %f %f %f %f ne00=%lld row_diff=%lld\n",
+                host_src1[0], host_src1[1], host_src1[2], host_src1[3],
+                host_src1[4], host_src1[5], host_src1[6], host_src1[7],
+                (long long)ne00, (long long)row_diff);
+        }
+
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
 
         const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
@@ -1754,6 +1764,15 @@ static void ggml_cuda_op_mul_mat_cublas(
 
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_F16);
             to_fp32_cuda(dst_f16.get(), dst_dd_i, row_diff*src1_ncols, stream);
+
+            // Debug: print first few output values for Q8_16B
+            if (src0->type == GGML_TYPE_Q8_16B && row_diff == 2048) {
+                float host_buf[8] = {0};
+                CUDA_CHECK(cudaMemcpy(host_buf, dst_dd_i, 8*sizeof(float), cudaMemcpyDeviceToHost));
+                GGML_LOG_INFO("Q8_16B OUT cublas dst[0..7]=%f %f %f %f %f %f %f %f\n",
+                    host_buf[0], host_buf[1], host_buf[2], host_buf[3],
+                    host_buf[4], host_buf[5], host_buf[6], host_buf[7]);
+            }
         }
     } else {
         ggml_cuda_pool_alloc<float> src0_ddq_as_f32(ctx.pool(id));
