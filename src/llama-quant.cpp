@@ -1071,11 +1071,11 @@ static void q8_outlier_compute_deltas(
         // Original F32 values
         const float * orig = f32_data + row * n_per_row + col;
 
-        // Dequantize Q8 block: layout is ggml_half d (2 bytes) + int8_t qs[32]
+        // Dequantize Q8 block: layout is ggml_fp16_t d (2 bytes) + int8_t qs[32]
         const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
-        const ggml_half * d_ptr = (const ggml_half *) block_ptr;
+        const ggml_fp16_t * d_ptr = (const ggml_fp16_t *) block_ptr;
         float q8_d = ggml_fp16_to_fp32(*d_ptr);
-        const int8_t * q8_data_block = (const int8_t *)(block_ptr + sizeof(ggml_half));
+        const int8_t * q8_data_block = (const int8_t *)(block_ptr + sizeof(ggml_fp16_t));
 
         // Compute delta and store as BF16
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
