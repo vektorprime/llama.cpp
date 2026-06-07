@@ -1005,48 +1005,6 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
     return result;
 }
 
-static void q8_outlier_zero_protected_blocks(
-        void * q8_data,
-        int64_t nrows,
-        int64_t n_per_row,
-        const q8_outlier_tensor_data & outliers) {
-    if (outliers.protected_blocks.empty()) {
-        return;
-    }
-
-    const size_t row_size = ggml_row_size(GGML_TYPE_Q8_0, n_per_row);
-    const size_t block_size = ggml_type_size(GGML_TYPE_Q8_0);
-    uint8_t * data = (uint8_t *) q8_data;
-
-    int64_t n_zeroed = 0;
-
-    for (int64_t row = 0; row < nrows; ++row) {
-        for (int64_t block_col = 0; block_col < outliers.n_blocks_per_row; ++block_col) {
-            const int64_t key = row * outliers.n_blocks_per_row + block_col;
-            if (outliers.protected_blocks.find(key) == outliers.protected_blocks.end()) {
-                continue;
-            }
-
-            std::memset(data + row * row_size + block_col * block_size, 0, block_size);
-            n_zeroed++;
-
-            // DEBUG: verify first few zeroed blocks
-            if (n_zeroed <= 3) {
-                uint8_t * block_ptr = data + row * row_size + block_col * block_size;
-                fprintf(stderr, "[q8_zero] row=%lld block_col=%lld offset=%zu zeroed %zu bytes: %02x %02x %02x %02x...\n",
-                        (long long)row, (long long)block_col,
-                        (size_t)(row * row_size + block_col * block_size),
-                        block_size,
-                        block_ptr[0], block_ptr[1], block_ptr[2], block_ptr[3]);
-                fflush(stderr);
-            }
-        }
-    }
-
-    fprintf(stderr, "[q8_zero] %s: zeroed %lld blocks (row_size=%zu block_size=%zu)\n",
-            outliers.name.c_str(), (long long)n_zeroed, row_size, block_size);
-    fflush(stderr);
-}
 
 // Compute deltas = original_F32 - Q8_dequantized for each outlier block,
 // replacing the stored full BF16 values with BF16 deltas.
