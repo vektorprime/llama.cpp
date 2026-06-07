@@ -1205,6 +1205,373 @@ static void q8_outlier_reconstruct_tensor(
     }
 }
 
+// Q4_0_BF16_OUTLIER functions — mirror q8_outlier_* with Q4-specific dequantization
+
+static bool q4_outlier_name_matches(const char * pattern, const std::string & name) {
+    if (pattern == nullptr || pattern[0] == '\0') {
+        return false;
+    }
+    return std::regex_search(name, std::regex(pattern));
+}
+
+static bool q4_outlier_tensor_enabled(const llama_model_quantize_params * params, const std::string & name) {
+    if (!params->q4_outlier_enable) {
+        return false;
+    }
+    if (params->q4_outlier_include_weights && !q4_outlier_name_matches(params->q4_outlier_include_weights, name)) {
+        return false;
+    }
+    if (params->q4_outlier_exclude_weights && q4_outlier_name_matches(params->q4_outlier_exclude_weights, name)) {
+        return false;
+    }
+    return true;
+}
+
+static bool q4_outlier_block_is_candidate(
+        const float * block,
+        const float * imatrix,
+        float ratio_threshold,
+        float rel_rmse_threshold,
+        float & score) {
+    constexpr float eps = 1.0e-12f;
+
+    int j_max = 0;
+    float max_abs = 0.0f;
+    float second_abs = 0.0f;
+
+    for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+        const float a = std::fabs(block[j]);
+        if (a > max_abs) {
+            second_abs = max_abs;
+            max_abs = a;
+            j_max = j;
+        } else if (a > second_abs) {
+            second_abs = a;
+        }
+    }
+
+    if (max_abs <= eps) {
+        return false;
+    }
+
+    const float ratio = max_abs / std::max(second_abs, eps);
+    if (ratio < ratio_threshold) {
+        return false;
+    }
+
+    // Q4_0: max representable value is 7 (range -8..7)
+    const float d = max_abs / 7.0f;
+    double sqerr = 0.0;
+    double energy = 0.0;
+    double wsum = 0.0;
+
+    for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+        if (j == j_max) {
+            continue;
+        }
+
+        const float qf = std::round(block[j] / d);
+        // Q4_0: clamp to -8..7
+        const float q = std::max(-8.0f, std::min(7.0f, qf));
+        const float x_hat = q * d;
+        const float err = block[j] - x_hat;
+        const float w = imatrix ? std::max(imatrix[j], 0.0f) : 1.0f;
+
+        sqerr += double(w) * double(err) * double(err);
+        energy += double(w) * double(block[j]) * double(block[j]);
+        wsum += double(w);
+    }
+
+    if (wsum <= 0.0) {
+        return false;
+    }
+
+    const float rel_rmse = std::sqrt(float(sqerr / std::max(energy, double(eps))));
+    if (rel_rmse < rel_rmse_threshold) {
+        return false;
+    }
+
+    score = ratio * rel_rmse;
+    return true;
+}
+
+static q8_outlier_tensor_data q4_outlier_analyze_tensor(
+        const std::string & name,
+        const float * f32_data,
+        int64_t nrows,
+        int64_t n_per_row,
+        const float * imatrix,
+        const llama_model_quantize_params * params) {
+    q8_outlier_tensor_data result;
+    result.name = name;
+    result.idx_name = name + ".outlier_idx";
+    result.values_name = name + ".outlier_bf16";
+
+    if (n_per_row % LLAMA_Q8_OUTLIER_BLOCK_SIZE != 0) {
+        LLAMA_LOG_INFO("%s: %s — n_per_row=%lld not divisible by %d, skipping\n",
+                __func__, name.c_str(), (long long)n_per_row, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
+        return result;
+    }
+
+    result.n_blocks_per_row = n_per_row / LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+    result.n_blocks_total = nrows * result.n_blocks_per_row;
+
+    std::vector<q8_outlier_candidate> candidates;
+    candidates.reserve((size_t) std::min<int64_t>(result.n_blocks_total, 1024));
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        const float * row_data = f32_data + row * n_per_row;
+        for (int64_t block_col = 0; block_col < result.n_blocks_per_row; ++block_col) {
+            const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            const float * block = row_data + col;
+            const float * block_imatrix = imatrix ? imatrix + col : nullptr;
+
+            float score = 0.0f;
+            if (q4_outlier_block_is_candidate(
+                    block,
+                    block_imatrix,
+                    params->q4_outlier_ratio,
+                    params->q4_outlier_nonmax_rel_rmse,
+                    score)) {
+                candidates.push_back({ row, block_col, score });
+            }
+        }
+    }
+
+    const int64_t max_blocks = (int64_t) std::floor(double(result.n_blocks_total) * double(params->q4_outlier_max_frac));
+    if ((int64_t) candidates.size() > max_blocks) {
+        if (max_blocks <= 0) {
+            candidates.clear();
+        } else {
+            std::partial_sort(candidates.begin(), candidates.begin() + max_blocks, candidates.end(),
+                    [](const q8_outlier_candidate & a, const q8_outlier_candidate & b) {
+                        return a.score > b.score;
+                    });
+            candidates.resize(max_blocks);
+        }
+    }
+
+    LLAMA_LOG_INFO("%s: %s — total_blocks=%lld candidates=%lld max=%lld protected=%lld (%.3f%%)\n",
+            __func__, name.c_str(),
+            (long long)result.n_blocks_total, (long long)candidates.size(),
+            (long long)max_blocks, (long long)candidates.size(),
+            result.n_blocks_total > 0 ? 100.0 * candidates.size() / result.n_blocks_total : 0.0);
+
+    std::sort(candidates.begin(), candidates.end(),
+            [](const q8_outlier_candidate & a, const q8_outlier_candidate & b) {
+                return a.row != b.row ? a.row < b.row : a.block_col < b.block_col;
+            });
+
+    result.idx.reserve(candidates.size() * 2);
+    result.values.reserve(candidates.size() * LLAMA_Q8_OUTLIER_BLOCK_SIZE);
+    result.protected_blocks.reserve(candidates.size() * 2);
+
+    for (const q8_outlier_candidate & candidate : candidates) {
+        const int64_t key = candidate.row * result.n_blocks_per_row + candidate.block_col;
+        result.protected_blocks.insert(key);
+        result.idx.push_back((int32_t) candidate.row);
+        result.idx.push_back((int32_t) candidate.block_col);
+
+        const float * block = f32_data + candidate.row * n_per_row + candidate.block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            result.values.push_back(ggml_fp32_to_bf16(block[j]));
+        }
+    }
+
+    // Q4_0 base: 4 bits data + 2 bits scale = 4.5 bpw
+    result.estimated_bpw = 4.5f + (result.n_blocks_total > 0 ? float(result.n_blocks()) / float(result.n_blocks_total) * 18.0f : 0.0f);
+    return result;
+}
+
+// Compute deltas = original_F32 - Q4_dequantized for each outlier block
+static void q4_outlier_compute_deltas(
+        const float * f32_data,
+        const void * q4_data,
+        int64_t nrows,
+        int64_t n_per_row,
+        q8_outlier_tensor_data & outliers) {
+
+    const size_t block_size = ggml_type_size(GGML_TYPE_Q4_0);  // 18 bytes
+    const uint8_t * data = (const uint8_t *) q4_data;
+
+    for (size_t k = 0; k < outliers.idx.size() / 2; k++) {
+        const int64_t row = outliers.idx[k * 2];
+        const int64_t block_col = outliers.idx[k * 2 + 1];
+        const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+
+        const float * orig = f32_data + row * n_per_row + col;
+
+        // Q4_0 block: ggml_fp16_t d (2 bytes) + uint8_t qs[16] (16 bytes) = 18 bytes
+        const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
+        const ggml_fp16_t * d_ptr = (const ggml_fp16_t *) block_ptr;
+        float q4_d = ggml_fp16_to_fp32(*d_ptr);
+        const uint8_t * q4_data_block = (const uint8_t *)(block_ptr + sizeof(ggml_fp16_t));
+
+        // Dequantize Q4: each byte holds two 4-bit nibbles, biased by -8
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+            uint8_t byte = q4_data_block[j / 2];
+            int8_t q;
+            if (j % 2 == 0) {
+                q = (int8_t)(byte & 0x0F) - 8;  // lower nibble
+            } else {
+                q = (int8_t)(byte >> 4) - 8;    // upper nibble
+            }
+            float q4_val = q * q4_d;
+            float delta = orig[j] - q4_val;
+            outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(delta);
+        }
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q4_dequant)\n",
+                outliers.name.c_str(), outliers.idx.size() / 2);
+        const size_t n_blocks = outliers.idx.size() / 2;
+        const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
+        for (size_t k = 0; k < log_blocks; k++) {
+            double l2 = 0.0;
+            double mean_abs = 0.0;
+            double max_abs = 0.0;
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+                float d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
+                l2 += (double)d * d;
+                double ad = fabs((double)d);
+                mean_abs += ad;
+                if (ad > max_abs) max_abs = ad;
+            }
+            mean_abs /= LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            fprintf(stderr, "[delta-quant]   block[%zu] row=%d bcol=%d L2=%.6e mean_abs=%.6e max_abs=%.6e\n",
+                    k, (int)outliers.idx[k * 2], (int)outliers.idx[k * 2 + 1],
+                    sqrt(l2), mean_abs, max_abs);
+        }
+        fflush(stderr);
+    }
+}
+
+// reconstruct from vector data (same as q8 version — reconstruction is format-agnostic)
+static void q4_outlier_reconstruct_tensor(
+        const ggml_tensor * tensor,
+        const std::vector<int32_t> & idx,
+        const std::vector<ggml_bf16_t> & values,
+        float * f32_buf,
+        int64_t rows,
+        int64_t cols) {
+    const int64_t n_blocks = (int64_t) idx.size() / 2;
+    for (int64_t k = 0; k < n_blocks; ++k) {
+        const int64_t row = idx[k * 2];
+        const int64_t block_col = idx[k * 2 + 1];
+        const ggml_bf16_t * block_vals = values.data() + k * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            dst[j] += ggml_bf16_to_fp32(block_vals[j]);
+        }
+    }
+}
+
+// reconstruct from pointer tensors (same as q8 version — format-agnostic)
+static void q4_outlier_reconstruct_tensor(
+    const ggml_tensor * base_tensor,
+    const ggml_tensor * idx_tensor,
+    const ggml_tensor * values_tensor,
+    float * f32_buf,
+    int64_t n_rows,
+    int64_t n_cols) {
+    const int32_t * idx = (const int32_t *) idx_tensor->data;
+    const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
+    const int64_t n_blocks = ggml_nelements(idx_tensor) / 2;
+
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        const int64_t row = idx[b * 2];
+        const int64_t block_col = idx[b * 2 + 1];
+        const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            f32_buf[off + j] += ggml_bf16_to_fp32(v[j]);
+        }
+    }
+}
+
+static void q4_outlier_add_tensor_meta(
+        struct gguf_context * ctx,
+        const std::string & name,
+        ggml_type type,
+        int64_t ne0,
+        int64_t ne1) {
+    ggml_tensor tensor;
+    std::memset(&tensor, 0, sizeof(tensor));
+    tensor.type = type;
+    tensor.ne[0] = ne0;
+    tensor.ne[1] = std::max<int64_t>(ne1, 1);
+    tensor.ne[2] = 1;
+    tensor.ne[3] = 1;
+    tensor.nb[0] = ggml_type_size(type);
+    tensor.nb[1] = tensor.nb[0] * (tensor.ne[0] / ggml_blck_size(type));
+    tensor.nb[2] = tensor.nb[1] * tensor.ne[1];
+    tensor.nb[3] = tensor.nb[2] * tensor.ne[2];
+    ggml_set_name(&tensor, name.c_str());
+
+    gguf_add_tensor(ctx, &tensor);
+}
+
+static void q4_outlier_write_metadata(
+        struct gguf_context * ctx,
+        const std::vector<q8_outlier_tensor_data> & tensors) {
+    gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_VERSION_KEY, 1);
+    gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_BLOCK_SIZE_KEY, LLAMA_Q4_OUTLIER_BLOCK_SIZE);
+    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_BASE_TYPE_KEY, "q4_0");
+    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_VALUE_TYPE_KEY, "bf16");
+    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
+    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_STORE_KEY, "delta");
+    gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_TENSOR_COUNT_KEY, (uint32_t) tensors.size());
+
+    for (size_t i = 0; i < tensors.size(); ++i) {
+        const auto & t = tensors[i];
+        const std::string prefix = "llama.q4_outlier.tensor." + std::to_string(i);
+        gguf_set_val_str(ctx, (prefix + ".name").c_str(), t.name.c_str());
+        gguf_set_val_str(ctx, (prefix + ".index").c_str(), t.idx_name.c_str());
+        gguf_set_val_str(ctx, (prefix + ".values").c_str(), t.values_name.c_str());
+        gguf_set_val_u32(ctx, (prefix + ".n_blocks").c_str(), (uint32_t) t.n_blocks());
+    }
+}
+
+static void q4_outlier_write_report(
+        const std::vector<q8_outlier_tensor_data> & tensors,
+        const llama_model_quantize_params * params) {
+    if (params->q4_outlier_report_path == nullptr || params->q4_outlier_report_path[0] == '\0') {
+        return;
+    }
+
+    std::ofstream fout(params->q4_outlier_report_path);
+    fout.exceptions(std::ofstream::failbit | std::ofstream::badbit);
+
+    fout << "{\n";
+    fout << "  \"format\": \"Q4_0_BF16_OUTLIER\",\n";
+    fout << "  \"block_size\": " << LLAMA_Q4_OUTLIER_BLOCK_SIZE << ",\n";
+    fout << "  \"cuda_focused\": true,\n";
+    fout << "  \"tensors\": [\n";
+    for (size_t i = 0; i < tensors.size(); ++i) {
+        const auto & t = tensors[i];
+        const double frac = t.n_blocks_total > 0 ? double(t.n_blocks()) / double(t.n_blocks_total) : 0.0;
+        fout << "    {\n";
+        fout << "      \"name\": \"" << json_escape(t.name) << "\",\n";
+        fout << "      \"blocks_total\": " << t.n_blocks_total << ",\n";
+        fout << "      \"blocks_protected\": " << t.n_blocks() << ",\n";
+        fout << "      \"protected_fraction\": " << std::setprecision(8) << frac << ",\n";
+        fout << "      \"estimated_bpw\": " << std::setprecision(6) << t.estimated_bpw << ",\n";
+        fout << "      \"thresholds\": {\n";
+        fout << "        \"ratio\": " << params->q4_outlier_ratio << ",\n";
+        fout << "        \"nonmax_rel_rmse\": " << params->q4_outlier_nonmax_rel_rmse << ",\n";
+        fout << "        \"max_frac\": " << params->q4_outlier_max_frac << "\n";
+        fout << "      }\n";
+        fout << "    }" << (i + 1 == tensors.size() ? "\n" : ",\n");
+    }
+    fout << "  ]\n";
+    fout << "}\n";
+}
+
+static size_t q4_outlier_sidecar_size(const q8_outlier_tensor_data & t) {
+    return t.idx.size() * sizeof(int32_t) + t.values.size() * sizeof(ggml_bf16_t);
+}
+
 //
 // imatrix requirement check
 //
@@ -1242,6 +1609,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_1: return GGML_TYPE_Q5_1;
         case LLAMA_FTYPE_MOSTLY_Q8_0: return GGML_TYPE_Q8_0;
         case LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER: return GGML_TYPE_Q8_0;
+        case LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER: return GGML_TYPE_Q4_0;
         case LLAMA_FTYPE_MOSTLY_F16:  return GGML_TYPE_F16;
         case LLAMA_FTYPE_MOSTLY_BF16: return GGML_TYPE_BF16;
         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
@@ -1320,6 +1688,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         throw std::runtime_error(format("invalid output file type %d\n", ftype));
     }
     const bool q8_outlier_enabled = params->q8_outlier_enable || ftype == LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER;
+    const bool q4_outlier_enabled = params->q4_outlier_enable || ftype == LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER;
     if (q8_outlier_enabled) {
         if (params->q8_outlier_store != LLAMA_Q8_OUTLIER_STORE_FULL) {
             throw std::runtime_error("Q8_0_BF16_OUTLIER currently supports only full outlier block storage");
@@ -1670,6 +2039,121 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         }
     }
 
+    // Q4_0_BF16_OUTLIER: analyze tensors for outlier blocks
+    std::vector<q8_outlier_tensor_data> q4_outlier_tensors;
+    std::unordered_map<std::string, size_t> q4_outlier_by_name;
+    if (q4_outlier_enabled) {
+        std::vector<no_init<uint8_t>> scan_read_data;
+        std::vector<no_init<float>> scan_f32_conv_buf;
+        std::vector<std::thread> scan_workers;
+        scan_workers.reserve(nthread);
+
+        // Load source outlier sidecar data for reconstruction during re-analysis
+        struct q4_outlier_source_info {
+            std::vector<int32_t> idx;
+            std::vector<ggml_bf16_t> values;
+        };
+        std::unordered_map<std::string, q4_outlier_source_info> source_outlier_info;
+        if (ml.has_q4_outlier_metadata()) {
+            auto src_meta = ml.read_q4_outlier_metadata();
+            for (const auto & meta : src_meta) {
+                auto idx_it = ml.weights_map.find(meta.idx_name);
+                auto vals_it = ml.weights_map.find(meta.values_name);
+                if (idx_it == ml.weights_map.end() || vals_it == ml.weights_map.end()) {
+                    continue;
+                }
+                q4_outlier_source_info info;
+                const ggml_tensor * idx_tensor = idx_it->second.tensor;
+                const ggml_tensor * vals_tensor = vals_it->second.tensor;
+                info.idx.resize(ggml_nelements(idx_tensor));
+                info.values.resize(ggml_nelements(vals_tensor));
+                ml.load_data_for(const_cast<ggml_tensor *>(idx_tensor));
+                ml.load_data_for(const_cast<ggml_tensor *>(vals_tensor));
+                std::memcpy(info.idx.data(), idx_tensor->data, ggml_nbytes(idx_tensor));
+                std::memcpy(info.values.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+                source_outlier_info.emplace(meta.base_name, std::move(info));
+            }
+        }
+
+        for (size_t i = 0; i < tensors.size(); ++i) {
+            const auto & tensor = *tensors[i].tensor;
+            const auto & tm = tensors[i];
+
+            if (!q4_outlier_tensor_enabled(params, tm.name)) {
+                continue;
+            }
+
+            if (tensor.ne[0] == 0 || tensor.ne[1] == 0) {
+                continue;
+            }
+
+            const int64_t nelements = tensor.ne[0] * tensor.ne[1];
+            float * f32_data = nullptr;
+
+            if (tensor.type == GGML_TYPE_F32) {
+                f32_data = (float *) tensor.data;
+            } else {
+                llama_tensor_dequantize_impl(&tensor, scan_f32_conv_buf, scan_workers, nelements, nthread);
+                f32_data = (float *) scan_f32_conv_buf.data();
+            }
+
+            // If source has outlier sidecars, reconstruct full tensor for accurate re-analysis
+            if (tensor.type == GGML_TYPE_Q4_0) {
+                auto src_outlier_it = source_outlier_info.find(tm.name);
+                if (src_outlier_it != source_outlier_info.end()) {
+                    q4_outlier_reconstruct_tensor(
+                            &tensor,
+                            src_outlier_it->second.idx,
+                            src_outlier_it->second.values,
+                            f32_data,
+                            tensor.ne[1],
+                            tensor.ne[0]);
+                }
+            }
+
+            const float * imatrix = nullptr;
+            if (imatrix_data) {
+                auto it_imatrix = imatrix_data->find(tm.remapped_imatrix_name);
+                if (it_imatrix != imatrix_data->end()) {
+                    if (it_imatrix->second.size() == (size_t) tensor.ne[0]) {
+                        imatrix = it_imatrix->second.data();
+                    } else if (!tensor_name_match_token_embd(tensor.name)) {
+                        throw std::runtime_error(format("imatrix size %d is different from tensor row size %d for %s",
+                                int(it_imatrix->second.size()), int(tensor.ne[0]), tensor.name));
+                    }
+                }
+            }
+
+            q8_outlier_tensor_data outliers = q4_outlier_analyze_tensor(
+                    tm.name,
+                    f32_data,
+                    tensor.ne[1],
+                    tensor.ne[0],
+                    imatrix,
+                    params);
+
+            if (outliers.n_blocks() == 0) {
+                continue;
+            }
+
+            const double frac = double(outliers.n_blocks()) / double(outliers.n_blocks_total);
+            LLAMA_LOG_INFO("%s: %-36s - q4 outlier blocks = %" PRId64 "/%" PRId64 " (%.3f%%), est %.3f bpw\n",
+                    __func__, tm.name.c_str(), outliers.n_blocks(), outliers.n_blocks_total, 100.0 * frac, outliers.estimated_bpw);
+
+            q4_outlier_by_name.emplace(outliers.name, q4_outlier_tensors.size());
+            q4_outlier_tensors.push_back(std::move(outliers));
+        }
+
+        for (const q8_outlier_tensor_data & outliers : q4_outlier_tensors) {
+            q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.idx_name, GGML_TYPE_I32, 2, outliers.n_blocks());
+            q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, GGML_TYPE_BF16, LLAMA_Q4_OUTLIER_BLOCK_SIZE, outliers.n_blocks());
+        }
+        if (!params->only_copy) {
+            q4_outlier_write_metadata(ctx_outs[0].get(), q4_outlier_tensors);
+            q4_outlier_write_report(q4_outlier_tensors, params);
+        }
+    }
+
     // Set split info if needed
     if (n_split > 1) {
         for (size_t i = 0; i < ctx_outs.size(); ++i) {
@@ -1922,6 +2406,12 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                         q8_outlier_compute_deltas(f32_data, new_data, nrows, n_per_row, q8_outlier_tensors[it->second]);
                     }
                 }
+                if (q4_outlier_enabled && new_type == GGML_TYPE_Q4_0) {
+                    auto it = q4_outlier_by_name.find(tm.name);
+                    if (it != q4_outlier_by_name.end()) {
+                        q4_outlier_compute_deltas(f32_data, new_data, nrows, n_per_row, q4_outlier_tensors[it->second]);
+                    }
+                }
 
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
             }
@@ -1950,6 +2440,24 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 zeros(fout, GGML_PAD(idx_size, align) - idx_size);
             }
             // Write outlier_bf16 tensor data
+            {
+                const size_t values_size = outliers.values.size() * sizeof(ggml_bf16_t);
+                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values.data());
+                fout.write((const char *) outliers.values.data(), values_size);
+                zeros(fout, GGML_PAD(values_size, align) - values_size);
+            }
+        }
+    }
+
+    // Write Q4_0_BF16_OUTLIER sidecar tensor data
+    if (q4_outlier_enabled && !params->dry_run) {
+        for (const q8_outlier_tensor_data & outliers : q4_outlier_tensors) {
+            {
+                const size_t idx_size = outliers.idx.size() * sizeof(int32_t);
+                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.idx_name.c_str(), outliers.idx.data());
+                fout.write((const char *) outliers.idx.data(), idx_size);
+                zeros(fout, GGML_PAD(idx_size, align) - idx_size);
+            }
             {
                 const size_t values_size = outliers.values.size() * sizeof(ggml_bf16_t);
                 gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values.data());

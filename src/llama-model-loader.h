@@ -216,4 +216,15 @@ struct llama_model_loader {
     };
 
     std::vector<llama_q8_outlier_tensor_meta> read_q8_outlier_metadata();
+
+    bool has_q4_outlier_metadata() const;
+
+    struct llama_q4_outlier_tensor_meta {
+        std::string base_name;
+        std::string idx_name;
+        std::string values_name;
+        uint32_t n_blocks = 0;
+    };
+
+    std::vector<llama_q4_outlier_tensor_meta> read_q4_outlier_metadata();
 };

@@ -156,6 +156,7 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER = 41, // except 1d tensors, plus sparse BF16 outlier sidecars
+        LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER = 42, // except 1d tensors, plus sparse BF16 outlier sidecars
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -431,6 +432,13 @@ extern "C" {
         const char * q8_outlier_report_path;                        // optional JSON report path
         const char * q8_outlier_include_weights;                    // optional regex of tensors to include
         const char * q8_outlier_exclude_weights;                    // optional regex of tensors to exclude
+        bool q4_outlier_enable;                                     // enable Q4_0 + sparse BF16 outlier sidecars
+        float q4_outlier_ratio;                                     // max/second-max dominance threshold
+        float q4_outlier_nonmax_rel_rmse;                           // non-outlier relative RMSE threshold
+        float q4_outlier_max_frac;                                  // maximum protected block fraction per tensor
+        const char * q4_outlier_report_path;                        // optional JSON report path
+        const char * q4_outlier_include_weights;                    // optional regex of tensors to include
+        const char * q4_outlier_exclude_weights;                    // optional regex of tensors to exclude
     } llama_model_quantize_params;
 
     typedef struct llama_logit_bias {

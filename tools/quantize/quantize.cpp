@@ -183,6 +183,8 @@ static void usage(const char * executable) {
     printf("                                      write a JSON report with protected block counts and estimated bpw\n");
     printf("  --outlier-store full\n");
     printf("                                      store full BF16 protected blocks and zero the Q8_0 base block (default)\n");
+    printf("  --outlier-base q4_0\n");
+    printf("                                      use Q4_0 as base type instead of Q8_0 for outlier protection\n");
     printf("  --custom-logs\n");
     printf("                                      enable custom debug logging ([delta-*], [q8_verify], etc.)\n\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
@@ -529,6 +531,9 @@ int llama_quantize(int argc, char ** argv) {
     std::string q8_outlier_include_weights;
     std::string q8_outlier_exclude_weights;
     std::string q8_outlier_report_path;
+    std::string q4_outlier_include_weights;
+    std::string q4_outlier_exclude_weights;
+    std::string q4_outlier_report_path;
 
     for (; arg_idx < argc && strncmp(argv[arg_idx], "--", 2) == 0; arg_idx++) {
         if (strcmp(argv[arg_idx], "--leave-output-tensor") == 0) {
@@ -603,7 +608,9 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--outlier-ratio") == 0) {
             if (arg_idx < argc-1) {
-                params.q8_outlier_ratio = std::stof(argv[++arg_idx]);
+                float ratio_val = std::stof(argv[++arg_idx]);
+                params.q8_outlier_ratio = ratio_val;
+                params.q4_outlier_ratio = ratio_val;
                 if (params.q8_outlier_ratio <= 1.0f) {
                     fprintf(stderr, "error: --outlier-ratio must be > 1\n");
                     usage(argv[0]);
@@ -613,7 +620,9 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--outlier-nonmax-rel-rmse") == 0) {
             if (arg_idx < argc-1) {
-                params.q8_outlier_nonmax_rel_rmse = std::stof(argv[++arg_idx]);
+                float rmse_val = std::stof(argv[++arg_idx]);
+                params.q8_outlier_nonmax_rel_rmse = rmse_val;
+                params.q4_outlier_nonmax_rel_rmse = rmse_val;
                 if (params.q8_outlier_nonmax_rel_rmse < 0.0f) {
                     fprintf(stderr, "error: --outlier-nonmax-rel-rmse must be >= 0\n");
                     usage(argv[0]);
@@ -623,7 +632,9 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--outlier-max-frac") == 0) {
             if (arg_idx < argc-1) {
-                params.q8_outlier_max_frac = std::stof(argv[++arg_idx]);
+                float frac_val = std::stof(argv[++arg_idx]);
+                params.q8_outlier_max_frac = frac_val;
+                params.q4_outlier_max_frac = frac_val;
                 if (params.q8_outlier_max_frac < 0.0f || params.q8_outlier_max_frac > 1.0f) {
                     fprintf(stderr, "error: --outlier-max-frac must be in [0, 1]\n");
                     usage(argv[0]);
@@ -634,18 +645,21 @@ int llama_quantize(int argc, char ** argv) {
         } else if (strcmp(argv[arg_idx], "--outlier-include-weights") == 0) {
             if (arg_idx < argc-1) {
                 q8_outlier_include_weights = argv[++arg_idx];
+                q4_outlier_include_weights = q8_outlier_include_weights;
             } else {
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-exclude-weights") == 0) {
             if (arg_idx < argc-1) {
                 q8_outlier_exclude_weights = argv[++arg_idx];
+                q4_outlier_exclude_weights = q8_outlier_exclude_weights;
             } else {
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-report") == 0) {
             if (arg_idx < argc-1) {
                 q8_outlier_report_path = argv[++arg_idx];
+                q4_outlier_report_path = q8_outlier_report_path;
             } else {
                 usage(argv[0]);
             }
@@ -655,6 +669,18 @@ int llama_quantize(int argc, char ** argv) {
                 params.q8_outlier_store = LLAMA_Q8_OUTLIER_STORE_FULL;
             } else {
                 fprintf(stderr, "%s: --outlier-store currently supports only 'full'\n", __func__);
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-base") == 0) {
+            if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "q4_0")) {
+                ++arg_idx;
+                params.q4_outlier_enable = true;
+                params.q4_outlier_ratio = 16.0f;
+                params.q4_outlier_nonmax_rel_rmse = 0.01f;
+                params.q4_outlier_max_frac = 0.02f;
+                params.ftype = LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER;
+            } else {
+                fprintf(stderr, "%s: --outlier-base currently supports only 'q4_0'\n", __func__);
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--custom-logs") == 0) {
@@ -679,6 +705,9 @@ int llama_quantize(int argc, char ** argv) {
     params.q8_outlier_include_weights = q8_outlier_include_weights.empty() ? nullptr : q8_outlier_include_weights.c_str();
     params.q8_outlier_exclude_weights = q8_outlier_exclude_weights.empty() ? nullptr : q8_outlier_exclude_weights.c_str();
     params.q8_outlier_report_path     = q8_outlier_report_path.empty()     ? nullptr : q8_outlier_report_path.c_str();
+    params.q4_outlier_include_weights = q4_outlier_include_weights.empty() ? nullptr : q4_outlier_include_weights.c_str();
+    params.q4_outlier_exclude_weights = q4_outlier_exclude_weights.empty() ? nullptr : q4_outlier_exclude_weights.c_str();
+    params.q4_outlier_report_path     = q4_outlier_report_path.empty()     ? nullptr : q4_outlier_report_path.c_str();
 
     std::vector<std::string> imatrix_datasets;
     std::unordered_map<std::string, std::vector<float>> imatrix_data;
