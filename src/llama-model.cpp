@@ -1134,6 +1134,46 @@ void llama_model::build_outlier_info() {
             fflush(stderr);
         }
 
+        // [delta-load] logging: read BF16 delta values and compute L2 norms
+        {
+            std::vector<ggml_bf16_t> values_buf;
+            const ggml_bf16_t * values_ptr = nullptr;
+
+            if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer)) {
+                values_ptr = (const ggml_bf16_t *) values_tensor->data;
+            } else if (values_tensor->buffer) {
+                values_buf.resize(n_blocks * 32);
+                ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, n_blocks * 32 * sizeof(ggml_bf16_t));
+                values_ptr = values_buf.data();
+            } else if (values_tensor->data) {
+                values_ptr = (const ggml_bf16_t *) values_tensor->data;
+            }
+
+            if (values_ptr) {
+                fprintf(stderr, "[delta-load] %s: n_blocks=%lld\n",
+                        name.c_str(), (long long)n_blocks);
+
+                // First 3 blocks: L2 norm per block
+                int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                double total_l2 = 0.0;
+                for (int64_t i = 0; i < n_blocks; i++) {
+                    double block_l2 = 0.0;
+                    for (int j = 0; j < 32; j++) {
+                        float d = ggml_bf16_to_fp32(values_ptr[i * 32 + j]);
+                        block_l2 += (double)d * d;
+                    }
+                    total_l2 += block_l2;
+                    if (i < sample) {
+                        fprintf(stderr, "[delta-load]   block[%lld] L2=%.6e\n",
+                                (long long)i, sqrt(block_l2));
+                    }
+                }
+                fprintf(stderr, "[delta-load]   total_delta_L2=%.6e (sqrt of sum of all deltas squared)\n",
+                        sqrt(total_l2));
+            }
+            fflush(stderr);
+        }
+
         fprintf(stderr, "[build_outlier_info] %s: n_blocks=%lld n_rows_out=%lld n_cols=%lld tensor_ne0=%lld tensor_ne1=%lld\n",
                 name.c_str(), (long long) n_blocks,
                 (long long) info.n_rows_out, (long long) info.n_cols,

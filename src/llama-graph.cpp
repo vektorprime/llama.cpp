@@ -1073,7 +1073,14 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
                     ctx0, ob->idx, ob->values, cur,
                     ob->n_rows_out, ob->n_cols);
+            fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
+                    w->name,
+                    (long long)res->ne[0], (long long)res->ne[1],
+                    (long long)corr->ne[0], (long long)corr->ne[1],
+                    (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
             res = ggml_add(ctx0, res, corr);
+            fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
+                    w->name, (long long)res->ne[0], (long long)res->ne[1]);
             // One-time debug: report which weights use correction
             static std::set<const ggml_tensor *> _printed_outlier;
             if (_printed_outlier.insert(w).second) {
@@ -1082,7 +1089,16 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                     (ob->n_rows_out * ob->n_cols / 32) > 0 ? 100.0 * ob->n_blocks / (ob->n_rows_out * ob->n_cols / 32) : 0.0,
                     (long long)(ob->n_rows_out * ob->n_cols / 32));
             }
+        } else {
+            const char * reason = "no outlier info";
+            if (!ob) reason = "get_outlier_info returned nullptr";
+            else if (ob->n_blocks == 0) reason = "n_blocks == 0";
+            else if (!ob->idx) reason = "idx tensor is null";
+            else if (!ob->values) reason = "values tensor is null";
+            fprintf(stderr, "[delta-graph] %s: SKIPPED correction — %s\n", w->name, reason);
         }
+    } else if (w && !model.has_outlier_blocks(w)) {
+        // Not an outlier tensor, no logging needed
     }
 
     for (const auto & lora : *loras) {

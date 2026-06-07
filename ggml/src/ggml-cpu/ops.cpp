@@ -4483,6 +4483,13 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int64_t ith = params->ith;
     const int64_t nth = params->nth;
 
+    // [delta-cpu] log at top of function (thread 0 only)
+    if (ith == 0) {
+        fprintf(stderr, "[delta-cpu] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols=%lld\n",
+                (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens, (long long)n_cols);
+        fflush(stderr);
+    }
+
     float * dst_data = (float *) dst->data;
 
     if (n_blocks == 0 || n_tokens == 0) {
@@ -4535,6 +4542,25 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
 
     // Synchronize all threads before debug output
     ggml_barrier(params->threadpool);
+
+    // [delta-cpu] count non-zero output rows (thread 0 only)
+    if (ith == 0) {
+        int64_t nz_rows = 0;
+        for (int64_t row = 0; row < n_rows_out; row++) {
+            double row_l2 = 0.0;
+            for (int64_t t = 0; t < n_tokens; t++) {
+                double v = (double)dst_data[row + t * n_rows_out];
+                row_l2 += v * v;
+            }
+            if (row_l2 > 1e-20) {
+                nz_rows++;
+            }
+        }
+        fprintf(stderr, "[delta-cpu] after compute: non-zero rows=%lld / %lld (%.1f%%)\n",
+                (long long)nz_rows, (long long)n_rows_out,
+                n_rows_out > 0 ? 100.0 * nz_rows / n_rows_out : 0.0);
+        fflush(stderr);
+    }
 
     // One-time debug: print correction magnitude for this tensor (thread 0 only)
     if (ith == 0 && n_tokens > 0) {

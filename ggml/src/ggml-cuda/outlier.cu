@@ -116,6 +116,11 @@ static void outlier_blocks_cuda(
     dim3 block_dim(OUTLIER_BLOCK_SIZE, 1, 1);
     dim3 grid_dim((uint32_t) n_blocks, (uint32_t) n_tokens, 1);
 
+    fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u)\n",
+            (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
+            (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z);
+    fflush(stderr);
+
     outlier_blocks_kernel<<<grid_dim, block_dim, 0, stream>>>(
             idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
@@ -160,6 +165,11 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(idx->ne[0]  == 2);
     GGML_ASSERT(values->ne[0] == 32);
 
+    fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld\n",
+            (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens,
+            (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset);
+    fflush(stderr);
+
     const int32_t *     idx_d    = (const int32_t *)     idx->data;
     const nv_bfloat16 * values_d = (const nv_bfloat16 *) values->data;
     const float *       x_d      = (const float *)       x->data;
@@ -193,4 +203,19 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
 
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+
+    // [delta-cuda] copy-back first 8 output elements to verify non-zero
+    {
+        int64_t copy_n = n_rows_out * n_tokens < 8 ? n_rows_out * n_tokens : 8;
+        if (copy_n > 0) {
+            float sample[8] = {0};
+            CUDA_CHECK(cudaMemcpy(sample, dst_d, copy_n * sizeof(float), cudaMemcpyDeviceToHost));
+            fprintf(stderr, "[delta-cuda] output sample (first %lld elems):", (long long)copy_n);
+            for (int64_t i = 0; i < copy_n; i++) {
+                fprintf(stderr, " %.6e", sample[i]);
+            }
+            fprintf(stderr, "\n");
+            fflush(stderr);
+        }
+    }
 }
