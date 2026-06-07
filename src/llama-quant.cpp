@@ -1196,7 +1196,7 @@ static void q8_outlier_reconstruct_tensor(
 
     for (int64_t b = 0; b < n_blocks; ++b) {
         const int64_t row = idx[b * 2];
-        const int64_t block_col = idx[b * 1 + 1];
+        const int64_t block_col = idx[b * 2 + 1];
         const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
