@@ -1111,6 +1111,23 @@ void llama_model::build_outlier_info() {
                 fprintf(stderr, "[build_outlier_info] %s: values[0] raw=0x%04x\n",
                         name.c_str(), raw_val);
             }
+            // Verify Q8 blocks are actually zeroed at the outlier positions
+            {
+                const size_t q8_row_size = ggml_row_size(GGML_TYPE_Q8_0, info.n_cols);
+                const size_t q8_block_size = ggml_type_size(GGML_TYPE_Q8_0);
+                bool weight_accessible = tensor->data && (!tensor->buffer || ggml_backend_buffer_is_host(tensor->buffer));
+                if (weight_accessible && n_blocks > 0 && idx_data) {
+                    int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                    for (int64_t i = 0; i < sample; i++) {
+                        int32_t r = idx_data[i * 2];
+                        int32_t bc = idx_data[i * 2 + 1];
+                        const uint8_t * bp = (const uint8_t *)tensor->data + r * q8_row_size + bc * q8_block_size;
+                        const struct block_q8_0 * bq = (const struct block_q8_0 *)bp;
+                        fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.d=%f Q8.data[0]=%d (expect d=0,data=0)\n",
+                                name.c_str(), (long long)i, r, bc, bq->d, bq->data[0]);
+                    }
+                }
+            }
             fflush(stderr);
         }
 
