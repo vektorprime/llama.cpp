@@ -1586,7 +1586,6 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // This ensures they're on the same GPU backend as the weight, loaded directly
     // from GGUF without any CPU→GPU copies.
     {
-        int n_sidecar_extra = 0; // extra copies beyond the first (for tensor split)
         for (auto & [buft, ctx_ptr] : ml.ctx_map) {
             ggml_context * ctx = ctx_ptr.get();
             // Skip CPU context — sidecars only needed on GPU
@@ -1625,26 +1624,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 ggml_tensor * t = ggml_new_tensor_2d(ctx, type, meta->ne[0], meta->ne[1]);
                 if (!t) continue;
                 ggml_set_name(t, name.c_str());
-                ml.n_created++;
-                if (!is_cpu) n_sidecar_extra++; // count GPU copies
             }
-        }
-        // Account for duplicates: each sidecar tensor exists once per GPU context.
-        // n_tensors counts each once. Subtract the first-GPU copies (already counted)
-        // and add back the total GPU copies.
-        // Actually, n_tensors already includes the sidecar count from weights_map.
-        // The first GPU context's copies are the "originals". Extra GPU contexts
-        // create duplicates. We need n_tensors >= n_created.
-        // n_created = n_arch_tensors + n_sidecar_unique * n_gpu_contexts
-        // n_tensors  = n_arch_tensors + n_sidecar_unique
-        // We need to add n_sidecar_unique * (n_gpu_contexts - 1) to n_tensors.
-        // n_sidecar_extra = n_sidecar_unique * n_gpu_contexts (all GPU copies)
-        // n_gpu_contexts = ml.ctx_map.size() - 1 (excluding CPU)
-        // n_sidecar_unique = n_sidecar_extra / n_gpu_contexts
-        int n_gpu_ctx = (int)ml.ctx_map.size() - 1;
-        if (n_gpu_ctx > 1 && n_sidecar_extra > 0) {
-            int n_sidecar_unique = n_sidecar_extra / n_gpu_ctx;
-            ml.n_tensors += n_sidecar_unique * (n_gpu_ctx - 1);
         }
     }
 

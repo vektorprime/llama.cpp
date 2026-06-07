@@ -587,6 +587,7 @@ llama_model_loader::llama_model_loader(
                 n_sidecar++;
             }
         }
+        n_sidecar_tensors = n_sidecar;
         fprintf(stderr, "[loader] GGUF has %d tensors total, %d sidecar tensors\n",
                 (int)weights_map.size(), n_sidecar);
         fflush(stderr);
@@ -748,6 +749,10 @@ llama_model_loader::llama_model_loader(
 
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
+    // Sidecar tensors (.outlier_idx, .outlier_bf16) are created manually in
+    // load_tensors via ggml_new_tensor_2d and do not go through the normal
+    // create_tensor/get_weight pipeline, so exclude them from n_tensors.
+    n_tensors -= n_sidecar_tensors;
 
     fver = (enum llama_fver) gguf_get_version(metadata);
 
