@@ -1122,9 +1122,11 @@ void llama_model::build_outlier_info() {
                         int32_t r = idx_data[i * 2];
                         int32_t bc = idx_data[i * 2 + 1];
                         const uint8_t * bp = (const uint8_t *)tensor->data + r * q8_row_size + bc * q8_block_size;
-                        const struct block_q8_0 * bq = (const struct block_q8_0 *)bp;
-                        fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.d=%f Q8.data[0]=%d (expect d=0,data=0)\n",
-                                name.c_str(), (long long)i, r, bc, bq->d, bq->data[0]);
+                        // block_q8_0: 32 int8 data bytes, then 4-byte float scale d at offset 32
+                        int8_t d0 = (int8_t)bp[0];
+                        float d_scale = 0; memcpy(&d_scale, bp + 32, 4);
+                        fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.data[0]=%d Q8.d=%f (expect 0,0)\n",
+                                name.c_str(), (long long)i, r, bc, d0, d_scale);
                     }
                 }
             }
