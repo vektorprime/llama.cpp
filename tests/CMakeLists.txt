@@ -265,6 +265,20 @@ if (NOT GGML_BACKEND_DL)
     llama_build_and_test(test-quantize-fns.cpp)
     llama_build_and_test(test-quantize-perf.cpp)
     llama_build_and_test(test-rope.cpp)
+
+    # Q8_0_BF16_OUTLIER: CPU runtime tests
+    llama_build(test-q8-outlier-runtime.cpp)
+    llama_test(test-q8-outlier-runtime LABEL "main")
+    target_include_directories(test-q8-outlier-runtime PRIVATE ${PROJECT_SOURCE_DIR})
+
+    # Q8_0_BF16_OUTLIER: offload safety tests (CPU + CUDA if available)
+    llama_build_and_test(test-q8-outlier-offload.cpp)
+endif()
+
+if (GGML_USE_CUDA AND NOT GGML_BACKEND_DL)
+    # Q8_0_BF16_OUTLIER: compare CUDA outlier correction kernel against CPU reference
+    llama_build(test-q8-outlier-cuda.cpp)
+    llama_test(test-q8-outlier-cuda LABEL "cuda")
 endif()
 
 # libmtmd

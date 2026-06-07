@@ -367,6 +367,15 @@ class Keys:
         BETA                = "xielu.beta"
         EPS                 = "xielu.eps"
 
+    class Q8Outlier:
+        VERSION             = "llama.q8_outlier.version"
+        BLOCK_SIZE          = "llama.q8_outlier.block_size"
+        BASE_TYPE           = "llama.q8_outlier.base_type"
+        VALUE_TYPE          = "llama.q8_outlier.value_type"
+        INDEX_ENCODING      = "llama.q8_outlier.index_encoding"
+        STORE               = "llama.q8_outlier.store"
+        TENSOR_COUNT        = "llama.q8_outlier.tensor_count"
+
 
 #
 # recommended mapping of model tensor names for storage in gguf
@@ -4272,6 +4281,7 @@ class LlamaFileType(IntEnum):
     MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
     MOSTLY_NVFP4         = 39  # except 1d tensors
     MOSTLY_Q1_0          = 40  # except 1d tensors
+    MOSTLY_Q8_0_BF16_OUTLIER = 41  # except 1d tensors, plus sparse BF16 outlier sidecars
 
     GUESSED              = 1024  # not specified in the model file
 

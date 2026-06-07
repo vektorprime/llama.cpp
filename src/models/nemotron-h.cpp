@@ -211,7 +211,7 @@ ggml_tensor * llama_model_nemotron_h::graph::build_ffn_layer(ggml_tensor * cur, 
         ggml_tensor * inp_latent = cur;
 
         if (model.layers[il].ffn_latent_down) {
-            inp_latent = ggml_mul_mat(ctx0, model.layers[il].ffn_latent_down, cur);
+            inp_latent = build_lora_mm(model.layers[il].ffn_latent_down, cur, nullptr);
         }
 
         ggml_tensor * router_logits = build_lora_mm(model.layers[il].ffn_gate_inp, cur);
@@ -236,7 +236,7 @@ ggml_tensor * llama_model_nemotron_h::graph::build_ffn_layer(ggml_tensor * cur, 
         cb(moe_out, "ffn_moe_out", il);
 
         if (model.layers[il].ffn_latent_up) {
-            moe_out = ggml_mul_mat(ctx0, model.layers[il].ffn_latent_up, moe_out);
+            moe_out = build_lora_mm(model.layers[il].ffn_latent_up, moe_out, nullptr);
         }
 
         ggml_tensor * ffn_shexp = build_ffn(inp_emb,

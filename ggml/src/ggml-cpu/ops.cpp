@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <vector>
 
 // ggml_compute_forward_dup
 
@@ -4520,13 +4521,21 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
         fflush(stderr);
     }
 
-    if (params->ith > 0) {
+    const int64_t ith = params->ith;
+    const int64_t nth = params->nth;
+
+    int64_t i0 = (int64_t) n_blocks * ith    / nth;
+    int64_t i1 = (int64_t) n_blocks * (ith + 1) / nth;
+
+    if (i0 >= i1) {
         return;
     }
 
-    // Zero the output
+    // Zero the output on thread 0
     float * dst_data = (float *) dst->data;
-    memset(dst_data, 0, n_rows_out * n_tokens * sizeof(float));
+    if (ith == 0) {
+        memset(dst_data, 0, n_rows_out * n_tokens * sizeof(float));
+    }
 
     if (n_blocks == 0 || n_tokens == 0) {
         return;
@@ -4536,19 +4545,25 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const ggml_bf16_t * values_data = (const ggml_bf16_t *) values->data;
     const float * x_data        = (const float *) x->data;
 
-    // DEBUG: Log first block's first few weights
-    fprintf(stderr, "[CPU]   first block (ib=0) weight sample: ");
-    for (int j = 0; j < 4 && j < 32; j++) {
-        fprintf(stderr, "w[%d]=%f ", j, GGML_BF16_TO_FP32(values_data[j]));
+    // DEBUG: Log first block's first few weights (thread 0 only)
+    if (ith == 0) {
+        fprintf(stderr, "[CPU]   first block (ib=0) weight sample: ");
+        for (int j = 0; j < 4 && j < 32; j++) {
+            fprintf(stderr, "w[%d]=%f ", j, GGML_BF16_TO_FP32(values_data[j]));
+        }
+        fprintf(stderr, "\n");
+        // DEBUG: Log first token's first few activation values
+        fprintf(stderr, "[CPU]   first token activation sample: x[0]=%f x[n_cols]=%f\n",
+                x_data[0], x_data[n_cols]);
+        fflush(stderr);
     }
-    fprintf(stderr, "\n");
-    // DEBUG: Log first token's first few activation values
-    fprintf(stderr, "[CPU]   first token activation sample: x[0]=%f x[n_cols]=%f\n",
-            x_data[0], x_data[n_cols]);
-    fflush(stderr);
 
-    // For each outlier block, compute dot product of 32 BF16 weights × 32 F32 activations
-    for (int64_t ib = 0; ib < n_blocks; ib++) {
+    // Per-thread temporary accumulator to avoid race conditions when multiple threads
+    // write to the same output row from different blocks
+    std::vector<float> tmp((size_t)n_rows_out * n_tokens, 0.0f);
+
+    // For each outlier block assigned to this thread, compute dot product of 32 BF16 weights × 32 F32 activations
+    for (int64_t ib = i0; ib < i1; ib++) {
         const int32_t row       = idx_data[ib * 2];
         const int32_t block_col = idx_data[ib * 2 + 1];
         const int64_t col0      = (int64_t) block_col * 32;
@@ -4564,8 +4579,13 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
                 const float a = x_data[(col0 + j) + it * n_cols];
                 sum += w * a;
             }
-            dst_data[row + it * n_rows_out] += sum;
+            tmp[row + it * n_rows_out] += sum;
         }
+    }
+
+    // Merge per-thread accumulator into the shared output
+    for (int64_t i = 0; i < n_rows_out * n_tokens; i++) {
+        dst_data[i] += tmp[i];
     }
 
     // DEBUG: Log first few output values

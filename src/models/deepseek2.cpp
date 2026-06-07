@@ -209,9 +209,9 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
             ggml_tensor * Kcur = NULL;
             ggml_tensor * Vcur = NULL;
 
-            Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
-            Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
-            Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
+            Qcur = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s);
+            Kcur = build_lora_mm(model.layers[il].wk, cur, model.layers[il].wk_s);
+            Vcur = build_lora_mm(model.layers[il].wv, cur, model.layers[il].wv_s);
             cb(Qcur, "q", il);
             cb(Kcur, "k", il);
             cb(Vcur, "v", il);
@@ -237,16 +237,16 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
             const bool is_lite = model.layers[il].wq;
 
             if (!is_lite) {
-                q = ggml_mul_mat(ctx0, model.layers[il].wq_a, cur);
+                q = build_lora_mm(model.layers[il].wq_a, cur, nullptr);
                 cb(q, "q", il);
 
                 q = build_norm(q, model.layers[il].attn_q_a_norm, nullptr, LLM_NORM_RMS, il);
                 cb(q, "q", il);
 
-                q = ggml_mul_mat(ctx0, model.layers[il].wq_b, q);
+                q = build_lora_mm(model.layers[il].wq_b, q, nullptr);
                 cb(q, "q", il);
             } else {
-                q = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
+                q = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s);
                 cb(q, "q", il);
             }
             // split into {n_embd_head_qk_nope, n_head, n_tokens}
@@ -261,7 +261,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                 ggml_row_size(q->type, n_embd_head_k) * n_head, ggml_row_size(q->type, n_embd_head_qk_nope));
             cb(q_pe, "q_pe", il);
 
-            ggml_tensor * kv_cmpr_pe = ggml_mul_mat(ctx0, model.layers[il].wkv_a_mqa, cur);
+            ggml_tensor * kv_cmpr_pe = build_lora_mm(model.layers[il].wkv_a_mqa, cur, nullptr);
             cb(kv_cmpr_pe, "kv_cmpr_pe", il);
 
             // split into {kv_lora_rank, n_tokens}
@@ -294,7 +294,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                 cb(q_nope, "q_nope_perm", il);
 
                 // {n_embd_head_qk_nope, kv_lora_rank, n_head} x {n_embd_head_qk_nope, n_tokens, n_head}
-                ggml_tensor * q_nope_absorbed = ggml_mul_mat(ctx0, model.layers[il].wk_b, q_nope);
+                ggml_tensor * q_nope_absorbed = build_lora_mm(model.layers[il].wk_b, q_nope, nullptr);
                 cb(q_nope_absorbed, "q_nope_absorbed", il);
 
                 // {kv_lora_rank, n_head, n_tokens}
@@ -328,7 +328,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                         model.layers[il].wo, NULL, model.layers[il].wo_s,
                         Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
             } else {
-                ggml_tensor * kv = ggml_mul_mat(ctx0, model.layers[il].wkv_b, kv_cmpr);
+                ggml_tensor * kv = build_lora_mm(model.layers[il].wkv_b, kv_cmpr, nullptr);
                 cb(kv, "kv", il);
 
                 // split into {n_embd_head_qk_nope, n_head, n_tokens}
@@ -430,7 +430,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
     res->t_embd = cur;
 
     // lm_head
-    cur = ggml_mul_mat(ctx0, model.output, cur);
+    cur = build_lora_mm(model.output, cur, model.output_s);
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;

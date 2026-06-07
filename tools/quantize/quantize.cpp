@@ -602,18 +602,30 @@ int llama_quantize(int argc, char ** argv) {
         } else if (strcmp(argv[arg_idx], "--outlier-ratio") == 0) {
             if (arg_idx < argc-1) {
                 params.q8_outlier_ratio = std::stof(argv[++arg_idx]);
+                if (params.q8_outlier_ratio <= 1.0f) {
+                    fprintf(stderr, "error: --outlier-ratio must be > 1\n");
+                    usage(argv[0]);
+                }
             } else {
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-nonmax-rel-rmse") == 0) {
             if (arg_idx < argc-1) {
                 params.q8_outlier_nonmax_rel_rmse = std::stof(argv[++arg_idx]);
+                if (params.q8_outlier_nonmax_rel_rmse < 0.0f) {
+                    fprintf(stderr, "error: --outlier-nonmax-rel-rmse must be >= 0\n");
+                    usage(argv[0]);
+                }
             } else {
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-max-frac") == 0) {
             if (arg_idx < argc-1) {
                 params.q8_outlier_max_frac = std::stof(argv[++arg_idx]);
+                if (params.q8_outlier_max_frac < 0.0f || params.q8_outlier_max_frac > 1.0f) {
+                    fprintf(stderr, "error: --outlier-max-frac must be in [0, 1]\n");
+                    usage(argv[0]);
+                }
             } else {
                 usage(argv[0]);
             }
@@ -790,6 +802,7 @@ int llama_quantize(int argc, char ** argv) {
 
     if (params.ftype == LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER) {
         params.q8_outlier_enable = true;
+        params.q8_outlier_store = LLAMA_Q8_OUTLIER_STORE_FULL;
     }
 
     if (!params.dry_run) {

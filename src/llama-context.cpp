@@ -281,6 +281,24 @@ llama_context::llama_context(
             }
         }
 
+        // Check GPU backend support for Q8_0_BF16_OUTLIER operations
+        if (!model.outlier_info.empty()) {
+            for (auto & backend : backends) {
+                ggml_backend_dev_t dev = ggml_backend_get_device(backend.get());
+                if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                    continue;
+                }
+                ggml_tensor dummy = {};
+                dummy.op = GGML_OP_MUL_MAT_OUTLIER_BLOCKS;
+                if (!ggml_backend_supports_op(backend.get(), &dummy)) {
+                    LLAMA_LOG_WARN("%s: %s backend does not support GGML_OP_MUL_MAT_OUTLIER_BLOCKS, "
+                            "Q8_0_BF16_OUTLIER correction will fall back to CPU for affected tensors\n",
+                            __func__, ggml_backend_dev_name(dev));
+                    break;
+                }
+            }
+        }
+
         llama_set_abort_callback(this, params.abort_callback, params.abort_callback_data);
 
         // graph outputs buffer

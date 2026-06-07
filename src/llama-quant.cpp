@@ -47,14 +47,7 @@ static void zeros(std::ofstream & file, size_t n) {
     }
 }
 
-static constexpr int LLAMA_Q8_OUTLIER_BLOCK_SIZE = 32;
-
-static const char * const LLAMA_Q8_OUTLIER_VERSION_KEY        = "llama.q8_outlier.version";
-static const char * const LLAMA_Q8_OUTLIER_BLOCK_SIZE_KEY     = "llama.q8_outlier.block_size";
-static const char * const LLAMA_Q8_OUTLIER_BASE_TYPE_KEY      = "llama.q8_outlier.base_type";
-static const char * const LLAMA_Q8_OUTLIER_VALUE_TYPE_KEY     = "llama.q8_outlier.value_type";
-static const char * const LLAMA_Q8_OUTLIER_INDEX_ENCODING_KEY = "llama.q8_outlier.index_encoding";
-static const char * const LLAMA_Q8_OUTLIER_TENSOR_COUNT_KEY   = "llama.q8_outlier.tensor_count";
+#include "llama-q8-outlier.h"
 
 static std::string remap_layer(const std::string & orig_name, const std::vector<int> & prune, std::map<int, std::string> & mapped, int & next_id) {
     if (prune.empty()) {
@@ -1055,6 +1048,25 @@ static void q8_outlier_zero_protected_blocks(
     fflush(stderr);
 }
 
+static void q8_outlier_reconstruct_tensor(
+        const ggml_tensor * tensor,
+        const std::vector<int32_t> & idx,
+        const std::vector<ggml_bf16_t> & values,
+        float * f32_buf,
+        int64_t rows,
+        int64_t cols) {
+    const int64_t n_blocks = (int64_t) idx.size() / 2;
+    for (int64_t k = 0; k < n_blocks; ++k) {
+        const int64_t row = idx[k * 2];
+        const int64_t block_col = idx[k * 2 + 1];
+        const ggml_bf16_t * block_vals = values.data() + k * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            dst[j] = ggml_bf16_to_fp32(block_vals[j]);
+        }
+    }
+}
+
 static void q8_outlier_add_tensor_meta(
         struct gguf_context * ctx,
         const std::string & name,
@@ -1085,6 +1097,7 @@ static void q8_outlier_write_metadata(
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_BASE_TYPE_KEY, "q8_0");
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_VALUE_TYPE_KEY, "bf16");
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
+    gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_STORE_KEY, "full");
     gguf_set_val_u32(ctx, LLAMA_Q8_OUTLIER_TENSOR_COUNT_KEY, (uint32_t) tensors.size());
 
     for (size_t i = 0; i < tensors.size(); ++i) {
@@ -1134,6 +1147,29 @@ static void q8_outlier_write_report(
 
 static size_t q8_outlier_sidecar_size(const q8_outlier_tensor_data & t) {
     return t.idx.size() * sizeof(int32_t) + t.values.size() * sizeof(ggml_bf16_t);
+}
+
+// reconstruct a full F32 tensor from a Q8_0 base (with zeroed outlier blocks) and BF16 sidecar data
+static void q8_outlier_reconstruct_tensor(
+    const ggml_tensor * base_tensor,
+    const ggml_tensor * idx_tensor,
+    const ggml_tensor * values_tensor,
+    float * f32_buf,
+    int64_t n_rows,
+    int64_t n_cols) {
+    const int32_t * idx = (const int32_t *) idx_tensor->data;
+    const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
+    const int64_t n_blocks = ggml_nelements(idx_tensor) / 2;
+
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        const int64_t row = idx[b * 2];
+        const int64_t block_col = idx[b * 1 + 1];
+        const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            f32_buf[off + j] = ggml_bf16_to_fp32(v[j]);
+        }
+    }
 }
 
 //
@@ -1337,6 +1373,17 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_SPLIT_COUNT).c_str());
     gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_SPLIT_TENSORS_COUNT).c_str());
 
+    // Remove stale Q8_0_BF16_OUTLIER metadata when target is plain Q8_0
+    if (!q8_outlier_enabled) {
+        for (int k = 0; k < gguf_get_n_kv(ctx_out.get()); ++k) {
+            const char * key = gguf_get_key(ctx_out.get(), k);
+            if (key && std::string(key).rfind("llama.q8_outlier.", 0) == 0) {
+                gguf_remove_key(ctx_out.get(), key);
+                --k;
+            }
+        }
+    }
+
     if (params->kv_overrides) {
         for (const llama_model_kv_override * o = params->kv_overrides; o->key[0] != 0; ++o) {
             if (o->tag == LLAMA_KV_OVERRIDE_TYPE_FLOAT) {
@@ -1419,6 +1466,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         const auto * it = tensors[i];
         const struct ggml_tensor * tensor = it->tensor;
 
+        // Skip sidecar tensors when outputting plain Q8_0
+        if (!q8_outlier_enabled) {
+            const std::string & tname = ggml_get_name(tensor);
+            if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
+                (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
+                continue;
+            }
+        }
+
         uint16_t i_split = params->keep_split ? it->idx : 0;
         if (!ctx_outs[i_split]) {
             ctx_outs[i_split].reset(gguf_init_empty());
@@ -1460,6 +1516,33 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         std::vector<std::thread> scan_workers;
         scan_workers.reserve(nthread);
 
+        // Load source outlier sidecar data for reconstruction during re-analysis
+        struct q8_outlier_source_info {
+            std::vector<int32_t> idx;
+            std::vector<ggml_bf16_t> values;
+        };
+        std::unordered_map<std::string, q8_outlier_source_info> source_outlier_info;
+        if (ml.has_q8_outlier_metadata()) {
+            auto src_meta = ml.read_q8_outlier_metadata();
+            for (const auto & meta : src_meta) {
+                auto idx_it = ml.weights_map.find(meta.idx_name);
+                auto vals_it = ml.weights_map.find(meta.values_name);
+                if (idx_it == ml.weights_map.end() || vals_it == ml.weights_map.end()) {
+                    continue;
+                }
+                q8_outlier_source_info info;
+                const ggml_tensor * idx_tensor = idx_it->second.tensor;
+                const ggml_tensor * vals_tensor = vals_it->second.tensor;
+                info.idx.resize(ggml_nelements(idx_tensor));
+                info.values.resize(ggml_nelements(vals_tensor));
+                ml.load_data_for(const_cast<ggml_tensor *>(idx_tensor));
+                ml.load_data_for(const_cast<ggml_tensor *>(vals_tensor));
+                std::memcpy(info.idx.data(), idx_tensor->data, ggml_nbytes(idx_tensor));
+                std::memcpy(info.values.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+                source_outlier_info.emplace(meta.base_name, std::move(info));
+            }
+        }
+
         for (size_t i = 0; i < tensors.size(); ++i) {
             const auto & tm = metadata[i];
             ggml_tensor * tensor = tensors[i]->tensor;
@@ -1494,6 +1577,20 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             } else {
                 llama_tensor_dequantize_impl(tensor, scan_f32_conv_buf, scan_workers, nelements, nthread);
                 f32_data = (float *) scan_f32_conv_buf.data();
+            }
+
+            // If source has outlier sidecars, reconstruct full tensor for accurate re-analysis
+            if (tensor->type == GGML_TYPE_Q8_0) {
+                auto src_outlier_it = source_outlier_info.find(tm.name);
+                if (src_outlier_it != source_outlier_info.end()) {
+                    q8_outlier_reconstruct_tensor(
+                            tensor,
+                            src_outlier_it->second.idx,
+                            src_outlier_it->second.values,
+                            f32_data,
+                            tensor->ne[1],
+                            tensor->ne[0]);
+                }
             }
 
             const float * imatrix = nullptr;
@@ -1533,7 +1630,11 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             q8_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.idx_name, GGML_TYPE_I32, 2, outliers.n_blocks());
             q8_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, GGML_TYPE_BF16, LLAMA_Q8_OUTLIER_BLOCK_SIZE, outliers.n_blocks());
         }
-        q8_outlier_write_metadata(ctx_outs[0].get(), q8_outlier_tensors);
+        // Only write/overwrite outlier metadata if we actually analyzed tensors.
+        // In copy mode, source metadata was already preserved by gguf_set_kv above.
+        if (!params->only_copy) {
+            q8_outlier_write_metadata(ctx_outs[0].get(), q8_outlier_tensors);
+        }
     }
 
     // Set split info if needed
@@ -1593,10 +1694,42 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     // main loop: iterate over all weights
     //
 
+    // Pre-load sidecar data for reconstruction when converting Q8_0_BF16_OUTLIER -> plain Q8_0
+    std::unordered_map<std::string, std::pair<std::vector<uint8_t>, std::vector<uint8_t>>> q8_outlier_sidecars;
+    if (!q8_outlier_enabled) {
+        for (const auto & it : ml.weights_map) {
+            const std::string & name = it.first;
+            const size_t idx_len = std::string(".outlier_idx").size();
+            const size_t bf16_len = std::string(".outlier_bf16").size();
+            if (name.size() > idx_len && name.rfind(".outlier_idx") == name.size() - idx_len) {
+                const std::string base_name = name.substr(0, name.size() - idx_len);
+                const size_t sz = ggml_nbytes(it.second.tensor);
+                q8_outlier_sidecars[base_name].first.resize(sz);
+                ml.load_data_for(it.second.tensor);
+                std::memcpy(q8_outlier_sidecars[base_name].first.data(), it.second.tensor->data, sz);
+            } else if (name.size() > bf16_len && name.rfind(".outlier_bf16") == name.size() - bf16_len) {
+                const std::string base_name = name.substr(0, name.size() - bf16_len);
+                const size_t sz = ggml_nbytes(it.second.tensor);
+                q8_outlier_sidecars[base_name].second.resize(sz);
+                ml.load_data_for(it.second.tensor);
+                std::memcpy(q8_outlier_sidecars[base_name].second.data(), it.second.tensor->data, sz);
+            }
+        }
+    }
+
     for (size_t i = 0; i < tensors.size(); ++i) {
         const auto & weight = *tensors[i];
         const auto & tm = metadata[i];
         ggml_tensor * tensor = weight.tensor;
+
+        // Skip sidecar tensors when outputting plain Q8_0
+        if (!q8_outlier_enabled) {
+            const std::string & tname = tm.name;
+            if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
+                (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
+                continue;
+            }
+        }
 
         if (!params->dry_run && (weight.idx != cur_split && params->keep_split)) {
             close_ofstream();
@@ -1698,6 +1831,23 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 } else {
                     llama_tensor_dequantize_impl(tensor, f32_conv_buf, workers, nelements, nthread);
                     f32_data = (float *) f32_conv_buf.data();
+
+                    // Reconstruct full tensor from Q8_0 base + BF16 outlier sidecar
+                    if (tensor->type == GGML_TYPE_Q8_0 && ggml_n_dims(tensor) == 2) {
+                        auto sit = q8_outlier_sidecars.find(tm.name);
+                        if (sit != q8_outlier_sidecars.end() &&
+                            !sit->second.first.empty() && !sit->second.second.empty()) {
+                            ggml_tensor idx_tensor;
+                            ggml_tensor values_tensor;
+                            std::memset(&idx_tensor, 0, sizeof(idx_tensor));
+                            std::memset(&values_tensor, 0, sizeof(values_tensor));
+                            idx_tensor.type = GGML_TYPE_I32;
+                            idx_tensor.data = sit->second.first.data();
+                            values_tensor.type = GGML_TYPE_BF16;
+                            values_tensor.data = sit->second.second.data();
+                            q8_outlier_reconstruct_tensor(tensor, &idx_tensor, &values_tensor, f32_data, tensor->ne[1], tensor->ne[0]);
+                        }
+                    }
                 }
 
                 LLAMA_LOG_INFO("converting to %s .. ", ggml_type_name(new_type));

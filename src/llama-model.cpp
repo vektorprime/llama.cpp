@@ -1072,6 +1072,11 @@ void llama_model::build_outlier_info() {
         for (int64_t k = 0; k < n_blocks; k++) {
             int32_t row = idx_data[k * 2];
             int32_t bcol = idx_data[k * 2 + 1];
+            if (bcol >= info.n_cols / 32) {
+                LLAMA_LOG_WARN("%s: outlier block_col %d out of range for %s (n_cols=%lld, max block_col=%lld)\n",
+                        __func__, bcol, name.c_str(), (long long)info.n_cols, (long long)(info.n_cols / 32 - 1));
+                continue;
+            }
             int32_t pos = row_cursor[row]++;
             info.block_col[pos] = bcol;
         }
@@ -1587,6 +1592,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             // Skip CPU context — sidecars only needed on GPU
             bool is_cpu = (ctx == ml.ctx_map.begin()->second.get());
             if (is_cpu && ml.ctx_map.size() > 1) {
+                LLAMA_LOG_WARN("%s: sidecar tensor placed on GPU context alongside parent weight tensor\n",
+                        __func__);
                 continue;
             }
             for (const auto & [name, weight] : ml.weights_map) {

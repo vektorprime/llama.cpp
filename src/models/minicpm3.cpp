@@ -103,7 +103,7 @@ llama_model_minicpm3::graph::graph(const llama_model & model, const llm_graph_pa
         {
             ggml_tensor * q = NULL;
             // {n_embd, q_lora_rank} * {n_embd, n_tokens} -> {q_lora_rank, n_tokens}
-            q = ggml_mul_mat(ctx0, model.layers[il].wq_a, cur);
+            q = build_lora_mm(model.layers[il].wq_a, cur, nullptr);
             cb(q, "q", il);
 
             q = build_norm(q,
@@ -112,7 +112,7 @@ llama_model_minicpm3::graph::graph(const llama_model & model, const llm_graph_pa
             cb(q, "q", il);
 
             // {q_lora_rank, n_head * hparams.n_embd_head_k()} * {q_lora_rank, n_tokens} -> {n_head * hparams.n_embd_head_k(), n_tokens}
-            q = ggml_mul_mat(ctx0, model.layers[il].wq_b, q);
+            q = build_lora_mm(model.layers[il].wq_b, q, nullptr);
             cb(q, "q", il);
 
             // split into {n_head * n_embd_head_qk_nope, n_tokens}
@@ -130,7 +130,7 @@ llama_model_minicpm3::graph::graph(const llama_model & model, const llm_graph_pa
             cb(q_pe, "q_pe", il);
 
             // {n_embd, kv_lora_rank + n_embd_head_qk_rope} * {n_embd, n_tokens} -> {kv_lora_rank + n_embd_head_qk_rope, n_tokens}
-            ggml_tensor * kv_pe_compresseed = ggml_mul_mat(ctx0, model.layers[il].wkv_a_mqa, cur);
+            ggml_tensor * kv_pe_compresseed = build_lora_mm(model.layers[il].wkv_a_mqa, cur, nullptr);
             cb(kv_pe_compresseed, "kv_pe_compresseed", il);
 
             // split into {kv_lora_rank, n_tokens}
@@ -152,7 +152,7 @@ llama_model_minicpm3::graph::graph(const llama_model & model, const llm_graph_pa
             cb(kv_compressed, "kv_compressed", il);
 
             // {kv_lora_rank, n_head * (n_embd_head_qk_nope + n_embd_head_v)} * {kv_lora_rank, n_tokens} -> {n_head * (n_embd_head_qk_nope + n_embd_head_v), n_tokens}
-            ggml_tensor * kv = ggml_mul_mat(ctx0, model.layers[il].wkv_b, kv_compressed);
+            ggml_tensor * kv = build_lora_mm(model.layers[il].wkv_b, kv_compressed, nullptr);
             cb(kv, "kv", il);
 
             // split into {n_head * n_embd_head_qk_nope, n_tokens}

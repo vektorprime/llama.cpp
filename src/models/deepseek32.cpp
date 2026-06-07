@@ -215,7 +215,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
 
         // self_attention
         {
-            ggml_tensor * qr = ggml_mul_mat(ctx0, model.layers[il].wq_a, cur);
+            ggml_tensor * qr = build_lora_mm(model.layers[il].wq_a, cur, nullptr);
             cb(qr, "qr", il);
 
             qr = build_norm(qr, model.layers[il].attn_q_a_norm, nullptr, LLM_NORM_RMS, il);
@@ -225,7 +225,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
 
             // lightning indexer
             {
-                ggml_tensor * indexer_q = ggml_mul_mat(ctx0, model.layers[il].indexer_attn_q_b, qr);
+                ggml_tensor * indexer_q = build_lora_mm(model.layers[il].indexer_attn_q_b, qr, nullptr);
                 cb(indexer_q, "indexer_q", il);
 
                 // split into {n_embd_indexer_head_rope, n_indexer_head, n_tokens}
@@ -252,7 +252,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
                 indexer_q = ggml_concat(ctx0, indexer_q_pe, indexer_q_nope, 0);
                 cb(indexer_q, "indexer_q", il);
 
-                ggml_tensor * indexer_k = ggml_mul_mat(ctx0, model.layers[il].indexer_attn_k, cur);
+                ggml_tensor * indexer_k = build_lora_mm(model.layers[il].indexer_attn_k, cur, nullptr);
                 cb(indexer_k, "indexer_k", il);
 
                 indexer_k = build_norm(indexer_k, model.layers[il].indexer_k_norm, model.layers[il].indexer_k_norm_b, LLM_NORM, il);
@@ -294,7 +294,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
                 ggml_build_forward_expand(gf, mctx_lid->cpy_k(ctx0, indexer_k, k_idxs_lid, il));
 
                 // prepare indexer weights
-                ggml_tensor * indexer_weights = ggml_mul_mat(ctx0, model.layers[il].indexer_proj, cur);
+                ggml_tensor * indexer_weights = build_lora_mm(model.layers[il].indexer_proj, cur, nullptr);
                 cb(indexer_weights, "indexer_weights", il);
 
                 // get cached indexer keys
@@ -349,7 +349,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
                 cb(top_k, "top_k", il);
             }
 
-            ggml_tensor * q = ggml_mul_mat(ctx0, model.layers[il].wq_b, qr);
+            ggml_tensor * q = build_lora_mm(model.layers[il].wq_b, qr, nullptr);
             cb(q, "q", il);
 
             // split into {n_embd_head_qk_nope, n_head, n_tokens}
@@ -364,7 +364,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
                 ggml_row_size(q->type, n_embd_head_k) * n_head, ggml_row_size(q->type, n_embd_head_qk_nope));
             cb(q_pe, "q_pe", il);
 
-            ggml_tensor * kv_cmpr_pe = ggml_mul_mat(ctx0, model.layers[il].wkv_a_mqa, cur);
+            ggml_tensor * kv_cmpr_pe = build_lora_mm(model.layers[il].wkv_a_mqa, cur, nullptr);
             cb(kv_cmpr_pe, "kv_cmpr_pe", il);
 
             // split into {kv_lora_rank, n_tokens}
@@ -398,7 +398,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
                 cb(q_nope, "q_nope_perm", il);
 
                 // {n_embd_head_qk_nope, kv_lora_rank, n_head} x {n_embd_head_qk_nope, n_tokens, n_head}
-                ggml_tensor * q_nope_absorbed = ggml_mul_mat(ctx0, model.layers[il].wk_b, q_nope);
+                ggml_tensor * q_nope_absorbed = build_lora_mm(model.layers[il].wk_b, q_nope, nullptr);
                 cb(q_nope_absorbed, "q_nope_absorbed", il);
 
                 // {kv_lora_rank, n_head, n_tokens}
@@ -494,7 +494,7 @@ llama_model_deepseek32::graph::graph(const llama_model & model, const llm_graph_
     res->t_embd = cur;
 
     // lm_head
-    cur = ggml_mul_mat(ctx0, model.output, cur);
+    cur = build_lora_mm(model.output, cur, nullptr);
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;

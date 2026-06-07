@@ -97,6 +97,29 @@ Examples:
 ./llama-quantize --imatrix imatrix.gguf --override-kv qwen3moe.expert_used_count=int:16 --prune-layers 20,21,22 input-model-f32.gguf pruned-model-f32.gguf copy 8
 ```
 
+```bash
+# Quantize with BF16 protected outlier blocks (default thresholds)
+./llama-quantize --outlier-blocks bf16 model-f16.gguf model-q8-outlier.gguf Q8_0_BF16_OUTLIER
+```
+
+```bash
+# Quantize with custom thresholds
+./llama-quantize \
+  --outlier-blocks bf16 \
+  --outlier-ratio 16 \
+  --outlier-nonmax-rel-rmse 0.01 \
+  --outlier-max-frac 0.02 \
+  --outlier-report outliers.json \
+  model-f16.gguf model-q8-outlier.gguf Q8_0_BF16_OUTLIER
+```
+
+### Q8_0_BF16_OUTLIER (Experimental)
+
+- This format is experimental and may change.
+- Older llama.cpp builds cannot load Q8_0_BF16_OUTLIER models correctly.
+- GPU backends without outlier kernel support will keep affected tensors on CPU.
+- This format is only useful when protected outlier blocks are rare (typically < 2% of blocks).
+
 ## Memory/Disk Requirements
 
 When running the larger models, make sure you have enough disk space to store all the intermediate files.
@@ -137,12 +160,12 @@ Several quantization methods are supported. They differ in the resulting model d
 | prompt processing t/s @ 512 | 798.91 ±6.40 | 784.45 ±7.85 | 752.17 ±7.94 | 783.44 ±9.92 | 761.17 ±7.55 | 818.55 ±9.58 |
 | text generation t/s @ 128   |  90.01 ±0.12 |  79.85 ±0.20 |  69.84 ±0.18 |  71.68 ±0.22 |  69.38 ±0.49 |  76.71 ±0.20 |
 
-| Measure                     | Q4_K_S       | Q4_K_M        | Q5_K_S       | Q5_K_M       | Q6_K          | Q8_0         |
-| --------------------------- | ------------ | ------------- | ------------ | ------------ | ------------- | ------------ |
-| bits/weight                 |       4.6672 |        4.8944 |       5.5704 |       5.7036 |        6.5633 |       8.5008 |
-| size (GiB)                  |       4.36   |        4.58   |       5.21   |       5.33   |        6.14   |       7.95   |
-| prompt processing t/s @ 512 | 818.55 ±9.58 | 821.81 ±21.44 | 752.52 ±0.99 | 758.69 ±7.43 | 812.01 ±10.82 | 865.09 ±8.30 |
-| text generation t/s @ 128   |  76.71 ±0.20 |  71.93 ±1.52  |  69.53 ±0.18 |  67.23 ±1.08 |  58.67 ±3.13  |  50.93 ±0.08 |
+| Measure                     | Q4_K_S       | Q4_K_M        | Q5_K_S       | Q5_K_M       | Q6_K          | Q8_0         | Q8_0_BF16_OUTLIER                         |
+| --------------------------- | ------------ | ------------- | ------------ | ------------ | ------------- | ------------ | ----------------------------------------- |
+| bits/weight                 |       4.6672 |        4.8944 |       5.5704 |       5.7036 |        6.5633 |       8.5008 | ~8.5 + 18 * protected_fraction            |
+| size (GiB)                  |       4.36   |        4.58   |       5.21   |       5.33   |        6.14   |       7.95   | varies                                    |
+| prompt processing t/s @ 512 | 818.55 ±9.58 | 821.81 ±21.44 | 752.52 ±0.99 | 758.69 ±7.43 | 812.01 ±10.82 | 865.09 ±8.30 | -                                         |
+| text generation t/s @ 128   |  76.71 ±0.20 |  71.93 ±1.52  |  69.53 ±0.18 |  67.23 ±1.08 |  58.67 ±3.13  |  50.93 ±0.08 | -                                         |
 
 | Measure                     | F16          |
 | --------------------------- | ------------ |
@@ -150,6 +173,8 @@ Several quantization methods are supported. They differ in the resulting model d
 | size (GiB)                  |      14.96   |
 | prompt processing t/s @ 512 | 923.49 ±0.53 |
 | text generation t/s @ 128   |  29.17 ±0.04 |
+
+^ Q8_0_BF16_OUTLIER: mostly Q8_0, BF16 sidecars for protected 32-weight blocks. Performance depends on protected_fraction.
 
 ## Background information on llama-quantize
 
