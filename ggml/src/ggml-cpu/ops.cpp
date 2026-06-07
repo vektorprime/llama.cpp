@@ -4483,20 +4483,12 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int64_t ith = params->ith;
     const int64_t nth = params->nth;
 
-    int64_t i0 = (int64_t) n_blocks * ith    / nth;
-    int64_t i1 = (int64_t) n_blocks * (ith + 1) / nth;
-
-    if (i0 >= i1) {
-        return;
-    }
-
-    // Zero the output on thread 0
     float * dst_data = (float *) dst->data;
-    if (ith == 0) {
-        memset(dst_data, 0, n_rows_out * n_tokens * sizeof(float));
-    }
 
     if (n_blocks == 0 || n_tokens == 0) {
+        if (ith == 0) {
+            memset(dst_data, 0, n_rows_out * n_tokens * sizeof(float));
+        }
         return;
     }
 
@@ -4505,17 +4497,28 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const float * x_data        = (const float *) x->data;
     const int64_t x_stride      = x->nb[1] / sizeof(float);
 
-    // Per-thread temporary accumulator to avoid race conditions when multiple threads
-    // write to the same output row from different blocks
-    std::vector<float> tmp((size_t)n_rows_out * n_tokens, 0.0f);
+    // Partition OUTPUT rows per thread — each thread only writes to its own rows,
+    // eliminating the need for atomics or barriers on the merge step
+    const int64_t row_per_thread = (n_rows_out + nth - 1) / nth;
+    const int64_t row0 = ith * row_per_thread;
+    const int64_t row1 = MIN(row0 + row_per_thread, n_rows_out);
 
-    // For each outlier block assigned to this thread, compute dot product of 32 BF16 weights × 32 F32 activations
-    for (int64_t ib = i0; ib < i1; ib++) {
+    // Zero this thread's output rows
+    for (int64_t row = row0; row < row1; row++) {
+        memset(dst_data + row * n_tokens, 0, n_tokens * sizeof(float));
+    }
+
+    // Each thread iterates all blocks but only accumulates into its own row range
+    for (int64_t ib = 0; ib < n_blocks; ib++) {
         const int32_t row       = idx_data[ib * 2];
         const int32_t block_col = idx_data[ib * 2 + 1];
-        const int64_t col0      = (int64_t) block_col * 32;
 
-        if (row < 0 || row >= n_rows_out || col0 + 31 >= n_cols) {
+        if (row < (int32_t)row0 || row >= (int32_t)row1) {
+            continue; // not this thread's row
+        }
+
+        const int64_t col0 = (int64_t) block_col * 32;
+        if (col0 + 31 >= n_cols) {
             continue; // out of bounds
         }
 
@@ -4526,16 +4529,14 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
                 const float a = x_data[(col0 + j) + it * x_stride];
                 sum += w * a;
             }
-            tmp[row + it * n_rows_out] += sum;
+            dst_data[row + it * n_rows_out] += sum;
         }
     }
 
-    // Merge per-thread accumulator into the shared output
-    for (int64_t i = 0; i < n_rows_out * n_tokens; i++) {
-        dst_data[i] += tmp[i];
-    }
+    // Synchronize all threads before debug output
+    ggml_barrier(params->threadpool);
 
-    // One-time debug: print correction magnitude for this tensor (thread 0, first token only)
+    // One-time debug: print correction magnitude for this tensor (thread 0 only)
     if (ith == 0 && n_tokens > 0) {
         static const char * _last_outlier_name = nullptr;
         const char * tname = dst->name ? dst->name : "(unnamed)";
