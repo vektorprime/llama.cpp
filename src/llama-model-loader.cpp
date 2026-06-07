@@ -572,7 +572,6 @@ llama_model_loader::llama_model_loader(
         // Save tensors data offset of the main file.
         // For subsidiary files, `meta` tensor data offset must not be used,
         // so we build a unified tensors index for weights.
-        int n_sidecar = 0;
         for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
             std::string tensor_name = std::string(cur->name);
             // make sure there is no duplicated tensor names
@@ -582,15 +581,7 @@ llama_model_loader::llama_model_loader(
             n_elements += ggml_nelements(cur);
             n_bytes    += ggml_nbytes(cur);
             weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), 0, metadata, cur));
-            if (tensor_name.find(".outlier_idx") != std::string::npos ||
-                tensor_name.find(".outlier_bf16") != std::string::npos) {
-                n_sidecar++;
-            }
         }
-        n_sidecar_tensors = n_sidecar;
-        fprintf(stderr, "[loader] GGUF has %d tensors total, %d sidecar tensors\n",
-                (int)weights_map.size(), n_sidecar);
-        fflush(stderr);
 
         if (has_q8_outlier_metadata()) {
             auto q8_meta = read_q8_outlier_metadata();
@@ -747,7 +738,19 @@ llama_model_loader::llama_model_loader(
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
     }
 
-    n_kv      = gguf_get_n_kv(metadata);
+    n_kv = gguf_get_n_kv(metadata);
+
+    // Count sidecar tensors from the fully-populated weights_map.
+    // This works regardless of which constructor path loaded the tensors
+    // (file name, file pointer, or split files).
+    n_sidecar_tensors = 0;
+    for (const auto & [name, _] : weights_map) {
+        if (name.find(".outlier_idx") != std::string::npos ||
+            name.find(".outlier_bf16") != std::string::npos) {
+            n_sidecar_tensors++;
+        }
+    }
+
     n_tensors = weights_map.size();
     // Sidecar tensors (.outlier_idx, .outlier_bf16) are created manually in
     // load_tensors via ggml_new_tensor_2d and do not go through the normal
