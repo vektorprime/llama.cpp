@@ -98,7 +98,7 @@ static std::vector<float> tensor_to_f32(ggml_tensor * t) {
         // Quantized: decode via to_float
         std::vector<uint8_t> raw(ggml_nbytes(t));
         ggml_backend_tensor_get(t, raw.data(), 0, ggml_nbytes(t));
-        const ggml_type_traits_t traits = ggml_get_type_traits(t->type);
+        const struct ggml_type_traits * traits = ggml_get_type_traits(t->type);
         int64_t bs = ggml_blck_size(t->type);
         std::vector<float> tmp(bs);
         size_t off = 0;
@@ -493,7 +493,7 @@ static bool test_scheduler_correction_assignment() {
     TEST_PASS();
 }
 
-int main(int argc, char **argv) {
+int main(int /*argc*/, char ** /*argv*/) {
     printf("=== Q8_0_BF16_OUTLIER Offload Safety Tests ===\n\n");
 
     bool all_pass = true;
