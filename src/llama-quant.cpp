@@ -995,7 +995,7 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
         result.idx.push_back((int32_t) candidate.row);
         result.idx.push_back((int32_t) candidate.block_col);
 
-        const float * block = f32_data + candidate.row * n_per_row + candidate.block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        const float * block = f32_data + candidate.row * n_cols + candidate.block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
             result.values.push_back(ggml_fp32_to_bf16(block[j]));
         }
