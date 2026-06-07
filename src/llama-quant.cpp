@@ -1048,6 +1048,48 @@ static void q8_outlier_zero_protected_blocks(
     fflush(stderr);
 }
 
+// Compute deltas = original_F32 - Q8_dequantized for each outlier block,
+// replacing the stored full BF16 values with BF16 deltas.
+// This allows the Q8 base tensor to remain intact (no zeroing), so operations
+// that don't support correction (e.g., ggml_get_rows) still get Q8 approximation.
+static void q8_outlier_compute_deltas(
+        const float * f32_data,
+        const void * q8_data,
+        int64_t nrows,
+        int64_t n_per_row,
+        q8_outlier_tensor_data & outliers) {
+
+    const size_t block_size = ggml_type_size(GGML_TYPE_Q8_0);
+    const uint8_t * data = (const uint8_t *) q8_data;
+
+    // Iterate using idx vector which has (row, block_col) pairs in order
+    for (size_t k = 0; k < outliers.idx.size() / 2; k++) {
+        const int64_t row = outliers.idx[k * 2];
+        const int64_t block_col = outliers.idx[k * 2 + 1];
+        const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+
+        // Original F32 values
+        const float * orig = f32_data + row * n_per_row + col;
+
+        // Dequantize Q8 block
+        const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
+        const int8_t * q8_data_block = (const int8_t *) block_ptr;
+        const float * q8_d_ptr = (const float *)(block_ptr + 32);
+        float q8_d = q8_d_ptr[0];
+
+        // Compute delta and store as BF16
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+            float q8_val = q8_data_block[j] * q8_d;
+            float delta = orig[j] - q8_val;
+            outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(delta);
+        }
+    }
+
+    fprintf(stderr, "[q8_delta] %s: computed %zu deltas (original - Q8_dequant)\n",
+            outliers.name.c_str(), outliers.idx.size() / 2);
+    fflush(stderr);
+}
+
 static void q8_outlier_reconstruct_tensor(
         const ggml_tensor * tensor,
         const std::vector<int32_t> & idx,
@@ -1878,11 +1920,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
                 }
 
-                // Zero protected outlier blocks in the base Q8_0 tensor
+                // Compute BF16 deltas for outlier blocks: delta = original_F32 - Q8_dequantized
+                // Store deltas instead of full values, so Q8 base remains intact for
+                // operations that don't support correction (e.g., ggml_get_rows for embedding lookup).
+                // Where correction IS applied (ggml_mul_mat via build_lora_mm): Q8 + delta ≈ original
+                // Where correction is NOT applied (ggml_get_rows): Q8 approximation (same as plain Q8_0)
                 if (q8_outlier_enabled && new_type == GGML_TYPE_Q8_0) {
                     auto it = q8_outlier_by_name.find(tm.name);
                     if (it != q8_outlier_by_name.end()) {
-                        q8_outlier_zero_protected_blocks(new_data, nrows, n_per_row, q8_outlier_tensors[it->second]);
+                        q8_outlier_compute_deltas(f32_data, new_data, nrows, n_per_row, q8_outlier_tensors[it->second]);
                     }
                 }
 
