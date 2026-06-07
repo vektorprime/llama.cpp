@@ -1140,6 +1140,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         if (it == ctx_map.end()) {
             // one ggml context per buffer type
             int max_n_tensors = n_tensors;
+            max_n_tensors += n_sidecar_tensors; // sidecar tensors created manually in load_tensors
             max_n_tensors += 1;                 // duplicated output tensor
             max_n_tensors += hparams.n_layer*2; // duplicated rope freq tensors
             if (files.empty()) {
