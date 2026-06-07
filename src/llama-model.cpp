@@ -1756,28 +1756,24 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 }
             } else {
                 buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft); // real buffer
-                // DEBUG: log buffer allocation details
-                {
-                    int n_tensors_ctx = 0;
-                    int n_tensors_no_data = 0;
-                    size_t total_nbytes = 0;
-                    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
-                        n_tensors_ctx++;
-                        if (t->data == NULL && t->view_src == NULL) {
-                            n_tensors_no_data++;
-                            total_nbytes += ggml_nbytes(t);
-                        }
-                    }
-                    fprintf(stderr, "[alloc] buft=%s: ctx has %d tensors, %d need alloc (data==NULL), expected_nbytes=%zu (%.2f MiB), allocated_size=%zu (%.2f MiB)\n",
-                            ggml_backend_buft_name(buft), n_tensors_ctx, n_tensors_no_data, total_nbytes,
-                            total_nbytes / 1024.0 / 1024.0,
-                            buf ? ggml_backend_buffer_get_size(buf) : 0,
-                            buf ? ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0 : 0);
-                    fflush(stderr);
-                }
             }
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+            }
+            // Check if buffer is 0 bytes when tensors need allocation
+            {
+                size_t buf_size = ggml_backend_buffer_get_size(buf);
+                int n_needs_alloc = 0;
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+                    if (t->data == NULL && t->view_src == NULL) n_needs_alloc++;
+                }
+                if (buf_size == 0 && n_needs_alloc > 0) {
+                    throw std::runtime_error(format(
+                        "%s buffer allocated 0 bytes for %d tensors (%s backend).\n"
+                        "This indicates a backend allocation failure. Try using -sm tensor to use the Meta device path.",
+                        ggml_backend_buft_name(buft), n_needs_alloc,
+                        ggml_backend_buft_get_device(buft) ? ggml_backend_dev_name(ggml_backend_buft_get_device(buft)) : "unknown"));
+                }
             }
             if (use_mlock && ggml_backend_buffer_is_host(buf)) {
                 pimpl->mlock_bufs.emplace_back(new llama_mlock);
