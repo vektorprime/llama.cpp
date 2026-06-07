@@ -832,14 +832,6 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_ADD:
             case GGML_OP_ADD_ID: {
                 split_state = handle_bin_bcast(src_ss);
-                // DEBUG: log split states for outlier correction add
-                if (tensor->src[0] && tensor->src[1] &&
-                    (tensor->src[0]->op == GGML_OP_MUL_MAT_OUTLIER_BLOCKS ||
-                     tensor->src[1]->op == GGML_OP_MUL_MAT_OUTLIER_BLOCKS)) {
-                    fprintf(stderr, "[meta-add] ADD with outlier: src0_axis=%d src1_axis=%d result_axis=%d\n",
-                            src_ss[0].axis, src_ss[1].axis, split_state.axis);
-                    fflush(stderr);
-                }
             } break;
             case GGML_OP_ADD1:
             case GGML_OP_ACC: {
