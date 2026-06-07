@@ -31,6 +31,14 @@
 #endif
 
 //
+// Custom debug logging
+//
+
+void llama_set_custom_logs(bool enable) {
+    ggml_set_custom_logs(enable);
+}
+
+//
 // interface implementation
 //
 

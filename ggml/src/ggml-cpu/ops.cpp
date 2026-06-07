@@ -4484,7 +4484,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int64_t nth = params->nth;
 
     // [delta-cpu] log at top of function (thread 0 only)
-    if (ith == 0) {
+    if (ith == 0 && ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cpu] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols=%lld\n",
                 (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens, (long long)n_cols);
         fflush(stderr);
@@ -4544,7 +4544,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     ggml_barrier(params->threadpool);
 
     // [delta-cpu] count non-zero output rows (thread 0 only)
-    if (ith == 0) {
+    if (ith == 0 && ggml_custom_logs_enabled()) {
         int64_t nz_rows = 0;
         for (int64_t row = 0; row < n_rows_out; row++) {
             double row_l2 = 0.0;
@@ -4563,7 +4563,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     }
 
     // One-time debug: print correction magnitude for this tensor (thread 0 only)
-    if (ith == 0 && n_tokens > 0) {
+    if (ith == 0 && n_tokens > 0 && ggml_custom_logs_enabled()) {
         static const char * _last_outlier_name = nullptr;
         const char * tname = dst->name ? dst->name : "(unnamed)";
         if (_last_outlier_name == nullptr || strcmp(_last_outlier_name, tname) != 0) {

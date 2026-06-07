@@ -182,7 +182,9 @@ static void usage(const char * executable) {
     printf("  --outlier-report PATH\n");
     printf("                                      write a JSON report with protected block counts and estimated bpw\n");
     printf("  --outlier-store full\n");
-    printf("                                      store full BF16 protected blocks and zero the Q8_0 base block (default)\n\n");
+    printf("                                      store full BF16 protected blocks and zero the Q8_0 base block (default)\n");
+    printf("  --custom-logs\n");
+    printf("                                      enable custom debug logging ([delta-*], [q8_verify], etc.)\n\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
     printf("-----------------------------------------------------------------------------\n");
     printf(" allowed quantization types\n");
@@ -655,6 +657,8 @@ int llama_quantize(int argc, char ** argv) {
                 fprintf(stderr, "%s: --outlier-store currently supports only 'full'\n", __func__);
                 usage(argv[0]);
             }
+        } else if (strcmp(argv[arg_idx], "--custom-logs") == 0) {
+            llama_set_custom_logs(true);
         } else {
             usage(argv[0]);
         }

@@ -1043,39 +1043,41 @@ static void q8_outlier_compute_deltas(
         }
     }
 
-    fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q8_dequant)\n",
-            outliers.name.c_str(), outliers.idx.size() / 2);
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q8_dequant)\n",
+                outliers.name.c_str(), outliers.idx.size() / 2);
 
-    // Detailed logging for first 3 outlier blocks
-    const size_t n_blocks = outliers.idx.size() / 2;
-    const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
-    for (size_t k = 0; k < log_blocks; k++) {
-        double l2 = 0.0;
-        double mean_abs = 0.0;
-        double max_abs = 0.0;
-        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-            float d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
-            l2 += (double)d * d;
-            double ad = fabs((double)d);
-            mean_abs += ad;
-            if (ad > max_abs) max_abs = ad;
+        // Detailed logging for first 3 outlier blocks
+        const size_t n_blocks = outliers.idx.size() / 2;
+        const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
+        for (size_t k = 0; k < log_blocks; k++) {
+            double l2 = 0.0;
+            double mean_abs = 0.0;
+            double max_abs = 0.0;
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+                float d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
+                l2 += (double)d * d;
+                double ad = fabs((double)d);
+                mean_abs += ad;
+                if (ad > max_abs) max_abs = ad;
+            }
+            mean_abs /= LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            fprintf(stderr, "[delta-quant]   block[%zu] row=%d bcol=%d L2=%.6e mean_abs=%.6e max_abs=%.6e\n",
+                    k, (int)outliers.idx[k * 2], (int)outliers.idx[k * 2 + 1],
+                    sqrt(l2), mean_abs, max_abs);
         }
-        mean_abs /= LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-        fprintf(stderr, "[delta-quant]   block[%zu] row=%d bcol=%d L2=%.6e mean_abs=%.6e max_abs=%.6e\n",
-                k, (int)outliers.idx[k * 2], (int)outliers.idx[k * 2 + 1],
-                sqrt(l2), mean_abs, max_abs);
-    }
 
-    // Print all 32 delta values for the first block
-    if (n_blocks > 0) {
-        fprintf(stderr, "[delta-quant]   block[0] all 32 deltas:");
-        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-            float d = ggml_bf16_to_fp32(outliers.values[j]);
-            fprintf(stderr, " %.6e", d);
+        // Print all 32 delta values for the first block
+        if (n_blocks > 0) {
+            fprintf(stderr, "[delta-quant]   block[0] all 32 deltas:");
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+                float d = ggml_bf16_to_fp32(outliers.values[j]);
+                fprintf(stderr, " %.6e", d);
+            }
+            fprintf(stderr, "\n");
         }
-        fprintf(stderr, "\n");
+        fflush(stderr);
     }
-    fflush(stderr);
 }
 
 static void q8_outlier_reconstruct_tensor(

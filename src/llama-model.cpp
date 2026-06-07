@@ -1087,51 +1087,53 @@ void llama_model::build_outlier_info() {
         {
             const char * idx_buf_loc = "none";
             const char * val_buf_loc = "none";
-            const char * wt_buf_loc  = "none";
-            if (idx_tensor->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(idx_tensor->buffer)    ? "host" : "device";
-            if (values_tensor->buffer) val_buf_loc = ggml_backend_buffer_is_host(values_tensor->buffer) ? "host" : "device";
-            if (tensor->buffer)        wt_buf_loc  = ggml_backend_buffer_is_host(tensor->buffer)        ? "host" : "device";
-            fprintf(stderr, "[build_outlier_info] %s: buffers: idx=%s values=%s weight=%s\n",
-                    name.c_str(), idx_buf_loc, val_buf_loc, wt_buf_loc);
-            fprintf(stderr, "[build_outlier_info] %s: ptrs: idx=%p values=%p weight=%p\n",
-                    name.c_str(), (void*)idx_tensor, (void*)values_tensor, (void*)tensor);
-            if (n_blocks > 0 && idx_data) {
-                int64_t sample = n_blocks < 3 ? n_blocks : 3;
-                fprintf(stderr, "[build_outlier_info] %s: first %lld idx:",
-                        name.c_str(), (long long)sample);
-                for (int64_t i = 0; i < sample; i++) {
-                    fprintf(stderr, " [%lld]=(row=%d,block_col=%d)",
-                            (long long)i, idx_data[i*2], idx_data[i*2+1]);
-                }
-                fprintf(stderr, "\n");
-            }
-            // Sample first BF16 value from values tensor (only if host-accessible)
-            if (values_tensor->data && (!values_tensor->buffer || ggml_backend_buffer_is_host(values_tensor->buffer))) {
-                const uint16_t raw_val = ((const uint16_t*)values_tensor->data)[0];
-                fprintf(stderr, "[build_outlier_info] %s: values[0] raw=0x%04x\n",
-                        name.c_str(), raw_val);
-            }
-            // Verify Q8 blocks at outlier positions (delta approach: blocks intact, not zeroed)
-            {
-                const size_t q8_row_size = ggml_row_size(GGML_TYPE_Q8_0, info.n_cols);
-                const size_t q8_block_size = ggml_type_size(GGML_TYPE_Q8_0);
-                bool weight_accessible = tensor->data && (!tensor->buffer || ggml_backend_buffer_is_host(tensor->buffer));
-                if (weight_accessible && n_blocks > 0 && idx_data) {
+            if (ggml_custom_logs_enabled()) {
+                const char * wt_buf_loc  = "none";
+                if (idx_tensor->buffer)    idx_buf_loc = ggml_backend_buffer_is_host(idx_tensor->buffer)    ? "host" : "device";
+                if (values_tensor->buffer) val_buf_loc = ggml_backend_buffer_is_host(values_tensor->buffer) ? "host" : "device";
+                if (tensor->buffer)        wt_buf_loc  = ggml_backend_buffer_is_host(tensor->buffer)        ? "host" : "device";
+                fprintf(stderr, "[build_outlier_info] %s: buffers: idx=%s values=%s weight=%s\n",
+                        name.c_str(), idx_buf_loc, val_buf_loc, wt_buf_loc);
+                fprintf(stderr, "[build_outlier_info] %s: ptrs: idx=%p values=%p weight=%p\n",
+                        name.c_str(), (void*)idx_tensor, (void*)values_tensor, (void*)tensor);
+                if (n_blocks > 0 && idx_data) {
                     int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                    fprintf(stderr, "[build_outlier_info] %s: first %lld idx:",
+                            name.c_str(), (long long)sample);
                     for (int64_t i = 0; i < sample; i++) {
-                        int32_t r = idx_data[i * 2];
-                        int32_t bc = idx_data[i * 2 + 1];
-                        const uint8_t * bp = (const uint8_t *)tensor->data + r * q8_row_size + bc * q8_block_size;
-                        // block_q8_0: ggml_fp16_t d (2 bytes at offset 0) + int8_t qs[32] (offset 2)
-                        ggml_fp16_t d_fp16; memcpy(&d_fp16, bp, sizeof(ggml_fp16_t));
-                        float d_scale = ggml_fp16_to_fp32(d_fp16);
-                        int8_t d0 = (int8_t)bp[2 + 0];
-                        fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.data[0]=%d Q8.d=%f (expect non-zero, non-zero)\n",
-                                name.c_str(), (long long)i, r, bc, d0, d_scale);
+                        fprintf(stderr, " [%lld]=(row=%d,block_col=%d)",
+                                (long long)i, idx_data[i*2], idx_data[i*2+1]);
+                    }
+                    fprintf(stderr, "\n");
+                }
+                // Sample first BF16 value from values tensor (only if host-accessible)
+                if (values_tensor->data && (!values_tensor->buffer || ggml_backend_buffer_is_host(values_tensor->buffer))) {
+                    const uint16_t raw_val = ((const uint16_t*)values_tensor->data)[0];
+                    fprintf(stderr, "[build_outlier_info] %s: values[0] raw=0x%04x\n",
+                            name.c_str(), raw_val);
+                }
+                // Verify Q8 blocks at outlier positions (delta approach: blocks intact, not zeroed)
+                {
+                    const size_t q8_row_size = ggml_row_size(GGML_TYPE_Q8_0, info.n_cols);
+                    const size_t q8_block_size = ggml_type_size(GGML_TYPE_Q8_0);
+                    bool weight_accessible = tensor->data && (!tensor->buffer || ggml_backend_buffer_is_host(tensor->buffer));
+                    if (weight_accessible && n_blocks > 0 && idx_data) {
+                        int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                        for (int64_t i = 0; i < sample; i++) {
+                            int32_t r = idx_data[i * 2];
+                            int32_t bc = idx_data[i * 2 + 1];
+                            const uint8_t * bp = (const uint8_t *)tensor->data + r * q8_row_size + bc * q8_block_size;
+                            // block_q8_0: ggml_fp16_t d (2 bytes at offset 0) + int8_t qs[32] (offset 2)
+                            ggml_fp16_t d_fp16; memcpy(&d_fp16, bp, sizeof(ggml_fp16_t));
+                            float d_scale = ggml_fp16_to_fp32(d_fp16);
+                            int8_t d0 = (int8_t)bp[2 + 0];
+                            fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.data[0]=%d Q8.d=%f (expect non-zero, non-zero)\n",
+                                    name.c_str(), (long long)i, r, bc, d0, d_scale);
+                        }
                     }
                 }
+                fflush(stderr);
             }
-            fflush(stderr);
         }
 
         // [delta-load] logging: read BF16 delta values and compute L2 norms
@@ -1149,7 +1151,7 @@ void llama_model::build_outlier_info() {
                 values_ptr = (const ggml_bf16_t *) values_tensor->data;
             }
 
-            if (values_ptr) {
+            if (values_ptr && ggml_custom_logs_enabled()) {
                 fprintf(stderr, "[delta-load] %s: n_blocks=%lld\n",
                         name.c_str(), (long long)n_blocks);
 
@@ -1170,14 +1172,16 @@ void llama_model::build_outlier_info() {
                 }
                 fprintf(stderr, "[delta-load]   total_delta_L2=%.6e (sqrt of sum of all deltas squared)\n",
                         sqrt(total_l2));
+                fflush(stderr);
             }
-            fflush(stderr);
         }
 
-        fprintf(stderr, "[build_outlier_info] %s: n_blocks=%lld n_rows_out=%lld n_cols=%lld tensor_ne0=%lld tensor_ne1=%lld\n",
-                name.c_str(), (long long) n_blocks,
-                (long long) info.n_rows_out, (long long) info.n_cols,
-                (long long)tensor->ne[0], (long long)tensor->ne[1]);
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[build_outlier_info] %s: n_blocks=%lld n_rows_out=%lld n_cols=%lld tensor_ne0=%lld tensor_ne1=%lld\n",
+                    name.c_str(), (long long) n_blocks,
+                    (long long) info.n_rows_out, (long long) info.n_cols,
+                    (long long)tensor->ne[0], (long long)tensor->ne[1]);
+        }
     }
 
     // Summary

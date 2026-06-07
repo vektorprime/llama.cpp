@@ -116,10 +116,12 @@ static void outlier_blocks_cuda(
     dim3 block_dim(OUTLIER_BLOCK_SIZE, 1, 1);
     dim3 grid_dim((uint32_t) n_blocks, (uint32_t) n_tokens, 1);
 
-    fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u)\n",
-            (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
-            (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z);
-    fflush(stderr);
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u)\n",
+                (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
+                (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z);
+        fflush(stderr);
+    }
 
     outlier_blocks_kernel<<<grid_dim, block_dim, 0, stream>>>(
             idx_d, values_d, x_d, dst_d,
@@ -165,10 +167,12 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(idx->ne[0]  == 2);
     GGML_ASSERT(values->ne[0] == 32);
 
-    fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld\n",
-            (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens,
-            (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset);
-    fflush(stderr);
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld\n",
+                (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens,
+                (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset);
+        fflush(stderr);
+    }
 
     const int32_t *     idx_d    = (const int32_t *)     idx->data;
     const nv_bfloat16 * values_d = (const nv_bfloat16 *) values->data;
@@ -205,20 +209,22 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
             n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
 
     // [delta-cuda] compute output L2 norm by copying first column and measuring on host
-    {
-        int64_t col_n = n_rows_out;
-        if (col_n > 0 && n_tokens > 0) {
-            std::vector<float> col(col_n, 0);
-            CUDA_CHECK(cudaMemcpy(col.data(), dst_d, col_n * sizeof(float), cudaMemcpyDeviceToHost));
-            double l2 = 0.0;
-            int nz = 0;
-            for (int64_t i = 0; i < col_n; i++) {
-                l2 += col[i] * col[i];
-                if (col[i] != 0.0f) nz++;
+    if (ggml_custom_logs_enabled()) {
+        {
+            int64_t col_n = n_rows_out;
+            if (col_n > 0 && n_tokens > 0) {
+                std::vector<float> col(col_n, 0);
+                CUDA_CHECK(cudaMemcpy(col.data(), dst_d, col_n * sizeof(float), cudaMemcpyDeviceToHost));
+                double l2 = 0.0;
+                int nz = 0;
+                for (int64_t i = 0; i < col_n; i++) {
+                    l2 += col[i] * col[i];
+                    if (col[i] != 0.0f) nz++;
+                }
+                fprintf(stderr, "[delta-cuda] output L2=%.6e non_zero_rows=%d/%lld\n",
+                        sqrt(l2), nz, (long long)col_n);
+                fflush(stderr);
             }
-            fprintf(stderr, "[delta-cuda] output L2=%.6e non_zero_rows=%d/%lld\n",
-                    sqrt(l2), nz, (long long)col_n);
-            fflush(stderr);
         }
     }
 }

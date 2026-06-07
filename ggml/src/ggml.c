@@ -242,6 +242,17 @@ void ggml_print_backtrace(void) {
 
 static ggml_abort_callback_t g_abort_callback = NULL;
 
+// Custom debug logging
+static bool g_custom_logs_enabled = false;
+
+GGML_API void ggml_set_custom_logs(bool enable) {
+    g_custom_logs_enabled = enable;
+}
+
+GGML_API bool ggml_custom_logs_enabled(void) {
+    return g_custom_logs_enabled;
+}
+
 // Set the abort callback (passing null will restore original abort functionality: printing a message to stdout)
 GGML_API ggml_abort_callback_t ggml_set_abort_callback(ggml_abort_callback_t callback) {
     ggml_abort_callback_t ret_val = g_abort_callback;

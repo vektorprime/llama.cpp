@@ -352,6 +352,10 @@ extern "C" {
     // Returns the old callback for chaining
     GGML_API ggml_abort_callback_t ggml_set_abort_callback(ggml_abort_callback_t callback);
 
+    // Enable/disable custom debug logging (e.g., [delta-*], [q8_verify])
+    GGML_API void ggml_set_custom_logs(bool enable);
+    GGML_API bool ggml_custom_logs_enabled(void);
+
     GGML_NORETURN GGML_ATTRIBUTE_FORMAT(3, 4)
     GGML_API void ggml_abort(const char * file, int line, const char * fmt, ...);
 

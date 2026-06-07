@@ -3350,6 +3350,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        {"--custom-logs"},
+        "Enable custom debug logging ([delta-*], [q8_verify], etc.)",
+        [](common_params & params) {
+            params.custom_logs = true;
+        }
+    ));
+    add_opt(common_arg(
         {"--offline"},
         "Offline mode: forces use of cache, prevents network access",
         [](common_params & params) {
