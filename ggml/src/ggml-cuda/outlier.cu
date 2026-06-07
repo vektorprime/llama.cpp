@@ -204,17 +204,20 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
 
-    // [delta-cuda] copy-back first 8 output elements to verify non-zero
+    // [delta-cuda] compute output L2 norm by copying first column and measuring on host
     {
-        int64_t copy_n = n_rows_out * n_tokens < 8 ? n_rows_out * n_tokens : 8;
-        if (copy_n > 0) {
-            float sample[8] = {0};
-            CUDA_CHECK(cudaMemcpy(sample, dst_d, copy_n * sizeof(float), cudaMemcpyDeviceToHost));
-            fprintf(stderr, "[delta-cuda] output sample (first %lld elems):", (long long)copy_n);
-            for (int64_t i = 0; i < copy_n; i++) {
-                fprintf(stderr, " %.6e", sample[i]);
+        int64_t col_n = n_rows_out;
+        if (col_n > 0 && n_tokens > 0) {
+            std::vector<float> col(col_n, 0);
+            CUDA_CHECK(cudaMemcpy(col.data(), dst_d, col_n * sizeof(float), cudaMemcpyDeviceToHost));
+            double l2 = 0.0;
+            int nz = 0;
+            for (int64_t i = 0; i < col_n; i++) {
+                l2 += col[i] * col[i];
+                if (col[i] != 0.0f) nz++;
             }
-            fprintf(stderr, "\n");
+            fprintf(stderr, "[delta-cuda] output L2=%.6e non_zero_rows=%d/%lld\n",
+                    sqrt(l2), nz, (long long)col_n);
             fflush(stderr);
         }
     }
