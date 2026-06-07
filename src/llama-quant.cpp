@@ -1071,11 +1071,11 @@ static void q8_outlier_compute_deltas(
         // Original F32 values
         const float * orig = f32_data + row * n_per_row + col;
 
-        // Dequantize Q8 block
+        // Dequantize Q8 block: layout is ggml_half d (2 bytes) + int8_t qs[32]
         const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
-        const int8_t * q8_data_block = (const int8_t *) block_ptr;
-        const float * q8_d_ptr = (const float *)(block_ptr + 32);
-        float q8_d = q8_d_ptr[0];
+        const ggml_half * d_ptr = (const ggml_half *) block_ptr;
+        float q8_d = ggml_fp16_to_fp32(*d_ptr);
+        const int8_t * q8_data_block = (const int8_t *)(block_ptr + sizeof(ggml_half));
 
         // Compute delta and store as BF16
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
@@ -1104,7 +1104,7 @@ static void q8_outlier_reconstruct_tensor(
         const ggml_bf16_t * block_vals = values.data() + k * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
-            dst[j] = ggml_bf16_to_fp32(block_vals[j]);
+            dst[j] += ggml_bf16_to_fp32(block_vals[j]);
         }
     }
 }
@@ -1139,7 +1139,7 @@ static void q8_outlier_write_metadata(
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_BASE_TYPE_KEY, "q8_0");
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_VALUE_TYPE_KEY, "bf16");
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
-    gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_STORE_KEY, "full");
+    gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_STORE_KEY, "delta");
     gguf_set_val_u32(ctx, LLAMA_Q8_OUTLIER_TENSOR_COUNT_KEY, (uint32_t) tensors.size());
 
     for (size_t i = 0; i < tensors.size(); ++i) {
@@ -1191,7 +1191,8 @@ static size_t q8_outlier_sidecar_size(const q8_outlier_tensor_data & t) {
     return t.idx.size() * sizeof(int32_t) + t.values.size() * sizeof(ggml_bf16_t);
 }
 
-// reconstruct a full F32 tensor from a Q8_0 base (with zeroed outlier blocks) and BF16 sidecar data
+// reconstruct a full F32 tensor from a Q8_0 base (already dequantized to f32_buf)
+// by adding BF16 delta corrections for outlier blocks
 static void q8_outlier_reconstruct_tensor(
     const ggml_tensor * base_tensor,
     const ggml_tensor * idx_tensor,
@@ -1209,7 +1210,7 @@ static void q8_outlier_reconstruct_tensor(
         const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
-            f32_buf[off + j] = ggml_bf16_to_fp32(v[j]);
+            f32_buf[off + j] += ggml_bf16_to_fp32(v[j]);
         }
     }
 }
