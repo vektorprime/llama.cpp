@@ -1119,6 +1119,19 @@ void llama_model::build_outlier_info() {
                 (long long) info.n_rows_out, (long long) info.n_cols,
                 (long long)tensor->ne[0], (long long)tensor->ne[1]);
     }
+
+    // Summary
+    int64_t total_blocks = 0;
+    int64_t total_base_blocks = 0;
+    for (const auto & [_, info] : outlier_info) {
+        total_blocks += info.n_blocks;
+        total_base_blocks += (info.n_rows_out * info.n_cols) / 32;
+    }
+    if (!outlier_info.empty()) {
+        double pct = (total_base_blocks > 0) ? (100.0 * total_blocks / total_base_blocks) : 0.0;
+        LLAMA_LOG_INFO("Q8_0_BF16_OUTLIER: %zu tensors protected, %lld outlier blocks out of %lld total (%.2f%%)\n",
+            outlier_info.size(), (long long)total_blocks, (long long)total_base_blocks, pct);
+    }
 }
 
 bool llama_model::has_outlier_blocks(ggml_tensor * w) const {

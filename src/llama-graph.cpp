@@ -17,6 +17,7 @@
 #include <cstring>
 #include <numeric>
 #include <sstream>
+#include <set>
 #include <unordered_set>
 
 // dedup helpers
@@ -1073,6 +1074,14 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                     ctx0, ob->idx, ob->values, cur,
                     ob->n_rows_out, ob->n_cols);
             res = ggml_add(ctx0, res, corr);
+            // One-time debug: report which weights use correction
+            static std::set<const ggml_tensor *> _printed_outlier;
+            if (_printed_outlier.insert(w).second) {
+                LLAMA_LOG_INFO("[outlier-corr] graph: %s — %lld outlier blocks (%.1f%% of %lld)\n",
+                    w->name, (long long)ob->n_blocks,
+                    (ob->n_rows_out * ob->n_cols / 32) > 0 ? 100.0 * ob->n_blocks / (ob->n_rows_out * ob->n_cols / 32) : 0.0,
+                    (long long)(ob->n_rows_out * ob->n_cols / 32));
+            }
         }
     }
 
