@@ -1599,11 +1599,19 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // This ensures they're on the same GPU backend as the weight, loaded directly
     // from GGUF without any CPU→GPU copies.
     {
+        // Find CPU context by buffer type, not by map position (std::map orders by key address)
+        ggml_context * cpu_ctx = nullptr;
+        for (auto & [buft, ctx_ptr] : ml.ctx_map) {
+            if (buft == ggml_backend_cpu_buffer_type()) {
+                cpu_ctx = ctx_ptr.get();
+                break;
+            }
+        }
+
         for (auto & [buft, ctx_ptr] : ml.ctx_map) {
             ggml_context * ctx = ctx_ptr.get();
             // Skip CPU context — sidecars only needed on GPU
-            bool is_cpu = (ctx == ml.ctx_map.begin()->second.get());
-            if (is_cpu && ml.ctx_map.size() > 1) {
+            if (ctx == cpu_ctx && ml.ctx_map.size() > 1) {
                 LLAMA_LOG_WARN("%s: sidecar tensor placed on GPU context alongside parent weight tensor\n",
                         __func__);
                 continue;
@@ -1751,17 +1759,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 // DEBUG: log buffer allocation details
                 {
                     int n_tensors_ctx = 0;
-                    int n_tensors_with_buft = 0;
+                    int n_tensors_no_data = 0;
                     size_t total_nbytes = 0;
                     for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
                         n_tensors_ctx++;
-                        if (t->buft == buft) {
-                            n_tensors_with_buft++;
+                        if (t->data == NULL && t->view_src == NULL) {
+                            n_tensors_no_data++;
                             total_nbytes += ggml_nbytes(t);
                         }
                     }
-                    fprintf(stderr, "[alloc] buft=%s: ctx has %d tensors, %d with this buft, total_nbytes=%zu, allocated_size=%zu (%.2f MiB)\n",
-                            ggml_backend_buft_name(buft), n_tensors_ctx, n_tensors_with_buft, total_nbytes,
+                    fprintf(stderr, "[alloc] buft=%s: ctx has %d tensors, %d need alloc (data==NULL), expected_nbytes=%zu (%.2f MiB), allocated_size=%zu (%.2f MiB)\n",
+                            ggml_backend_buft_name(buft), n_tensors_ctx, n_tensors_no_data, total_nbytes,
+                            total_nbytes / 1024.0 / 1024.0,
                             buf ? ggml_backend_buffer_get_size(buf) : 0,
                             buf ? ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0 : 0);
                     fflush(stderr);
