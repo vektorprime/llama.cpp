@@ -1111,7 +1111,7 @@ void llama_model::build_outlier_info() {
                 fprintf(stderr, "[build_outlier_info] %s: values[0] raw=0x%04x\n",
                         name.c_str(), raw_val);
             }
-            // Verify Q8 blocks are actually zeroed at the outlier positions
+            // Verify Q8 blocks at outlier positions (delta approach: blocks intact, not zeroed)
             {
                 const size_t q8_row_size = ggml_row_size(GGML_TYPE_Q8_0, info.n_cols);
                 const size_t q8_block_size = ggml_type_size(GGML_TYPE_Q8_0);
@@ -1122,10 +1122,11 @@ void llama_model::build_outlier_info() {
                         int32_t r = idx_data[i * 2];
                         int32_t bc = idx_data[i * 2 + 1];
                         const uint8_t * bp = (const uint8_t *)tensor->data + r * q8_row_size + bc * q8_block_size;
-                        // block_q8_0: 32 int8 data bytes, then 4-byte float scale d at offset 32
-                        int8_t d0 = (int8_t)bp[0];
-                        float d_scale = 0; memcpy(&d_scale, bp + 32, 4);
-                        fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.data[0]=%d Q8.d=%f (expect 0,0)\n",
+                        // block_q8_0: ggml_fp16_t d (2 bytes at offset 0) + int8_t qs[32] (offset 2)
+                        ggml_fp16_t d_fp16; memcpy(&d_fp16, bp, sizeof(ggml_fp16_t));
+                        float d_scale = ggml_fp16_to_fp32(d_fp16);
+                        int8_t d0 = (int8_t)bp[2 + 0];
+                        fprintf(stderr, "[q8_verify] %s: idx[%lld]=(row=%d,bc=%d) Q8.data[0]=%d Q8.d=%f (expect non-zero, non-zero)\n",
                                 name.c_str(), (long long)i, r, bc, d0, d_scale);
                     }
                 }
