@@ -1748,6 +1748,24 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 }
             } else {
                 buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft); // real buffer
+                // DEBUG: log buffer allocation details
+                {
+                    int n_tensors_ctx = 0;
+                    int n_tensors_with_buft = 0;
+                    size_t total_nbytes = 0;
+                    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+                        n_tensors_ctx++;
+                        if (t->buft == buft) {
+                            n_tensors_with_buft++;
+                            total_nbytes += ggml_nbytes(t);
+                        }
+                    }
+                    fprintf(stderr, "[alloc] buft=%s: ctx has %d tensors, %d with this buft, total_nbytes=%zu, allocated_size=%zu (%.2f MiB)\n",
+                            ggml_backend_buft_name(buft), n_tensors_ctx, n_tensors_with_buft, total_nbytes,
+                            buf ? ggml_backend_buffer_get_size(buf) : 0,
+                            buf ? ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0 : 0);
+                    fflush(stderr);
+                }
             }
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));

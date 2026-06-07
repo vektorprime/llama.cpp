@@ -1668,6 +1668,19 @@ bool llama_model_loader::load_all_data(
         } else {
             const auto & file = files.at(weight->idx);
 
+            // DEBUG: check tensor data pointer before upload
+            {
+                const bool is_host_buf = cur->buffer && ggml_backend_buffer_is_host(cur->buffer);
+                const size_t buf_size = cur->buffer ? ggml_backend_buffer_get_size(cur->buffer) : 0;
+                if (!is_host_buf && !cur->data) {
+                    fprintf(stderr, "[load_data] ERROR: GPU tensor %s has NULL data pointer! buft=%s buffer_size=%zu nbytes=%zu\n",
+                            ggml_get_name(cur),
+                            cur->buft ? ggml_backend_buft_name(cur->buft) : "NULL",
+                            buf_size, n_size);
+                    fflush(stderr);
+                }
+            }
+
             if (ggml_backend_buffer_is_host(cur->buffer)) {
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
