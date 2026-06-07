@@ -881,8 +881,10 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 split_state = handle_mul_mat(src_ss);
             } break;
             case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
-                // Mirror handle_mul_mat logic: src0 (idx) acts as "weight",
-                // src2 (x) acts as "activation". src1 (values) has same split as src0.
+                // src0 (idx) acts as "weight" [2, n_blocks], src2 (x) is activation [n_cols, n_tokens]
+                // In tensor parallelism: weights are split on axis 0 (columns) → idx is split on axis 1 (blocks)
+                // Activations are split on axis 0 (columns). The kernel only computes the dot product
+                // for the overlapping columns, so the output must be PARTIAL (reduced across GPUs).
                 if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
                     src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
                     split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
@@ -894,6 +896,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                     split_state = src_ss[2];
                 } else if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_0 &&
                            src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_0) {
+                    split_state = {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+                } else if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_1 &&
+                           src_ss[2].axis == GGML_BACKEND_SPLIT_AXIS_0) {
+                    // Tensor parallelism: idx split on blocks (axis 1), x split on columns (axis 0)
+                    // Output correction is partial per-GPU and must be reduced across devices
                     split_state = {GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
                 } else {
                     split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};

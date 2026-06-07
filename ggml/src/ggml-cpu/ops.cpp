@@ -4503,6 +4503,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int32_t * idx_data    = (const int32_t *) idx->data;
     const ggml_bf16_t * values_data = (const ggml_bf16_t *) values->data;
     const float * x_data        = (const float *) x->data;
+    const int64_t x_stride      = x->nb[1] / sizeof(float);
 
     // Per-thread temporary accumulator to avoid race conditions when multiple threads
     // write to the same output row from different blocks
@@ -4522,7 +4523,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
             float sum = 0.0f;
             for (int64_t j = 0; j < 32; j++) {
                 const float w = GGML_BF16_TO_FP32(values_data[ib * 32 + j]);
-                const float a = x_data[(col0 + j) + it * n_cols];
+                const float a = x_data[(col0 + j) + it * x_stride];
                 sum += w * a;
             }
             tmp[row + it * n_rows_out] += sum;
