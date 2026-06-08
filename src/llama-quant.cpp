@@ -1238,12 +1238,14 @@ static bool q4_outlier_block_is_candidate(
     int j_max = 0;
     float max_abs = 0.0f;
     float second_abs = 0.0f;
+    float max_val = 0.0f; // signed value with largest absolute magnitude
 
     for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
         const float a = std::fabs(block[j]);
         if (a > max_abs) {
             second_abs = max_abs;
             max_abs = a;
+            max_val = block[j];
             j_max = j;
         } else if (a > second_abs) {
             second_abs = a;
@@ -1259,8 +1261,8 @@ static bool q4_outlier_block_is_candidate(
         return false;
     }
 
-    // Q4_0: max representable value is 7 (range -8..7)
-    const float d = max_abs / 7.0f;
+    // Q4_0: d = max / -8 (matches reference quantize_row_q4_0_ref)
+    const float d = max_val / -8.0f;
     double sqerr = 0.0;
     double energy = 0.0;
     double wsum = 0.0;
