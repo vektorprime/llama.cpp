@@ -1701,6 +1701,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             throw std::runtime_error("invalid Q8_0_BF16_OUTLIER thresholds");
         }
     }
+    if (q4_outlier_enabled) {
+        if (params->keep_split) {
+            throw std::runtime_error("Q4_0_BF16_OUTLIER does not support --keep-split in this CUDA-focused prototype");
+        }
+        if (params->q4_outlier_ratio <= 0.0f || params->q4_outlier_nonmax_rel_rmse < 0.0f ||
+                params->q4_outlier_max_frac < 0.0f || params->q4_outlier_max_frac > 1.0f) {
+            throw std::runtime_error("invalid Q4_0_BF16_OUTLIER thresholds");
+        }
+    }
 
     // mmap consistently increases speed on Linux, and also increases speed on Windows with
     // hot cache. It may cause a slowdown on macOS, possibly related to free memory.
@@ -1870,6 +1879,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         // Skip sidecar tensors when outputting plain Q8_0
         if (!q8_outlier_enabled) {
+            const std::string & tname = ggml_get_name(tensor);
+            if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
+                (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
+                continue;
+            }
+        }
+
+        // Skip sidecar tensors when outputting plain Q4_0
+        if (!q4_outlier_enabled) {
             const std::string & tname = ggml_get_name(tensor);
             if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
                 (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
@@ -2076,38 +2094,52 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         }
 
         for (size_t i = 0; i < tensors.size(); ++i) {
-            const auto & tensor = *tensors[i].tensor;
-            const auto & tm = tensors[i];
+            const auto & tm = metadata[i];
+            ggml_tensor * tensor = tensors[i]->tensor;
 
+            if (!tm.allows_quantization || tm.target_type != GGML_TYPE_Q4_0) {
+                continue;
+            }
+            if (ggml_n_dims(tensor) != 2) {
+                LLAMA_LOG_WARN("%s: skipping Q4 outlier sidecars for %s because only 2D tensors are supported in this prototype\n",
+                        __func__, tm.name.c_str());
+                continue;
+            }
             if (!q4_outlier_tensor_enabled(params, tm.name)) {
                 continue;
             }
 
-            if (tensor.ne[0] == 0 || tensor.ne[1] == 0) {
-                continue;
+            const size_t tensor_size = ggml_nbytes(tensor);
+            if (!ml.use_mmap) {
+                if (scan_read_data.size() < tensor_size) {
+                    scan_read_data.resize(tensor_size);
+                }
+                tensor->data = scan_read_data.data();
             }
+            ml.load_data_for(tensor);
 
-            const int64_t nelements = tensor.ne[0] * tensor.ne[1];
+            const int64_t nelements = ggml_nelements(tensor);
             float * f32_data = nullptr;
-
-            if (tensor.type == GGML_TYPE_F32) {
-                f32_data = (float *) tensor.data;
+            if (tensor->type == GGML_TYPE_F32) {
+                f32_data = (float *) tensor->data;
+            } else if (ggml_is_quantized(tensor->type) && !params->allow_requantize) {
+                throw std::runtime_error(format("requantizing from type %s is disabled", ggml_type_name(tensor->type)));
             } else {
-                llama_tensor_dequantize_impl(&tensor, scan_f32_conv_buf, scan_workers, nelements, nthread);
+                llama_tensor_dequantize_impl(tensor, scan_f32_conv_buf, scan_workers, nelements, nthread);
                 f32_data = (float *) scan_f32_conv_buf.data();
             }
 
             // If source has outlier sidecars, reconstruct full tensor for accurate re-analysis
-            if (tensor.type == GGML_TYPE_Q4_0) {
+            if (tensor->type == GGML_TYPE_Q4_0) {
                 auto src_outlier_it = source_outlier_info.find(tm.name);
                 if (src_outlier_it != source_outlier_info.end()) {
                     q4_outlier_reconstruct_tensor(
-                            &tensor,
+                            tensor,
                             src_outlier_it->second.idx,
                             src_outlier_it->second.values,
                             f32_data,
-                            tensor.ne[1],
-                            tensor.ne[0]);
+                            tensor->ne[1],
+                            tensor->ne[0]);
                 }
             }
 
@@ -2115,11 +2147,11 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             if (imatrix_data) {
                 auto it_imatrix = imatrix_data->find(tm.remapped_imatrix_name);
                 if (it_imatrix != imatrix_data->end()) {
-                    if (it_imatrix->second.size() == (size_t) tensor.ne[0]) {
+                    if (it_imatrix->second.size() == (size_t) tensor->ne[0]) {
                         imatrix = it_imatrix->second.data();
-                    } else if (!tensor_name_match_token_embd(tensor.name)) {
+                    } else if (!tensor_name_match_token_embd(tensor->name)) {
                         throw std::runtime_error(format("imatrix size %d is different from tensor row size %d for %s",
-                                int(it_imatrix->second.size()), int(tensor.ne[0]), tensor.name));
+                                int(it_imatrix->second.size()), int(tensor->ne[0]), tensor->name));
                     }
                 }
             }
@@ -2127,8 +2159,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             q8_outlier_tensor_data outliers = q4_outlier_analyze_tensor(
                     tm.name,
                     f32_data,
-                    tensor.ne[1],
-                    tensor.ne[0],
+                    tensor->ne[1],
+                    tensor->ne[0],
                     imatrix,
                     params);
 
@@ -2513,7 +2545,14 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q8_outlier_store            =*/ LLAMA_Q8_OUTLIER_STORE_FULL,
         /*.q8_outlier_report_path      =*/ nullptr,
         /*.q8_outlier_include_weights  =*/ nullptr,
-        /*.q8_outlier_exclude_weights  =*/ nullptr
+        /*.q8_outlier_exclude_weights  =*/ nullptr,
+        /*.q4_outlier_enable           =*/ false,
+        /*.q4_outlier_ratio            =*/ 16.0f,
+        /*.q4_outlier_nonmax_rel_rmse  =*/ 0.01f,
+        /*.q4_outlier_max_frac         =*/ 0.02f,
+        /*.q4_outlier_report_path      =*/ nullptr,
+        /*.q4_outlier_include_weights  =*/ nullptr,
+        /*.q4_outlier_exclude_weights  =*/ nullptr
     };
 
     return result;
