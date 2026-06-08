@@ -1230,8 +1230,7 @@ static bool q4_outlier_tensor_enabled(const llama_model_quantize_params * params
 static bool q4_outlier_block_is_candidate(
         const float * block,
         const float * imatrix,
-        float /*ratio_threshold*/,
-        float /*rel_rmse_threshold*/,
+        float score_threshold,
         float & score) {
     constexpr float eps = 1.0e-12f;
 
@@ -1271,6 +1270,11 @@ static bool q4_outlier_block_is_candidate(
     }
 
     score = float(sqerr / std::max(energy, double(eps)));
+
+    if (score_threshold > 0.0f && score < score_threshold) {
+        return false;
+    }
+
     return true;
 }
 
@@ -1313,8 +1317,7 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
             if (q4_outlier_block_is_candidate(
                     block,
                     block_imatrix,
-                    params->q4_outlier_ratio,
-                    params->q4_outlier_nonmax_rel_rmse,
+                    params->q4_outlier_score,
                     score) && score > min_score) {
                 candidates.push_back({ row, block_col, score });
             }
@@ -2536,6 +2539,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q4_outlier_enable           =*/ false,
         /*.q4_outlier_ratio            =*/ 0.0f,   // unused — Q4 uses residual-energy scoring
         /*.q4_outlier_nonmax_rel_rmse  =*/ 0.0f,   // unused — Q4 uses residual-energy scoring
+        /*.q4_outlier_score            =*/ 0.01f,  // minimum residual-energy score to protect
         /*.q4_outlier_max_frac         =*/ 0.02f,
         /*.q4_outlier_report_path      =*/ nullptr,
         /*.q4_outlier_include_weights  =*/ nullptr,

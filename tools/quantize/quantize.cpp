@@ -176,6 +176,8 @@ static void usage(const char * executable) {
     printf("                                      minimum Q8_0 relative RMSE on non-largest values before protecting a block (default: 0.01)\n");
     printf("  --outlier-max-frac F\n");
     printf("                                      maximum protected block fraction per tensor (default: 0.02)\n");
+    printf("  --outlier-score S\n");
+    printf("                                      minimum residual-energy score to protect a block (Q4 only, default: 0.01)\n");
     printf("  --outlier-include-weights REGEX\n");
     printf("                                      only apply outlier protection to matching tensors\n");
     printf("  --outlier-exclude-weights REGEX\n");
@@ -638,6 +640,17 @@ int llama_quantize(int argc, char ** argv) {
                 params.q4_outlier_max_frac = frac_val;
                 if (params.q8_outlier_max_frac < 0.0f || params.q8_outlier_max_frac > 1.0f) {
                     fprintf(stderr, "error: --outlier-max-frac must be in [0, 1]\n");
+                    usage(argv[0]);
+                }
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-score") == 0) {
+            if (arg_idx < argc-1) {
+                float score_val = std::stof(argv[++arg_idx]);
+                params.q4_outlier_score = score_val;
+                if (params.q4_outlier_score < 0.0f) {
+                    fprintf(stderr, "error: --outlier-score must be >= 0\n");
                     usage(argv[0]);
                 }
             } else {
