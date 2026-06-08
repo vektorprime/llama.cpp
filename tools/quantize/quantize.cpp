@@ -841,9 +841,10 @@ int llama_quantize(int argc, char ** argv) {
 
     if (params.ftype == LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER) {
         params.q4_outlier_enable = true;
-        params.q4_outlier_ratio = 16.0f;
-        params.q4_outlier_nonmax_rel_rmse = 0.01f;
-        params.q4_outlier_max_frac = 0.02f;
+        // Propagate shared --outlier-* CLI args to q4 params
+        params.q4_outlier_ratio = params.q8_outlier_ratio;
+        params.q4_outlier_nonmax_rel_rmse = params.q8_outlier_nonmax_rel_rmse;
+        params.q4_outlier_max_frac = params.q8_outlier_max_frac;
     }
 
     if (!params.dry_run) {
