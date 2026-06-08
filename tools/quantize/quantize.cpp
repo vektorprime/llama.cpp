@@ -67,6 +67,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q6_K",     LLAMA_FTYPE_MOSTLY_Q6_K,     " 6.14G, +0.0217 ppl @ Llama-3-8B",  },
     { "Q8_0",     LLAMA_FTYPE_MOSTLY_Q8_0,     " 7.96G, +0.0026 ppl @ Llama-3-8B",  },
     { "Q8_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER, " mostly Q8_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
+    { "Q4_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER, " mostly Q4_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
     { "F16",      LLAMA_FTYPE_MOSTLY_F16,      "14.00G, +0.0020 ppl @ Mistral-7B",  },
     { "BF16",     LLAMA_FTYPE_MOSTLY_BF16,     "14.00G, -0.0050 ppl @ Mistral-7B",  },
     { "F32",      LLAMA_FTYPE_ALL_F32,         "26.00G              @ 7B",          },
@@ -836,6 +837,13 @@ int llama_quantize(int argc, char ** argv) {
     if (params.ftype == LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER) {
         params.q8_outlier_enable = true;
         params.q8_outlier_store = LLAMA_Q8_OUTLIER_STORE_FULL;
+    }
+
+    if (params.ftype == LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER) {
+        params.q4_outlier_enable = true;
+        params.q4_outlier_ratio = 16.0f;
+        params.q4_outlier_nonmax_rel_rmse = 0.01f;
+        params.q4_outlier_max_frac = 0.02f;
     }
 
     if (!params.dry_run) {
