@@ -1387,7 +1387,7 @@ static void q4_outlier_compute_deltas(
         const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
         // Use official GGML dequantize to ensure delta matches inference kernels
         float q4_vals[LLAMA_Q8_OUTLIER_BLOCK_SIZE];
-        dequantize_row_q4_0((const block_q4_0 *) block_ptr, q4_vals, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
+        dequantize_row_q4_0(reinterpret_cast<const block_q4_0 *>(block_ptr), q4_vals, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
 
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
             float delta = orig[j] - q4_vals[j];
