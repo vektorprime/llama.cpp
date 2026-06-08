@@ -1393,14 +1393,17 @@ static void q4_outlier_compute_deltas(
         float q4_d = ggml_fp16_to_fp32(*d_ptr);
         const uint8_t * q4_data_block = (const uint8_t *)(block_ptr + sizeof(ggml_fp16_t));
 
-        // Dequantize Q4: each byte holds two 4-bit nibbles, biased by -8
+        // Dequantize Q4: elements 0..15 are lower nibbles, 16..31 are upper nibbles
+        // This matches quantize_row_q4_0_ref: layout
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-            uint8_t byte = q4_data_block[j / 2];
+            uint8_t byte;
             int8_t q;
-            if (j % 2 == 0) {
-                q = (int8_t)(byte & 0x0F) - 8;  // lower nibble
+            if (j < 16) {
+                byte = q4_data_block[j];
+                q = (int8_t)(byte & 0x0F) - 8; // element j (lower)
             } else {
-                q = (int8_t)(byte >> 4) - 8;    // upper nibble
+                byte = q4_data_block[j - 16];
+                q = (int8_t)(byte >> 4) - 8;   // element j (upper)
             }
             float q4_val = q * q4_d;
             float delta = orig[j] - q4_val;
