@@ -1676,6 +1676,16 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         params_local.q8_outlier_enable = true;
         params = &params_local;
     }
+    if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER && !params->q4_outlier_enable) {
+        if (&params_local != params) {
+            params_local = *params;
+        }
+        params_local.q4_outlier_enable = true;
+        params_local.q4_outlier_ratio = 16.0f;
+        params_local.q4_outlier_nonmax_rel_rmse = 0.01f;
+        params_local.q4_outlier_max_frac = 0.02f;
+        params = &params_local;
+    }
 
     int nthread = params->nthread;
 
