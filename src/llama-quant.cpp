@@ -459,7 +459,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q5_K;
             }
-            else if (new_type != GGML_TYPE_Q8_0) {
+            else if (new_type != GGML_TYPE_Q8_0 && ftype != LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER) {
                 new_type = GGML_TYPE_Q6_K;
             }
         }
