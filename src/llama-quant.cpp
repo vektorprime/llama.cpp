@@ -2,7 +2,7 @@
 #include "llama-model.h"
 #include "llama-model-loader.h"
 #include "llama-ext.h"
-#include "ggml/src/ggml-common.h"
+#include "ggml.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
