@@ -4479,6 +4479,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
 
     GGML_ASSERT(dst->ne[0] == n_rows_out);
     GGML_ASSERT(dst->ne[1] == n_tokens);
+    GGML_ASSERT(x->ne[0] == n_cols); // CPU doesn't currently handle sharding/views
 
     const int64_t ith = params->ith;
     const int64_t nth = params->nth;
@@ -4491,6 +4492,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     }
 
     float * dst_data = (float *) dst->data;
+    const int64_t dst_stride = dst->nb[1] / sizeof(float);
 
     if (n_blocks == 0 || n_tokens == 0) {
         if (ith == 0) {
@@ -4510,9 +4512,11 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int64_t row0 = ith * row_per_thread;
     const int64_t row1 = MIN(row0 + row_per_thread, n_rows_out);
 
-    // Zero this thread's output rows
+    // Zero this thread's output rows (correctly striding across tokens)
     for (int64_t row = row0; row < row1; row++) {
-        memset(dst_data + row * n_tokens, 0, n_tokens * sizeof(float));
+        for (int64_t it = 0; it < n_tokens; it++) {
+            dst_data[row + it * dst_stride] = 0.0f;
+        }
     }
 
     // Each thread iterates all blocks but only accumulates into its own row range
@@ -4536,9 +4540,10 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
                 const float a = x_data[(col0 + j) + it * x_stride];
                 sum += w * a;
             }
-            dst_data[row * n_tokens + it] += sum;
+            dst_data[row + it * dst_stride] += sum;
         }
     }
+
 
     // Synchronize all threads before debug output
     ggml_barrier(params->threadpool);
@@ -4549,7 +4554,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
         for (int64_t row = 0; row < n_rows_out; row++) {
             double row_l2 = 0.0;
             for (int64_t t = 0; t < n_tokens; t++) {
-                double v = (double)dst_data[row * n_tokens + t];
+                double v = (double)dst_data[row + t * dst_stride];
                 row_l2 += v * v;
             }
             if (row_l2 > 1e-20) {
