@@ -1230,25 +1230,20 @@ static bool q4_outlier_tensor_enabled(const llama_model_quantize_params * params
 static bool q4_outlier_block_is_candidate(
         const float * block,
         const float * imatrix,
-        float ratio_threshold,
-        float rel_rmse_threshold,
+        float /*ratio_threshold*/,
+        float /*rel_rmse_threshold*/,
         float & score) {
     constexpr float eps = 1.0e-12f;
 
-    int j_max = 0;
+    // Find signed value with largest absolute magnitude (matches Q4_0 scale computation)
     float max_abs = 0.0f;
-    float second_abs = 0.0f;
-    float max_val = 0.0f; // signed value with largest absolute magnitude
+    float max_val = 0.0f;
 
     for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
         const float a = std::fabs(block[j]);
         if (a > max_abs) {
-            second_abs = max_abs;
             max_abs = a;
             max_val = block[j];
-            j_max = j;
-        } else if (a > second_abs) {
-            second_abs = a;
         }
     }
 
@@ -1256,24 +1251,16 @@ static bool q4_outlier_block_is_candidate(
         return false;
     }
 
-    const float ratio = max_abs / std::max(second_abs, eps);
-    if (ratio < ratio_threshold) {
-        return false;
-    }
-
     // Q4_0: d = max / -8 (matches reference quantize_row_q4_0_ref)
     const float d = max_val / -8.0f;
+
+    // Score by normalized residual energy: sum(alpha * delta^2) / sum(alpha * W^2)
     double sqerr = 0.0;
     double energy = 0.0;
-    double wsum = 0.0;
 
     for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
-        if (j == j_max) {
-            continue;
-        }
-
+        // Q4_0: quantize all 32 elements
         const float qf = std::round(block[j] / d);
-        // Q4_0: clamp to -8..7
         const float q = std::max(-8.0f, std::min(7.0f, qf));
         const float x_hat = q * d;
         const float err = block[j] - x_hat;
@@ -1281,19 +1268,9 @@ static bool q4_outlier_block_is_candidate(
 
         sqerr += double(w) * double(err) * double(err);
         energy += double(w) * double(block[j]) * double(block[j]);
-        wsum += double(w);
     }
 
-    if (wsum <= 0.0) {
-        return false;
-    }
-
-    const float rel_rmse = std::sqrt(float(sqerr / std::max(energy, double(eps))));
-    if (rel_rmse < rel_rmse_threshold) {
-        return false;
-    }
-
-    score = ratio * rel_rmse;
+    score = float(sqerr / std::max(energy, double(eps)));
     return true;
 }
 
@@ -1319,7 +1296,11 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
     result.n_blocks_total = nrows * result.n_blocks_per_row;
 
     std::vector<q8_outlier_candidate> candidates;
-    candidates.reserve((size_t) std::min<int64_t>(result.n_blocks_total, 1024));
+    candidates.reserve((size_t) std::min<int64_t>(result.n_blocks_total, 65536));
+
+    // Minimum normalized residual to consider a block — skip blocks where
+    // Q4_0 already quantizes well (e.g. all-zero or near-scale-aligned blocks)
+    constexpr float min_score = 1.0e-6f;
 
     for (int64_t row = 0; row < nrows; ++row) {
         const float * row_data = f32_data + row * n_per_row;
@@ -1334,7 +1315,7 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
                     block_imatrix,
                     params->q4_outlier_ratio,
                     params->q4_outlier_nonmax_rel_rmse,
-                    score)) {
+                    score) && score > min_score) {
                 candidates.push_back({ row, block_col, score });
             }
         }
@@ -1559,11 +1540,8 @@ static void q4_outlier_write_report(
         fout << "      \"blocks_protected\": " << t.n_blocks() << ",\n";
         fout << "      \"protected_fraction\": " << std::setprecision(8) << frac << ",\n";
         fout << "      \"estimated_bpw\": " << std::setprecision(6) << t.estimated_bpw << ",\n";
-        fout << "      \"thresholds\": {\n";
-        fout << "        \"ratio\": " << params->q4_outlier_ratio << ",\n";
-        fout << "        \"nonmax_rel_rmse\": " << params->q4_outlier_nonmax_rel_rmse << ",\n";
-        fout << "        \"max_frac\": " << params->q4_outlier_max_frac << "\n";
-        fout << "      }\n";
+        fout << "      \"scoring\": \"residual_energy\",\n";
+        fout << "      \"max_frac\": " << params->q4_outlier_max_frac << "\n";
         fout << "    }" << (i + 1 == tensors.size() ? "\n" : ",\n");
     }
     fout << "  ]\n";
@@ -1683,8 +1661,6 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             params_local = *params;
         }
         params_local.q4_outlier_enable = true;
-        params_local.q4_outlier_ratio = 16.0f;
-        params_local.q4_outlier_nonmax_rel_rmse = 0.01f;
         params_local.q4_outlier_max_frac = 0.02f;
         params = &params_local;
     }
@@ -1717,9 +1693,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         if (params->keep_split) {
             throw std::runtime_error("Q4_0_BF16_OUTLIER does not support --keep-split in this CUDA-focused prototype");
         }
-        if (params->q4_outlier_ratio <= 0.0f || params->q4_outlier_nonmax_rel_rmse < 0.0f ||
-                params->q4_outlier_max_frac < 0.0f || params->q4_outlier_max_frac > 1.0f) {
-            throw std::runtime_error("invalid Q4_0_BF16_OUTLIER thresholds");
+        if (params->q4_outlier_max_frac < 0.0f || params->q4_outlier_max_frac > 1.0f) {
+            throw std::runtime_error("invalid Q4_0_BF16_OUTLIER max_frac");
         }
     }
 
@@ -2559,8 +2534,8 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q8_outlier_include_weights  =*/ nullptr,
         /*.q8_outlier_exclude_weights  =*/ nullptr,
         /*.q4_outlier_enable           =*/ false,
-        /*.q4_outlier_ratio            =*/ 16.0f,
-        /*.q4_outlier_nonmax_rel_rmse  =*/ 0.01f,
+        /*.q4_outlier_ratio            =*/ 0.0f,   // unused — Q4 uses residual-energy scoring
+        /*.q4_outlier_nonmax_rel_rmse  =*/ 0.0f,   // unused — Q4 uses residual-energy scoring
         /*.q4_outlier_max_frac         =*/ 0.02f,
         /*.q4_outlier_report_path      =*/ nullptr,
         /*.q4_outlier_include_weights  =*/ nullptr,
