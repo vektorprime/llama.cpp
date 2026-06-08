@@ -2,7 +2,7 @@
 #include "llama-model.h"
 #include "llama-model-loader.h"
 #include "llama-ext.h"
-
+#include "ggml/src/ggml-common.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -937,10 +937,6 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
     std::vector<q8_outlier_candidate> candidates;
     candidates.reserve((size_t) std::min<int64_t>(result.n_blocks_total, 1024));
 
-    int64_t n_ratio_pass = 0;
-    int64_t n_rmse_pass = 0;
-    float max_ratio_seen = 0.0f;
-    float max_rmse_seen = 0.0f;
 
     for (int64_t row = 0; row < nrows; ++row) {
         const float * row_data = f32_data + row * n_per_row;
@@ -1013,7 +1009,7 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
 static void q8_outlier_compute_deltas(
         const float * f32_data,
         const void * q8_data,
-        int64_t nrows,
+        float /*nrows*/,
         int64_t n_per_row,
         q8_outlier_tensor_data & outliers) {
 
@@ -1081,11 +1077,11 @@ static void q8_outlier_compute_deltas(
 }
 
 static void q8_outlier_reconstruct_tensor(
-        const ggml_tensor * tensor,
+        const ggml_tensor * /*tensor*/,
         const std::vector<int32_t> & idx,
         const std::vector<ggml_bf16_t> & values,
         float * f32_buf,
-        int64_t rows,
+        int64_t /*rows*/,
         int64_t cols) {
     const int64_t n_blocks = (int64_t) idx.size() / 2;
     for (int64_t k = 0; k < n_blocks; ++k) {
@@ -1184,11 +1180,11 @@ static size_t q8_outlier_sidecar_size(const q8_outlier_tensor_data & t) {
 // reconstruct a full F32 tensor from a Q8_0 base (already dequantized to f32_buf)
 // by adding BF16 delta corrections for outlier blocks
 static void q8_outlier_reconstruct_tensor(
-    const ggml_tensor * base_tensor,
+    const ggml_tensor * /*base_tensor*/,
     const ggml_tensor * idx_tensor,
     const ggml_tensor * values_tensor,
     float * f32_buf,
-    int64_t n_rows,
+    int64_t /*n_rows*/,
     int64_t n_cols) {
     const int32_t * idx = (const int32_t *) idx_tensor->data;
     const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
@@ -1373,7 +1369,7 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
 static void q4_outlier_compute_deltas(
         const float * f32_data,
         const void * q4_data,
-        int64_t nrows,
+        float /*nrows*/,
         int64_t n_per_row,
         q8_outlier_tensor_data & outliers) {
 
@@ -1389,10 +1385,6 @@ static void q4_outlier_compute_deltas(
 
         // Q4_0 block: ggml_fp16_t d (2 bytes) + uint8_t qs[16] (16 bytes) = 18 bytes
         const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
-        const ggml_fp16_t * d_ptr = (const ggml_fp16_t *) block_ptr;
-        float q4_d = ggml_fp16_to_fp32(*d_ptr);
-        const uint8_t * q4_data_block = (const uint8_t *)(block_ptr + sizeof(ggml_fp16_t));
-
         // Use official GGML dequantize to ensure delta matches inference kernels
         float q4_vals[LLAMA_Q8_OUTLIER_BLOCK_SIZE];
         dequantize_row_q4_0((const block_q4_0 *) block_ptr, q4_vals, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
@@ -1430,11 +1422,11 @@ static void q4_outlier_compute_deltas(
 
 // reconstruct from vector data (same as q8 version — reconstruction is format-agnostic)
 static void q4_outlier_reconstruct_tensor(
-        const ggml_tensor * tensor,
+        const ggml_tensor * /*tensor*/,
         const std::vector<int32_t> & idx,
         const std::vector<ggml_bf16_t> & values,
         float * f32_buf,
-        int64_t rows,
+        int64_t /*rows*/,
         int64_t cols) {
     const int64_t n_blocks = (int64_t) idx.size() / 2;
     for (int64_t k = 0; k < n_blocks; ++k) {
@@ -1450,11 +1442,11 @@ static void q4_outlier_reconstruct_tensor(
 
 // reconstruct from pointer tensors (same as q8 version — format-agnostic)
 static void q4_outlier_reconstruct_tensor(
-    const ggml_tensor * base_tensor,
+    const ggml_tensor * /*base_tensor*/,
     const ggml_tensor * idx_tensor,
     const ggml_tensor * values_tensor,
     float * f32_buf,
-    int64_t n_rows,
+    int64_t /*n_rows*/,
     int64_t n_cols) {
     const int32_t * idx = (const int32_t *) idx_tensor->data;
     const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
