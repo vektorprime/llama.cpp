@@ -4536,7 +4536,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
                 const float a = x_data[(col0 + j) + it * x_stride];
                 sum += w * a;
             }
-            dst_data[row + it * n_rows_out] += sum;
+            dst_data[row * n_tokens + it] += sum;
         }
     }
 
@@ -4549,7 +4549,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
         for (int64_t row = 0; row < n_rows_out; row++) {
             double row_l2 = 0.0;
             for (int64_t t = 0; t < n_tokens; t++) {
-                double v = (double)dst_data[row + t * n_rows_out];
+                double v = (double)dst_data[row * n_tokens + t];
                 row_l2 += v * v;
             }
             if (row_l2 > 1e-20) {

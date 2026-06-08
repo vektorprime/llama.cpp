@@ -85,7 +85,7 @@ static __global__ void outlier_blocks_kernel(
 
     // Thread 0 writes the result (atomic add since multiple blocks may target the same row)
     if (tid == 0 && row >= 0 && row < n_rows_out) {
-        const int64_t dst_idx = row + token_idx * n_rows_out;
+        const int64_t dst_idx = row * n_tokens + token_idx;
         atomicAdd(dst + dst_idx, sum);
     }
 }
