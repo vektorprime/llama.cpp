@@ -1031,10 +1031,10 @@ void llama_model::build_outlier_info() {
         const int32_t * idx_data = nullptr;
         std::vector<int32_t> idx_data_buf;
 
-        if (idx_tensor->buffer && ggml_backend_buffer_is_host(idx_tensor->buffer)) {
+        if (idx_tensor->buffer && ggml_backend_buffer_is_host(idx_tensor->buffer) && idx_tensor->data) {
             // Already on CPU
             idx_data = (const int32_t *) idx_tensor->data;
-        } else if (idx_tensor->buffer) {
+        } else if (idx_tensor->buffer && idx_tensor->data) {
             // On a device (GPU) — use backend API to read data
             idx_data_buf.resize(n_blocks * 2);
             ggml_backend_tensor_get(idx_tensor, idx_data_buf.data(), 0, n_blocks * 2 * sizeof(int32_t));
@@ -1146,9 +1146,9 @@ void llama_model::build_outlier_info() {
             std::vector<ggml_bf16_t> values_buf;
             const ggml_bf16_t * values_ptr = nullptr;
 
-            if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer)) {
+            if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
                 values_ptr = (const ggml_bf16_t *) values_tensor->data;
-            } else if (values_tensor->buffer) {
+            } else if (values_tensor->buffer && values_tensor->data) {
                 values_buf.resize(n_blocks * 32);
                 ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, n_blocks * 32 * sizeof(ggml_bf16_t));
                 values_ptr = values_buf.data();
