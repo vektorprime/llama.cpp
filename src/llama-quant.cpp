@@ -830,6 +830,11 @@ static bool q8_outlier_tensor_enabled(const llama_model_quantize_params * params
     if (!params->q8_outlier_enable) {
         return false;
     }
+    // Skip embedding tensors — inference uses ggml_get_rows which has no
+    // outlier correction path, so sidecar data would be written but never used.
+    if (tensor_name_match_token_embd(name.c_str())) {
+        return false;
+    }
     if (params->q8_outlier_include_weights && !q8_outlier_name_matches(params->q8_outlier_include_weights, name)) {
         return false;
     }
@@ -1218,6 +1223,11 @@ static bool q4_outlier_name_matches(const char * pattern, const std::string & na
 
 static bool q4_outlier_tensor_enabled(const llama_model_quantize_params * params, const std::string & name) {
     if (!params->q4_outlier_enable) {
+        return false;
+    }
+    // Skip embedding tensors — inference uses ggml_get_rows which has no
+    // outlier correction path, so sidecar data would be written but never used.
+    if (tensor_name_match_token_embd(name.c_str())) {
         return false;
     }
     if (params->q4_outlier_include_weights && !q4_outlier_name_matches(params->q4_outlier_include_weights, name)) {
