@@ -4,6 +4,12 @@
 #include "llama-ext.h"
 #include "ggml.h"
 #include <algorithm>
+
+// Forward declaration of block_q4_0 and dequantize_row_q4_0 from ggml-common.h / ggml-quants.h
+extern "C" {
+    struct block_q4_0;
+    void dequantize_row_q4_0(const block_q4_0 * x, float * y, int64_t k);
+}
 #include <cmath>
 #include <cstring>
 #include <cinttypes>
