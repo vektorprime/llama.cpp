@@ -2504,6 +2504,19 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     LLAMA_LOG_INFO("%s: model size  = %8.2f MiB (%.2f BPW)\n", __func__, total_size_org/1024.0/1024.0, total_size_org*8.0/ml.n_elements);
     LLAMA_LOG_INFO("%s: quant size  = %8.2f MiB (%.2f BPW)\n", __func__, total_size_new/1024.0/1024.0, total_size_new*8.0/ml.n_elements);
 
+    // Compute and report sidecar size
+    {
+        size_t sidecar_size = 0;
+        for (const auto & t : q8_outlier_tensors) sidecar_size += q8_outlier_sidecar_size(t);
+        for (const auto & t : q4_outlier_tensors) sidecar_size += q4_outlier_sidecar_size(t);
+        if (sidecar_size > 0) {
+            const size_t total_with_sidecar = total_size_new + sidecar_size;
+            LLAMA_LOG_INFO("%s: sidecar size = %8.2f MiB\n", __func__, sidecar_size/1024.0/1024.0);
+            LLAMA_LOG_INFO("%s: total size  = %8.2f MiB (%.2f BPW)\n", __func__,
+                    total_with_sidecar/1024.0/1024.0, total_with_sidecar*8.0/ml.n_elements);
+        }
+    }
+
     if (!params->imatrix && params->dry_run && will_require_imatrix) {
         LLAMA_LOG_WARN("%s: WARNING: dry run completed successfully, but actually completing this quantization will require an imatrix!\n",
                        __func__
