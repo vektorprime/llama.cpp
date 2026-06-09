@@ -1,3 +1,7 @@
+We only care about CUDA and CPU pipelines
+
+Unless stated otherwise, we are testing with Qwen3.5 and Qwen 3.6 dense models, usually Qwen 3.5 2B.
+
 If working on the q4_0 outlier code, always make sure you've read Q4_0_BF16_OUTLIER_IMPLEMENTATION.md
 If working on the q8_0 outlier clode, always make sure you've read Q8_0_BF16_OUTLIER_IMPLEMENTATION.md
 

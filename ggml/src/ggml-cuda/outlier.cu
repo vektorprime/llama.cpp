@@ -208,6 +208,30 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
 
+    // [delta-cuda] diagnose zero-output: sample first few idx entries and check bounds
+    if (ggml_custom_logs_enabled() && n_blocks > 0) {
+        int sample_count = n_blocks < 5 ? (int)n_blocks : 5;
+        std::vector<int32_t> idx_sample(sample_count * 2);
+        CUDA_CHECK(cudaMemcpy(idx_sample.data(), idx_d, sample_count * 2 * sizeof(int32_t), cudaMemcpyDeviceToHost));
+        int skip_col_shard = 0, skip_col_global = 0, skip_row = 0, valid = 0;
+        for (int i = 0; i < sample_count; i++) {
+            int32_t row = idx_sample[i * 2];
+            int32_t bcol = idx_sample[i * 2 + 1];
+            int64_t col0 = (int64_t)bcol * 32;
+            if (row < 0 || row >= n_rows_out) { skip_row++; continue; }
+            if (col0 + 31 < col_offset || col0 >= col_offset + n_cols_x) { skip_col_shard++; continue; }
+            if (col0 + 31 >= n_cols_all) { skip_col_global++; continue; }
+            valid++;
+        }
+        fprintf(stderr, "[delta-cuda] idx_sample(%d/%lld): valid=%d skip_col_shard=%d skip_col_global=%d skip_row=%d | first: ",
+                sample_count, (long long)n_blocks, valid, skip_col_shard, skip_col_global, skip_row);
+        for (int i = 0; i < sample_count; i++) {
+            fprintf(stderr, "(r=%d,bc=%d) ", idx_sample[i*2], idx_sample[i*2+1]);
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+
     // [delta-cuda] compute output L2 norm by copying first column and measuring on host
     if (ggml_custom_logs_enabled()) {
         {
