@@ -1677,18 +1677,16 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         if (params->q8_outlier_store != LLAMA_Q8_OUTLIER_STORE_FULL) {
             throw std::runtime_error("Q8_0_BF16_OUTLIER currently supports only full outlier block storage");
         }
-        if (params->keep_split) {
-            throw std::runtime_error("Q8_0_BF16_OUTLIER does not support --keep-split in this CUDA-focused prototype");
-        }
+
+
         if (params->q8_outlier_ratio <= 0.0f || params->q8_outlier_nonmax_rel_rmse < 0.0f ||
                 params->q8_outlier_max_frac < 0.0f || params->q8_outlier_max_frac > 1.0f) {
             throw std::runtime_error("invalid Q8_0_BF16_OUTLIER thresholds");
         }
     }
     if (q4_outlier_enabled) {
-        if (params->keep_split) {
-            throw std::runtime_error("Q4_0_BF16_OUTLIER does not support --keep-split in this CUDA-focused prototype");
-        }
+
+
         if (params->q4_outlier_max_frac < 0.0f || params->q4_outlier_max_frac > 1.0f) {
             throw std::runtime_error("invalid Q4_0_BF16_OUTLIER max_frac");
         }

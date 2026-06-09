@@ -1674,12 +1674,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
         for (auto & [buft, ctx_ptr] : ml.ctx_map) {
             ggml_context * ctx = ctx_ptr.get();
-            // Skip CPU context — sidecars only needed on GPU
-            if (ctx == cpu_ctx && ml.ctx_map.size() > 1) {
-                LLAMA_LOG_WARN("%s: sidecar tensor placed on GPU context alongside parent weight tensor\n",
-                        __func__);
-                continue;
-            }
+
+
             for (const auto & [name, weight] : ml.weights_map) {
                 if (name.find(".outlier_idx") == std::string::npos &&
                     name.find(".outlier_bf16") == std::string::npos) {
@@ -1830,7 +1826,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     if (buf_size == 0 && n_needs_alloc > 0) {
                         throw std::runtime_error(format(
                             "%s buffer allocated 0 bytes for %d tensors (%s backend).\n"
-                            "This indicates a backend allocation failure. Try using -sm tensor to use the Meta device path.",
+                            "This indicates a backend allocation failure.",
                             ggml_backend_buft_name(buft), n_needs_alloc,
                             ggml_backend_buft_get_device(buft) ? ggml_backend_dev_name(ggml_backend_buft_get_device(buft)) : "unknown"));
                     }
