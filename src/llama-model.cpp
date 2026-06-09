@@ -19,6 +19,7 @@
 
 #include "ggml.h"
 #include "ggml-cpp.h"
+#include "ggml-quants.h"
 
 #include <algorithm>
 #include <cassert>
@@ -1001,13 +1002,21 @@ void llama_model::build_outlier_info() {
         ggml_tensor * idx_tensor    = it_idx->second;
         ggml_tensor * values_tensor = it_values->second;
 
-        // Validate shapes
-        if (idx_tensor->type != GGML_TYPE_I32 || values_tensor->type != GGML_TYPE_BF16) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s due to unexpected types\n", __func__, name.c_str());
+        // Validate types
+        if (idx_tensor->type != GGML_TYPE_I32) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx must be I32\n", __func__, name.c_str());
             continue;
         }
-        if (idx_tensor->ne[0] != 2 || values_tensor->ne[0] != 32) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s due to unexpected shapes\n", __func__, name.c_str());
+        if (values_tensor->type != GGML_TYPE_BF16 && values_tensor->type != GGML_TYPE_Q8_0) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values must be BF16 or Q8_0\n", __func__, name.c_str());
+            continue;
+        }
+        if (idx_tensor->ne[0] != 2) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx ne[0] must be 2\n", __func__, name.c_str());
+            continue;
+        }
+        if (values_tensor->ne[0] != 32) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32\n", __func__, name.c_str());
             continue;
         }
 
@@ -1024,6 +1033,7 @@ void llama_model::build_outlier_info() {
         info.n_blocks   = n_blocks;
         info.n_rows_out = tensor->ne[1];
         info.n_cols     = tensor->ne[0];
+        info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 : LLAMA_OUTLIER_VALUE_TYPE_BF16;
 
         // Build CSR layout
         // Read idx data: [2, n_blocks] -> (row, block_col) per block
@@ -1141,43 +1151,79 @@ void llama_model::build_outlier_info() {
             }
         }
 
-        // [delta-load] logging: read BF16 delta values and compute L2 norms
+        // [delta-load] logging: read delta values and compute L2 norms
         {
-            std::vector<ggml_bf16_t> values_buf;
-            const ggml_bf16_t * values_ptr = nullptr;
+            if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+                std::vector<uint8_t> values_buf;
+                const block_q8_0 * values_ptr = nullptr;
 
-            if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
-                values_ptr = (const ggml_bf16_t *) values_tensor->data;
-            } else if (values_tensor->buffer && values_tensor->data) {
-                values_buf.resize(n_blocks * 32);
-                ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, n_blocks * 32 * sizeof(ggml_bf16_t));
-                values_ptr = values_buf.data();
-            } else if (values_tensor->data) {
-                values_ptr = (const ggml_bf16_t *) values_tensor->data;
-            }
-
-            if (values_ptr && ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-load] %s: n_blocks=%lld\n",
-                        name.c_str(), (long long)n_blocks);
-
-                // First 3 blocks: L2 norm per block
-                int64_t sample = n_blocks < 3 ? n_blocks : 3;
-                double total_l2 = 0.0;
-                for (int64_t i = 0; i < n_blocks; i++) {
-                    double block_l2 = 0.0;
-                    for (int j = 0; j < 32; j++) {
-                        float d = ggml_bf16_to_fp32(values_ptr[i * 32 + j]);
-                        block_l2 += (double)d * d;
-                    }
-                    total_l2 += block_l2;
-                    if (i < sample) {
-                        fprintf(stderr, "[delta-load]   block[%lld] L2=%.6e\n",
-                                (long long)i, sqrt(block_l2));
-                    }
+                if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
+                    values_ptr = (const block_q8_0 *) values_tensor->data;
+                } else if (values_tensor->buffer && values_tensor->data) {
+                    values_buf.resize(ggml_nbytes(values_tensor));
+                    ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, ggml_nbytes(values_tensor));
+                    values_ptr = (const block_q8_0 *) values_buf.data();
+                } else if (values_tensor->data) {
+                    values_ptr = (const block_q8_0 *) values_tensor->data;
                 }
-                fprintf(stderr, "[delta-load]   total_delta_L2=%.6e (sqrt of sum of all deltas squared)\n",
-                        sqrt(total_l2));
-                fflush(stderr);
+
+                if (values_ptr && ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-load] %s: n_blocks=%lld (Q8_0)\n",
+                            name.c_str(), (long long)n_blocks);
+                    int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                    double total_l2 = 0.0;
+                    for (int64_t i = 0; i < n_blocks; i++) {
+                        double block_l2 = 0.0;
+                        const float d = ggml_fp16_to_fp32(values_ptr[i].d);
+                        for (int j = 0; j < 32; j++) {
+                            float v = d * values_ptr[i].qs[j];
+                            block_l2 += (double)v * v;
+                        }
+                        total_l2 += block_l2;
+                        if (i < sample) {
+                            fprintf(stderr, "[delta-load]   block[%lld] L2=%.6e\n",
+                                    (long long)i, sqrt(block_l2));
+                        }
+                    }
+                    fprintf(stderr, "[delta-load]   total_delta_L2=%.6e\n", sqrt(total_l2));
+                    fflush(stderr);
+                }
+            } else {
+                std::vector<ggml_bf16_t> values_buf;
+                const ggml_bf16_t * values_ptr = nullptr;
+
+                if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
+                    values_ptr = (const ggml_bf16_t *) values_tensor->data;
+                } else if (values_tensor->buffer && values_tensor->data) {
+                    values_buf.resize(n_blocks * 32);
+                    ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, n_blocks * 32 * sizeof(ggml_bf16_t));
+                    values_ptr = values_buf.data();
+                } else if (values_tensor->data) {
+                    values_ptr = (const ggml_bf16_t *) values_tensor->data;
+                }
+
+                if (values_ptr && ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-load] %s: n_blocks=%lld\n",
+                            name.c_str(), (long long)n_blocks);
+
+                    int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                    double total_l2 = 0.0;
+                    for (int64_t i = 0; i < n_blocks; i++) {
+                        double block_l2 = 0.0;
+                        for (int j = 0; j < 32; j++) {
+                            float d = ggml_bf16_to_fp32(values_ptr[i * 32 + j]);
+                            block_l2 += (double)d * d;
+                        }
+                        total_l2 += block_l2;
+                        if (i < sample) {
+                            fprintf(stderr, "[delta-load]   block[%lld] L2=%.6e\n",
+                                    (long long)i, sqrt(block_l2));
+                        }
+                    }
+                    fprintf(stderr, "[delta-load]   total_delta_L2=%.6e (sqrt of sum of all deltas squared)\n",
+                            sqrt(total_l2));
+                    fflush(stderr);
+                }
             }
         }
 

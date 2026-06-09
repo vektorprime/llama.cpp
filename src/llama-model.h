@@ -585,12 +585,13 @@ struct llama_model {
     // maps base weight tensor name -> outlier block info (CSR layout)
     // populated by llama_model::build_outlier_info() after tensor loading
     struct llama_outlier_block_info {
-        std::string     name;              // base tensor name
-        ggml_tensor *   idx    = nullptr;  // [2, n_blocks] i32  (row, block_col per block)
-        ggml_tensor *   values = nullptr;  // [32, n_blocks] bf16
-        int64_t         n_blocks = 0;
-        int64_t         n_rows_out = 0;
-        int64_t         n_cols = 0;
+        std::string                 name;              // base tensor name
+        ggml_tensor *               idx    = nullptr;  // [2, n_blocks] i32  (row, block_col per block)
+        ggml_tensor *               values = nullptr;  // [32, n_blocks] bf16 or Q8_0
+        int64_t                     n_blocks = 0;
+        int64_t                     n_rows_out = 0;
+        int64_t                     n_cols = 0;
+        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
 
         // CSR layout for efficient sparse correction:
         // row_ptr[row]..row_ptr[row+1] gives range into block_col / values for that output row

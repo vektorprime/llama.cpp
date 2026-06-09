@@ -190,6 +190,8 @@ static void usage(const char * executable) {
     printf("                                      store full BF16 protected blocks and zero the Q8_0 base block (default)\n");
     printf("  --outlier-base q4_0\n");
     printf("                                      use Q4_0 as base type instead of Q8_0 for outlier protection\n");
+    printf("  --outlier-value-type bf16|q8_0\n");
+    printf("                                      delta storage type for Q4 outlier (default: bf16)\n");
     printf("  --custom-logs\n");
     printf("                                      enable custom debug logging ([delta-*], [q8_verify], etc.)\n\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
@@ -708,6 +710,17 @@ int llama_quantize(int argc, char ** argv) {
                 params.ftype = LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER;
             } else {
                 fprintf(stderr, "%s: --outlier-base currently supports only 'q4_0'\n", __func__);
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-value-type") == 0) {
+            if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "q8_0")) {
+                ++arg_idx;
+                params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_Q8_0;
+            } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "bf16")) {
+                ++arg_idx;
+                params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
+            } else {
+                fprintf(stderr, "%s: --outlier-value-type must be 'bf16' or 'q8_0'\n", __func__);
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--custom-logs") == 0) {

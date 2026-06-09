@@ -3293,13 +3293,14 @@ void ggml_mul_mat_set_hint(
     c = ggml_mul_mat_outlier_blocks(ctx, idx, values, x, n_rows_out, n_cols);
 
     idx    -> [2, n_outlier_blocks], i32  (row, block_col)
-    values -> [32, n_outlier_blocks], bf16
+    values -> [32, n_outlier_blocks], bf16 or Q8_0
     x      -> [n_cols, n_tokens]
     c      -> [n_rows_out, n_tokens]
 
-    Sparse BF16 outlier correction for Q8_0_BF16_OUTLIER:
-    For each protected block, compute dot product of the original BF16 values
-    with the corresponding activation slice, and accumulate into the output row.
+    Sparse outlier correction:
+    For each protected block, compute dot product of the delta values
+    (dequantized if Q8_0) with the corresponding activation slice,
+    and accumulate into the output row.
 */
 struct ggml_tensor * ggml_mul_mat_outlier_blocks(
         struct ggml_context * ctx,
@@ -3309,7 +3310,7 @@ struct ggml_tensor * ggml_mul_mat_outlier_blocks(
         int64_t               n_rows_out,
         int64_t               n_cols) {
     GGML_ASSERT(idx->type == GGML_TYPE_I32);
-    GGML_ASSERT(values->type == GGML_TYPE_BF16);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0);
     GGML_ASSERT(x->type == GGML_TYPE_F32);
     GGML_ASSERT(idx->ne[0] == 2);  // [row, block_col]
     GGML_ASSERT(values->ne[0] == 32); // block_size = 32

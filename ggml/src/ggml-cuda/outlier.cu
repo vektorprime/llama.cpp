@@ -10,7 +10,7 @@
 // Kernel: sparse BF16 outlier block correction for Q8_0_BF16_OUTLIER
 //
 // For each outlier block, compute:
-//   out[row, token] += sum_{j=0..31} bf16_to_float(values[j, block]) * x[col0 + j, token]
+//   out[row, token] += sum_{j=0..31} values[j, block] * x[col0 + j, token]
 //
 // Grid dimensions:
 //   blockIdx.x: outlier block index (0..n_blocks-1)
@@ -21,16 +21,16 @@
 
 #define OUTLIER_BLOCK_SIZE 32
 
-static __global__ void outlier_blocks_kernel(
+static __global__ void outlier_blocks_kernel_bf16(
         const int32_t *     __restrict__ idx,       // [2, n_blocks]
         const nv_bfloat16 * __restrict__ values,    // [32, n_blocks] in BF16
         const float *       __restrict__ x,         // [n_cols_x, n_tokens] shard-local
         float *             __restrict__ dst,       // [n_rows_out, n_tokens]
         const int64_t n_blocks,
-        const int64_t n_cols_all,      // full column count (all shards)
-        const int64_t n_cols_x,        // shard-local column count
-        const int64_t col_offset,      // starting column of this shard in global space
-        const int64_t x_stride,        // stride between tokens in x
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
         const int64_t n_rows_out,
         const int64_t n_tokens) {
 
@@ -41,49 +41,102 @@ static __global__ void outlier_blocks_kernel(
         return;
     }
 
-    // Read block metadata
     const int32_t row       = idx[block_idx * 2];
     const int32_t block_col = idx[block_idx * 2 + 1];
     const int64_t col0      = (int64_t) block_col * 32;
 
-    // Check if this block touches our shard: [col_offset, col_offset + n_cols_x)
-    // must overlap [col0, col0 + 32)
     if (col0 + 31 < col_offset || col0 >= col_offset + n_cols_x) {
-        return; // block entirely outside this shard
+        return;
     }
 
     if (col0 + 31 >= n_cols_all) {
-        return; // out of bounds globally
+        return;
     }
 
-    // Each thread handles one element of the dot product
     const int tid = threadIdx.x;
     float sum = 0.0f;
 
-    // Each thread processes element j = tid
     if (tid < 32) {
         const int64_t j = tid;
         const int64_t col_global = col0 + j;
-        // Only participate if this column is in our shard
         if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
-            // Load BF16 weight and convert to float
             const float w = __bfloat162float(values[block_idx * 32 + j]);
-
-            // Load corresponding activation (use x_stride for correct row stride)
             const int64_t col_local = col_global - col_offset;
             const float a = x[col_local + token_idx * x_stride];
-
             sum = w * a;
         }
     }
 
-    // Warp reduction: reduce sum within the warp (32 threads)
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
         sum += __shfl_down_sync(0xffffffff, sum, offset);
     }
 
-    // Thread 0 writes the result (atomic add since multiple blocks may target the same row)
+    if (tid == 0 && row >= 0 && row < n_rows_out) {
+        const int64_t dst_idx = row + token_idx * n_rows_out;
+        atomicAdd(dst + dst_idx, sum);
+    }
+}
+
+// Q8_0 block layout: ggml_half d (2 bytes) + int8_t qs[32] (32 bytes) = 34 bytes
+typedef struct {
+    uint16_t d;
+    char qs[32];
+} block_q8_0_cuda;
+
+static __global__ void outlier_blocks_kernel_q8_0(
+        const int32_t *          __restrict__ idx,       // [2, n_blocks]
+        const block_q8_0_cuda *  __restrict__ values,    // [n_blocks] Q8_0 blocks
+        const float *            __restrict__ x,
+        float *                  __restrict__ dst,
+        const int64_t n_blocks,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens) {
+
+    const int64_t block_idx = blockIdx.x;
+    const int64_t token_idx = blockIdx.y;
+
+    if (block_idx >= n_blocks || token_idx >= n_tokens) {
+        return;
+    }
+
+    const int32_t row       = idx[block_idx * 2];
+    const int32_t block_col = idx[block_idx * 2 + 1];
+    const int64_t col0      = (int64_t) block_col * 32;
+
+    if (col0 + 31 < col_offset || col0 >= col_offset + n_cols_x) {
+        return;
+    }
+
+    if (col0 + 31 >= n_cols_all) {
+        return;
+    }
+
+    const block_q8_0_cuda * q8block = &values[block_idx];
+    const float d = __half2float(__nv_bfloat162float2(q8block->d));
+    const int tid = threadIdx.x;
+    float sum = 0.0f;
+
+    if (tid < 32) {
+        const int64_t j = tid;
+        const int64_t col_global = col0 + j;
+        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
+            const float w = d * (float)q8block->qs[j];
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token_idx * x_stride];
+            sum = w * a;
+        }
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
     if (tid == 0 && row >= 0 && row < n_rows_out) {
         const int64_t dst_idx = row + token_idx * n_rows_out;
         atomicAdd(dst + dst_idx, sum);
@@ -93,7 +146,7 @@ static __global__ void outlier_blocks_kernel(
 static void outlier_blocks_cuda(
         ggml_backend_cuda_context & ctx,
         const int32_t *     idx_d,
-        const nv_bfloat16 * values_d,
+        const void *        values_d,
         const float *       x_d,
         float *             dst_d,
         const int64_t n_blocks,
@@ -102,11 +155,11 @@ static void outlier_blocks_cuda(
         const int64_t col_offset,
         const int64_t x_stride,
         const int64_t n_rows_out,
-        const int64_t n_tokens) {
+        const int64_t n_tokens,
+        enum ggml_type values_type) {
 
     cudaStream_t stream = ctx.stream();
 
-    // Clear dst to zero first (important since we use atomicAdd)
     CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream));
 
     if (n_blocks == 0 || n_tokens == 0 || n_cols_x == 0) {
@@ -117,27 +170,35 @@ static void outlier_blocks_cuda(
     dim3 grid_dim((uint32_t) n_blocks, (uint32_t) n_tokens, 1);
 
     if (ggml_custom_logs_enabled()) {
-        fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u)\n",
+        fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u) values_type=%s\n",
                 (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
-                (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z);
+                (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z,
+                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : "BF16");
         fflush(stderr);
     }
 
-    outlier_blocks_kernel<<<grid_dim, block_dim, 0, stream>>>(
-            idx_d, values_d, x_d, dst_d,
-            n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    if (values_type == GGML_TYPE_Q8_0) {
+        const block_q8_0_cuda * values_q8 = (const block_q8_0_cuda *) values_d;
+        outlier_blocks_kernel_q8_0<<<grid_dim, block_dim, 0, stream>>>(
+                idx_d, values_q8, x_d, dst_d,
+                n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    } else {
+        const nv_bfloat16 * values_bf16 = (const nv_bfloat16 *) values_d;
+        outlier_blocks_kernel_bf16<<<grid_dim, block_dim, 0, stream>>>(
+                idx_d, values_bf16, x_d, dst_d,
+                n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    }
 
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Main entry point called from ggml-cuda dispatch
 void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * idx    = dst->src[0];
     const ggml_tensor * values = dst->src[1];
     const ggml_tensor * x      = dst->src[2];
 
     GGML_ASSERT(idx->type    == GGML_TYPE_I32);
-    GGML_ASSERT(values->type == GGML_TYPE_BF16);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0);
     GGML_ASSERT(x->type      == GGML_TYPE_F32);
     GGML_ASSERT(dst->type    == GGML_TYPE_F32);
 
@@ -148,16 +209,10 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const int64_t n_cols_x   = x->ne[0];
     const int64_t x_stride   = x->nb[1] / (int64_t)sizeof(float);
 
-    // Compute shard column offset from CUDA device index.
-    // When tensor parallelism splits activations, each GPU gets a contiguous
-    // shard but the idx data uses global column indices. We need to know
-    // which global column range this GPU owns.
     int64_t col_offset = 0;
     if (x->view_src && x->view_offs > 0) {
         col_offset = x->view_offs / (int64_t)sizeof(float);
     } else if (n_cols_x < n_cols_all) {
-        // Activation is split but not a view — compute offset from device index.
-        // Assumes equal shard sizes and device ordering matching shard order.
         col_offset = ctx.device * n_cols_x;
     }
 
@@ -168,47 +223,22 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(values->ne[0] == 32);
 
     if (ggml_custom_logs_enabled()) {
-        fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld\n",
+        fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld values_type=%s\n",
                 (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens,
-                (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset);
+                (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset,
+                values->type == GGML_TYPE_Q8_0 ? "Q8_0" : "BF16");
         fflush(stderr);
     }
 
-    const int32_t *     idx_d    = (const int32_t *)     idx->data;
-    const nv_bfloat16 * values_d = (const nv_bfloat16 *) values->data;
-    const float *       x_d      = (const float *)       x->data;
-    float *             dst_d    = (float *)             dst->data;
-
-#if 0 // DEBUG — verify kernel data (no sync — crashes during graph capture)
-    {
-        if (n_blocks > 0 && n_tokens > 0) {
-            std::vector<int32_t> idx_host(2);
-            std::vector<uint16_t> val_host(32);
-            std::vector<float> x_host(32);
-            CUDA_CHECK(cudaMemcpy(idx_host.data(), idx_d, 2*sizeof(int32_t), cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaMemcpy(val_host.data(), values_d, 32*sizeof(uint16_t), cudaMemcpyDeviceToHost));
-            int32_t row0 = idx_host[0], bcol0 = idx_host[1];
-            int64_t col0 = (int64_t)bcol0 * 32;
-            if (col0 + 31 >= col_offset && col0 < col_offset + n_cols_x && col0 + 31 < n_cols_all) {
-                int64_t col_local = col0 - col_offset;
-                CUDA_CHECK(cudaMemcpy(x_host.data(), x_d + col_local, 32*sizeof(float), cudaMemcpyDeviceToHost));
-                float expected_dot = 0.0f;
-                for (int j = 0; j < 32; j++) {
-                    float w = __bfloat162float(*(const nv_bfloat16*)&val_host[j]);
-                    expected_dot += w * x_host[j];
-                }
-                fprintf(stderr, "[CUDA] n_blocks=%lld row=%d block_col=%d col0=%lld expected_dot=%f\n",
-                        (long long)n_blocks, row0, bcol0, (long long)col0, expected_dot);
-            }
-        }
-        fflush(stderr);
-    }
-#endif
+    const int32_t * idx_d = (const int32_t *) idx->data;
+    const void *    values_d = values->data;
+    const float *   x_d      = (const float *) x->data;
+    float *         dst_d    = (float *) dst->data;
 
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
-            n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+            n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens,
+            values->type);
 
-    // [delta-cuda] diagnose zero-output: sample first few idx entries and check bounds
     if (ggml_custom_logs_enabled() && n_blocks > 0) {
         int sample_count = n_blocks < 5 ? (int)n_blocks : 5;
         std::vector<int32_t> idx_sample(sample_count * 2);
@@ -232,7 +262,6 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
         fflush(stderr);
     }
 
-    // [delta-cuda] compute output L2 norm by copying first column and measuring on host
     if (ggml_custom_logs_enabled()) {
         {
             int64_t col_n = n_rows_out;

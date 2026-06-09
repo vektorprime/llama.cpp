@@ -408,6 +408,11 @@ extern "C" {
         LLAMA_Q8_OUTLIER_STORE_DELTA = 1,
     };
 
+    enum llama_outlier_value_type {
+        LLAMA_OUTLIER_VALUE_TYPE_BF16 = 0,
+        LLAMA_OUTLIER_VALUE_TYPE_Q8_0 = 1,
+    };
+
     // model quantization parameters
     typedef struct llama_model_quantize_params {
         int32_t nthread;                                            // number of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()
@@ -441,6 +446,7 @@ extern "C" {
         const char * q4_outlier_include_weights;                    // optional regex of tensors to include
         const char * q4_outlier_exclude_weights;                    // optional regex of tensors to exclude
         float q4_outlier_max_abs_error;                             // max-abs-error threshold (>0 enables, replaces residual-energy scoring)
+        enum llama_outlier_value_type q4_outlier_value_type;        // delta storage type: BF16 or Q8_0
     } llama_model_quantize_params;
 
     typedef struct llama_logit_bias {
