@@ -157,9 +157,27 @@ Shared `--outlier-*` flags set both Q8 and Q4 params; `--outlier-base q4_0` sets
 | `src/llama-model-loader.{h,cpp}` | `has_q4_outlier_metadata()`, `read_q4_outlier_metadata()`, Q4 sidecar validation |
 | `tools/quantize/quantize.cpp` | `--outlier-base q4_0` CLI, ftype string, param propagation |
 
+## Bugs Fixed (continued)
+
+| Bug | Fix | Commit |
+|-----|-----|--------|
+| CPU context sidecar skip | Removed skip, sidecars created for all non-Host contexts | `5714857df` |
+| CUDA_Host sidecar crash | Skip `_Host` buffer types in sidecar creation | `5714857df` |
+| `cpu_ctx` out of scope | Use `ctx` in 0-byte buffer check | `a9c6acb11` |
+| `tensor->data` NULL crash | Added `&& tensor->data` guards in `build_outlier_info` | `e61111a5d` |
+| O(N*M) sidecar lookup | Hash map for O(1) lookup in `build_outlier_info` | (recent) |
+| `--keep-split` restriction | Removed throw for Q8 and Q4 outlier | `65ea7de88` |
+
+## Runtime Status
+
+- **Layer-split mode:** Works without `--sm tensor` on single GPU
+- **Tensor-split mode:** Works with `--sm tensor`
+- **Same top P:** 2-3% (horrible) — indicates fundamental numerical issue
+- **Zero-L2 tensors:** Two tensors per layer produce L2=0 despite non-zero n_blocks — suspected idx coordinate mismatch
+- **PPL:** ~2M (broken)
+
 ## Known Limitations
 
 - **MoE multi-expert delta computation:** Only first expert handled (same as Q8)
 - **`ggml_get_rows` (embedding lookup):** No correction applied — graceful degradation to plain Q4_0
 - **Block size hardcoded to 32** in kernels (matches QK4_0 = 32, but not parametric)
-- **`--keep-split` not supported** in this CUDA-focused prototype
