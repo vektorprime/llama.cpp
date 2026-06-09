@@ -5,10 +5,12 @@
 #include "ggml.h"
 #include <algorithm>
 
-// Forward declaration of block_q4_0 and dequantize_row_q4_0 from ggml-common.h / ggml-quants.h
+// Forward declaration of block_q4_0, block_q8_0, and dequantize functions from ggml-common.h / ggml-quants.h
 extern "C" {
     struct block_q4_0;
+    struct block_q8_0;
     void dequantize_row_q4_0(const block_q4_0 * x, float * y, int64_t k);
+    void dequantize_row_q8_0(const block_q8_0 * x, float * y, int64_t k);
 }
 #include <cmath>
 #include <cstring>
@@ -1031,16 +1033,14 @@ static void q8_outlier_compute_deltas(
         // Original F32 values
         const float * orig = f32_data + row * n_per_row + col;
 
-        // Dequantize Q8 block: layout is ggml_fp16_t d (2 bytes) + int8_t qs[32]
+        // Use official GGML dequantize to ensure delta matches inference kernels
         const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
-        const ggml_fp16_t * d_ptr = (const ggml_fp16_t *) block_ptr;
-        float q8_d = ggml_fp16_to_fp32(*d_ptr);
-        const int8_t * q8_data_block = (const int8_t *)(block_ptr + sizeof(ggml_fp16_t));
+        float q8_vals[LLAMA_Q8_OUTLIER_BLOCK_SIZE];
+        dequantize_row_q8_0(reinterpret_cast<const block_q8_0 *>(block_ptr), q8_vals, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
 
         // Compute delta and store as BF16
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-            float q8_val = q8_data_block[j] * q8_d;
-            float delta = orig[j] - q8_val;
+            float delta = orig[j] - q8_vals[j];
             outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(delta);
         }
     }
