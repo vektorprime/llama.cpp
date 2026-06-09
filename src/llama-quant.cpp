@@ -1323,12 +1323,6 @@ static bool q4_outlier_block_is_candidate_max_abs_error(
         return false;
     }
 
-    // Ratio pre-filter: same gate as residual-energy path
-    const float ratio = max_abs / std::max(second_abs, eps);
-    if (ratio < ratio_threshold) {
-        return false;
-    }
-
     // Q4_0: d = max / -8 (matches reference quantize_row_q4_0_ref)
     // The scale is stored as FP16 in the block, so we round-trip through FP16
     // to match the actual scale used during dequantization.
