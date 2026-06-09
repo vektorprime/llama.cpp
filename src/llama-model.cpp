@@ -29,6 +29,7 @@
 #include <functional>
 #include <map>
 #include <numeric>
+#include <unordered_map>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -979,17 +980,21 @@ llama_model::~llama_model() {
 void llama_model::build_outlier_info() {
     outlier_info.clear();
 
+    std::unordered_map<std::string, ggml_tensor *> tensors_map;
+    tensors_map.reserve(tensors_by_name.size());
+    for (const auto & [n, t] : tensors_by_name) {
+        tensors_map.emplace(n, t);
+    }
+
     for (const auto & [name, tensor] : tensors_by_name) {
         // Look for outlier sidecar tensors: name.outlier_idx and name.outlier_bf16
         const std::string idx_name    = name + ".outlier_idx";
         const std::string values_name = name + ".outlier_bf16";
 
-        auto it_idx    = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
-                            [&](const auto & p) { return p.first == idx_name; });
-        auto it_values = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
-                            [&](const auto & p) { return p.first == values_name; });
+        auto it_idx    = tensors_map.find(idx_name);
+        auto it_values = tensors_map.find(values_name);
 
-        if (it_idx == tensors_by_name.end() || it_values == tensors_by_name.end()) {
+        if (it_idx == tensors_map.end() || it_values == tensors_map.end()) {
             continue;
         }
 
