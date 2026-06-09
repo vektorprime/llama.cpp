@@ -1659,22 +1659,22 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    // Create Q8_0_BF16_OUTLIER sidecar tensors in the parent weight's ggml context.
-    // This ensures they're on the same GPU backend as the weight, loaded directly
-    // from GGUF without any CPU→GPU copies.
+    // Create Q8_0_BF16_OUTLIER / Q4_0_BF16_OUTLIER sidecar tensors in each ggml context
+    // where the parent weight exists. Sidecars must live in the same context as their
+    // parent weight so the scheduler routes MUL_MAT_OUTLIER_BLOCKS to the correct backend.
+    // Skip host-transfer buffer types (e.g., CUDA_Host) — the CUDA backend cannot
+    // access them (supports_buft returns false), so the scheduler would fail to route
+    // the outlier op to a backend that can read the sidecar tensors.
     {
-        // Find CPU context by buffer type, not by map position (std::map orders by key address)
-        ggml_context * cpu_ctx = nullptr;
-        for (auto & [buft, ctx_ptr] : ml.ctx_map) {
-            if (buft == ggml_backend_cpu_buffer_type()) {
-                cpu_ctx = ctx_ptr.get();
-                break;
-            }
-        }
-
         for (auto & [buft, ctx_ptr] : ml.ctx_map) {
             ggml_context * ctx = ctx_ptr.get();
 
+            // Skip host-transfer buffer types (e.g., CUDA_Host) — scheduler can't route
+            // MUL_MAT_OUTLIER_BLOCKS to a backend that doesn't support this buffer type.
+            const char * buft_name = ggml_backend_buft_name(buft);
+            if (buft_name && strstr(buft_name, "_Host")) {
+                continue;
+            }
 
             for (const auto & [name, weight] : ml.weights_map) {
                 if (name.find(".outlier_idx") == std::string::npos &&
@@ -1820,7 +1820,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 {
                     size_t buf_size = ggml_backend_buffer_get_size(buf);
                     int n_needs_alloc = 0;
-                    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+                for (ggml_tensor * t = ggml_get_first_tensor(cpu_ctx); t; t = ggml_get_next_tensor(cpu_ctx, t)) {
                         if (t->data == NULL && t->view_src == NULL) n_needs_alloc++;
                     }
                     if (buf_size == 0 && n_needs_alloc > 0) {
