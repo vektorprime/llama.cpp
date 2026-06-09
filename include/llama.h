@@ -433,7 +433,7 @@ extern "C" {
         const char * q8_outlier_include_weights;                    // optional regex of tensors to include
         const char * q8_outlier_exclude_weights;                    // optional regex of tensors to exclude
         bool q4_outlier_enable;                                     // enable Q4_0 + sparse BF16 outlier sidecars
-        float q4_outlier_ratio;                                     // unused — Q4 uses residual-energy scoring
+        float q4_outlier_ratio;                                     // ratio pre-filter: max_abs / second_abs must exceed this to be a candidate
         float q4_outlier_nonmax_rel_rmse;                           // unused — Q4 uses residual-energy scoring
         float q4_outlier_score;                                     // minimum residual-energy score to protect a block
         float q4_outlier_max_frac;                                  // maximum protected block fraction per tensor
