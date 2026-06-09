@@ -167,17 +167,42 @@ Shared `--outlier-*` flags set both Q8 and Q4 params; `--outlier-base q4_0` sets
 | `tensor->data` NULL crash | Added `&& tensor->data` guards in `build_outlier_info` | `e61111a5d` |
 | O(N*M) sidecar lookup | Hash map for O(1) lookup in `build_outlier_info` | (recent) |
 | `--keep-split` restriction | Removed throw for Q8 and Q4 outlier | `65ea7de88` |
+| Scoring FP16 round-trip mismatch | Simulate FP16 scale round-trip in scoring | `db3c7f804` |
+| Zero-L2 tensors | GPU idx sampling diagnostic, bounds checks | `c43ca78a3` |
+| Sidecar size not reported | Show sidecar size and total size in quantize output | `b4007e788` |
+| token_embd protected but not corrected | Skip token_embd from outlier protection | `874a6033a` |
+| Ratio pre-filter too aggressive (max-abs-error) | Remove ratio gate from max-abs-error path | `948e01a06` |
+
+## Selection Modes
+
+Two block selection modes are available:
+
+### Residual-Energy Scoring (default)
+
+```
+score = Σ α[j] · (W[j] - W_q4[j])² / Σ α[j] · W[j]²
+```
+
+Blocks ranked by score, top `max_frac` selected. Requires `--outlier-ratio >= 4.0` (pre-filter: `max_abs / second_abs`).
+
+### Max Absolute Error (alternative)
+
+```
+--outlier-max-abs-error 0.0005
+```
+
+Protects any block where `|W[j] - W_q4[j]| > threshold` for any element. No ratio pre-filter. Useful when absolute precision matters more than relative energy.
 
 ## Runtime Status
 
 - **Layer-split mode:** Works without `--sm tensor` on single GPU
 - **Tensor-split mode:** Works with `--sm tensor`
-- **Same top P:** 2-3% (horrible) — indicates fundamental numerical issue
-- **Zero-L2 tensors:** Two tensors per layer produce L2=0 despite non-zero n_blocks — suspected idx coordinate mismatch
-- **PPL:** ~2M (broken)
+- **Same top P:** ~86% (Q4_0 base error in 98% unprotected blocks limits improvement vs Q8_0's ~97%)
+- **KL divergence:** Improves with correction (verified: perplexity tool applies correction correctly)
+- **BF16 delta precision:** 0.05% relative error, negligible impact on same top P
 
 ## Known Limitations
 
 - **MoE multi-expert delta computation:** Only first expert handled (same as Q8)
-- **`ggml_get_rows` (embedding lookup):** No correction applied — graceful degradation to plain Q4_0
+- **`ggml_get_rows` (embedding lookup):** No correction applied — graceful degradation to plain Q4_0; token_embd skipped from protection
 - **Block size hardcoded to 32** in kernels (matches QK4_0 = 32, but not parametric)

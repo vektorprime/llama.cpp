@@ -117,7 +117,7 @@ static __global__ void outlier_blocks_kernel_q8_0(
     }
 
     const block_q8_0_cuda * q8block = &values[block_idx];
-    const float d = __half2float(__nv_bfloat162float2(q8block->d));
+    const float d = __half2float(__ushort_as_half(q8block->d));
     const int tid = threadIdx.x;
     float sum = 0.0f;
 
