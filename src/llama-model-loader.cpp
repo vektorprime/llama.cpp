@@ -613,13 +613,17 @@ llama_model_loader::llama_model_loader(
                 if (!vals) {
                     throw std::runtime_error(format("q8 outlier: values tensor '%s' not found", t.values_name.c_str()));
                 }
-                if (vals->type != GGML_TYPE_BF16) {
-                    LLAMA_LOG_ERROR("q8 outlier: values tensor '%s' has type %s, expected BF16\n",
+                if (vals->type != GGML_TYPE_BF16 && vals->type != GGML_TYPE_Q8_0) {
+                    LLAMA_LOG_ERROR("q8 outlier: values tensor '%s' has type %s, expected BF16 or Q8_0\n",
                         t.values_name.c_str(), ggml_type_name(vals->type));
-                    throw std::runtime_error(format("q8 outlier: values tensor '%s' has wrong type %s, expected BF16",
+                    throw std::runtime_error(format("q8 outlier: values tensor '%s' has wrong type %s, expected BF16 or Q8_0",
                         t.values_name.c_str(), ggml_type_name(vals->type)));
                 }
-                check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
+                if (vals->type == GGML_TYPE_BF16) {
+                    check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
+                } else {
+                    check_tensor_dims(t.values_name, {1, (int64_t)t.n_blocks}, true);
+                }
             }
         }
 
@@ -653,13 +657,17 @@ llama_model_loader::llama_model_loader(
                 if (!vals) {
                     throw std::runtime_error(format("q4 outlier: values tensor '%s' not found", t.values_name.c_str()));
                 }
-                if (vals->type != GGML_TYPE_BF16) {
-                    LLAMA_LOG_ERROR("q4 outlier: values tensor '%s' has type %s, expected BF16\n",
+                if (vals->type != GGML_TYPE_BF16 && vals->type != GGML_TYPE_Q8_0) {
+                    LLAMA_LOG_ERROR("q4 outlier: values tensor '%s' has type %s, expected BF16 or Q8_0\n",
                         t.values_name.c_str(), ggml_type_name(vals->type));
-                    throw std::runtime_error(format("q4 outlier: values tensor '%s' has wrong type %s, expected BF16",
+                    throw std::runtime_error(format("q4 outlier: values tensor '%s' has wrong type %s, expected BF16 or Q8_0",
                         t.values_name.c_str(), ggml_type_name(vals->type)));
                 }
-                check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
+                if (vals->type == GGML_TYPE_BF16) {
+                    check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
+                } else {
+                    check_tensor_dims(t.values_name, {1, (int64_t)t.n_blocks}, true);
+                }
             }
         }
 
