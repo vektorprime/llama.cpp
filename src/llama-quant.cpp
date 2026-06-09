@@ -1232,19 +1232,24 @@ static bool q4_outlier_tensor_enabled(const llama_model_quantize_params * params
 static bool q4_outlier_block_is_candidate(
         const float * block,
         const float * imatrix,
+        float ratio_threshold,
         float score_threshold,
         float & score) {
     constexpr float eps = 1.0e-12f;
 
-    // Find signed value with largest absolute magnitude (matches Q4_0 scale computation)
+    // Find the two largest absolute values for ratio pre-filter
     float max_abs = 0.0f;
+    float second_abs = 0.0f;
     float max_val = 0.0f;
 
     for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
         const float a = std::fabs(block[j]);
         if (a > max_abs) {
+            second_abs = max_abs;
             max_abs = a;
             max_val = block[j];
+        } else if (a > second_abs) {
+            second_abs = a;
         }
     }
 
@@ -1252,8 +1257,19 @@ static bool q4_outlier_block_is_candidate(
         return false;
     }
 
+    // Ratio pre-filter: reject blocks where the largest value isn't significantly
+    // larger than the second largest, since Q4_0's limited 16 levels can't benefit
+    // from storing near-uniform blocks as outliers.
+    const float ratio = max_abs / std::max(second_abs, eps);
+    if (ratio < ratio_threshold) {
+        return false;
+    }
+
     // Q4_0: d = max / -8 (matches reference quantize_row_q4_0_ref)
-    const float d = max_val / -8.0f;
+    // The scale is stored as FP16 in the block, so we round-trip through FP16
+    // to match the actual scale used during dequantization.
+    float d = max_val / -8.0f;
+    d = ggml_fp16_to_fp32(ggml_fp32_to_fp16(d));
 
     // Score by normalized residual energy: sum(alpha * delta^2) / sum(alpha * W^2)
     double sqerr = 0.0;
@@ -1319,6 +1335,7 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
             if (q4_outlier_block_is_candidate(
                     block,
                     block_imatrix,
+                    params->q4_outlier_ratio,
                     params->q4_outlier_score,
                     score) && score > min_score) {
                 candidates.push_back({ row, block_col, score });
@@ -2528,7 +2545,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q8_outlier_include_weights  =*/ nullptr,
         /*.q8_outlier_exclude_weights  =*/ nullptr,
         /*.q4_outlier_enable           =*/ false,
-        /*.q4_outlier_ratio            =*/ 0.0f,   // unused — Q4 uses residual-energy scoring
+        /*.q4_outlier_ratio            =*/ 4.0f,   // ratio pre-filter: max_abs / second_abs must exceed this
         /*.q4_outlier_nonmax_rel_rmse  =*/ 0.0f,   // unused — Q4 uses residual-energy scoring
         /*.q4_outlier_score            =*/ 0.01f,  // minimum residual-energy score to protect
         /*.q4_outlier_max_frac         =*/ 0.02f,
