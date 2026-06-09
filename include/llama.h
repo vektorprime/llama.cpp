@@ -440,6 +440,7 @@ extern "C" {
         const char * q4_outlier_report_path;                        // optional JSON report path
         const char * q4_outlier_include_weights;                    // optional regex of tensors to include
         const char * q4_outlier_exclude_weights;                    // optional regex of tensors to exclude
+        float q4_outlier_max_abs_error;                             // max-abs-error threshold (>0 enables, replaces residual-energy scoring)
     } llama_model_quantize_params;
 
     typedef struct llama_logit_bias {

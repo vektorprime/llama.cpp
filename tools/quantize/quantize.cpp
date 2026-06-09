@@ -178,6 +178,8 @@ static void usage(const char * executable) {
     printf("                                      maximum protected block fraction per tensor (default: 0.02)\n");
     printf("  --outlier-score S\n");
     printf("                                      minimum residual-energy score to protect a block (Q4 only, default: 0.01)\n");
+    printf("  --outlier-max-abs-error X\n");
+    printf("                                      max absolute error threshold for Q4 outlier selection (>0 replaces residual-energy scoring, default: 0 disabled)\n");
     printf("  --outlier-include-weights REGEX\n");
     printf("                                      only apply outlier protection to matching tensors\n");
     printf("  --outlier-exclude-weights REGEX\n");
@@ -651,6 +653,17 @@ int llama_quantize(int argc, char ** argv) {
                 params.q4_outlier_score = score_val;
                 if (params.q4_outlier_score < 0.0f) {
                     fprintf(stderr, "error: --outlier-score must be >= 0\n");
+                    usage(argv[0]);
+                }
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--outlier-max-abs-error") == 0) {
+            if (arg_idx < argc-1) {
+                float max_abs_error_val = std::stof(argv[++arg_idx]);
+                params.q4_outlier_max_abs_error = max_abs_error_val;
+                if (params.q4_outlier_max_abs_error < 0.0f) {
+                    fprintf(stderr, "error: --outlier-max-abs-error must be >= 0\n");
                     usage(argv[0]);
                 }
             } else {

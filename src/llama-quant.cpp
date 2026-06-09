@@ -1296,6 +1296,60 @@ static bool q4_outlier_block_is_candidate(
     return true;
 }
 
+static bool q4_outlier_block_is_candidate_max_abs_error(
+        const float * block,
+        const float * imatrix,
+        float ratio_threshold,
+        float max_abs_error_threshold) {
+    constexpr float eps = 1.0e-12f;
+
+    // Find the two largest absolute values for ratio pre-filter
+    float max_abs = 0.0f;
+    float second_abs = 0.0f;
+    float max_val = 0.0f;
+
+    for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+        const float a = std::fabs(block[j]);
+        if (a > max_abs) {
+            second_abs = max_abs;
+            max_abs = a;
+            max_val = block[j];
+        } else if (a > second_abs) {
+            second_abs = a;
+        }
+    }
+
+    if (max_abs <= eps) {
+        return false;
+    }
+
+    // Ratio pre-filter: same gate as residual-energy path
+    const float ratio = max_abs / std::max(second_abs, eps);
+    if (ratio < ratio_threshold) {
+        return false;
+    }
+
+    // Q4_0: d = max / -8 (matches reference quantize_row_q4_0_ref)
+    // The scale is stored as FP16 in the block, so we round-trip through FP16
+    // to match the actual scale used during dequantization.
+    float d = max_val / -8.0f;
+    d = ggml_fp16_to_fp32(ggml_fp32_to_fp16(d));
+
+    // Check if ANY element exceeds the max absolute error threshold
+    for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+        const float qf = std::round(block[j] / d);
+        const float q = std::max(-8.0f, std::min(7.0f, qf));
+        const float x_hat = q * d;
+        const float err = std::fabs(block[j] - x_hat);
+
+        if (err > max_abs_error_threshold) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static q8_outlier_tensor_data q4_outlier_analyze_tensor(
         const std::string & name,
         const float * f32_data,
@@ -1320,25 +1374,46 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
     std::vector<q8_outlier_candidate> candidates;
     candidates.reserve((size_t) std::min<int64_t>(result.n_blocks_total, 65536));
 
-    // Minimum normalized residual to consider a block — skip blocks where
-    // Q4_0 already quantizes well (e.g. all-zero or near-scale-aligned blocks)
-    constexpr float min_score = 1.0e-6f;
+    if (params->q4_outlier_max_abs_error > 0.0f) {
+        // Max absolute error mode: select blocks where any element exceeds the threshold
+        for (int64_t row = 0; row < nrows; ++row) {
+            const float * row_data = f32_data + row * n_per_row;
+            for (int64_t block_col = 0; block_col < result.n_blocks_per_row; ++block_col) {
+                const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+                const float * block = row_data + col;
+                const float * block_imatrix = imatrix ? imatrix + col : nullptr;
 
-    for (int64_t row = 0; row < nrows; ++row) {
-        const float * row_data = f32_data + row * n_per_row;
-        for (int64_t block_col = 0; block_col < result.n_blocks_per_row; ++block_col) {
-            const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-            const float * block = row_data + col;
-            const float * block_imatrix = imatrix ? imatrix + col : nullptr;
+                if (q4_outlier_block_is_candidate_max_abs_error(
+                        block,
+                        block_imatrix,
+                        params->q4_outlier_ratio,
+                        params->q4_outlier_max_abs_error)) {
+                    candidates.push_back({ row, block_col, 0.0f });
+                }
+            }
+        }
+    } else {
+        // Residual-energy scoring mode (default)
+        // Minimum normalized residual to consider a block — skip blocks where
+        // Q4_0 already quantizes well (e.g. all-zero or near-scale-aligned blocks)
+        constexpr float min_score = 1.0e-6f;
 
-            float score = 0.0f;
-            if (q4_outlier_block_is_candidate(
-                    block,
-                    block_imatrix,
-                    params->q4_outlier_ratio,
-                    params->q4_outlier_score,
-                    score) && score > min_score) {
-                candidates.push_back({ row, block_col, score });
+        for (int64_t row = 0; row < nrows; ++row) {
+            const float * row_data = f32_data + row * n_per_row;
+            for (int64_t block_col = 0; block_col < result.n_blocks_per_row; ++block_col) {
+                const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+                const float * block = row_data + col;
+                const float * block_imatrix = imatrix ? imatrix + col : nullptr;
+
+                float score = 0.0f;
+                if (q4_outlier_block_is_candidate(
+                        block,
+                        block_imatrix,
+                        params->q4_outlier_ratio,
+                        params->q4_outlier_score,
+                        score) && score > min_score) {
+                    candidates.push_back({ row, block_col, score });
+                }
             }
         }
     }
@@ -1347,7 +1422,11 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
     if ((int64_t) candidates.size() > max_blocks) {
         if (max_blocks <= 0) {
             candidates.clear();
+        } else if (params->q4_outlier_max_abs_error > 0.0f) {
+            // Max-abs-error mode: no scoring, cap by taking first max_blocks in row-major order
+            candidates.resize(max_blocks);
         } else {
+            // Residual-energy mode: pick highest-scored blocks
             std::partial_sort(candidates.begin(), candidates.begin() + max_blocks, candidates.end(),
                     [](const q8_outlier_candidate & a, const q8_outlier_candidate & b) {
                         return a.score > b.score;
@@ -2564,7 +2643,8 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q4_outlier_max_frac         =*/ 0.02f,
         /*.q4_outlier_report_path      =*/ nullptr,
         /*.q4_outlier_include_weights  =*/ nullptr,
-        /*.q4_outlier_exclude_weights  =*/ nullptr
+        /*.q4_outlier_exclude_weights  =*/ nullptr,
+        /*.q4_outlier_max_abs_error    =*/ 0.0f
     };
 
     return result;
