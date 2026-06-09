@@ -1820,7 +1820,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 {
                     size_t buf_size = ggml_backend_buffer_get_size(buf);
                     int n_needs_alloc = 0;
-                for (ggml_tensor * t = ggml_get_first_tensor(cpu_ctx); t; t = ggml_get_next_tensor(cpu_ctx, t)) {
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
                         if (t->data == NULL && t->view_src == NULL) n_needs_alloc++;
                     }
                     if (buf_size == 0 && n_needs_alloc > 0) {
