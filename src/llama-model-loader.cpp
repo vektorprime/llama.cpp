@@ -622,7 +622,7 @@ llama_model_loader::llama_model_loader(
                 if (vals->type == GGML_TYPE_BF16) {
                     check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 } else {
-                    check_tensor_dims(t.values_name, {1, (int64_t)t.n_blocks}, true);
+                    check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 }
             }
         }
@@ -666,7 +666,7 @@ llama_model_loader::llama_model_loader(
                 if (vals->type == GGML_TYPE_BF16) {
                     check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 } else {
-                    check_tensor_dims(t.values_name, {1, (int64_t)t.n_blocks}, true);
+                    check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 }
             }
         }

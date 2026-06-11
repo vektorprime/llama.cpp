@@ -1752,7 +1752,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 if (!parent_found) continue;
 
                 const ggml_type type = (name.find(".outlier_idx") != std::string::npos)
-                    ? GGML_TYPE_I32 : GGML_TYPE_BF16;
+                    ? GGML_TYPE_I32 : meta->type;
                 ggml_tensor * t = ggml_new_tensor_2d(ctx, type, meta->ne[0], meta->ne[1]);
                 if (!t) continue;
                 ggml_set_name(t, name.c_str());

@@ -1277,6 +1277,11 @@ static bool q4_outlier_block_is_candidate(
     float d = max_val / -8.0f;
     d = ggml_fp16_to_fp32(ggml_fp32_to_fp16(d));
 
+    // If the scale is flushed to zero in FP16, Q4_0 can't represent this block
+    if (d == 0.0f) {
+        return false;
+    }
+
     // Score by normalized residual energy: sum(alpha * delta^2) / sum(alpha * W^2)
     double sqerr = 0.0;
     double energy = 0.0;
@@ -1304,24 +1309,18 @@ static bool q4_outlier_block_is_candidate(
 
 static bool q4_outlier_block_is_candidate_max_abs_error(
         const float * block,
-        const float * imatrix,
-        float ratio_threshold,
         float max_abs_error_threshold) {
     constexpr float eps = 1.0e-12f;
 
-    // Find the two largest absolute values for ratio pre-filter
+    // Find the value with largest absolute magnitude for Q4_0 scale
     float max_abs = 0.0f;
-    float second_abs = 0.0f;
     float max_val = 0.0f;
 
     for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
         const float a = std::fabs(block[j]);
         if (a > max_abs) {
-            second_abs = max_abs;
             max_abs = a;
             max_val = block[j];
-        } else if (a > second_abs) {
-            second_abs = a;
         }
     }
 
@@ -1334,6 +1333,11 @@ static bool q4_outlier_block_is_candidate_max_abs_error(
     // to match the actual scale used during dequantization.
     float d = max_val / -8.0f;
     d = ggml_fp16_to_fp32(ggml_fp32_to_fp16(d));
+
+    // If the scale is flushed to zero in FP16, Q4_0 can't represent this block
+    if (d == 0.0f) {
+        return false;
+    }
 
     // Check if ANY element exceeds the max absolute error threshold
     for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
@@ -1376,17 +1380,15 @@ static q8_outlier_tensor_data q4_outlier_analyze_tensor(
 
     if (params->q4_outlier_max_abs_error > 0.0f) {
         // Max absolute error mode: select blocks where any element exceeds the threshold
+        // Note: no ratio pre-filter and no importance weighting in this mode
         for (int64_t row = 0; row < nrows; ++row) {
             const float * row_data = f32_data + row * n_per_row;
             for (int64_t block_col = 0; block_col < result.n_blocks_per_row; ++block_col) {
                 const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
                 const float * block = row_data + col;
-                const float * block_imatrix = imatrix ? imatrix + col : nullptr;
 
                 if (q4_outlier_block_is_candidate_max_abs_error(
                         block,
-                        block_imatrix,
-                        params->q4_outlier_ratio,
                         params->q4_outlier_max_abs_error)) {
                     candidates.push_back({ row, block_col, 0.0f });
                 }
