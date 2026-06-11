@@ -600,6 +600,7 @@ struct llama_model {
     };
 
     void build_outlier_info();
+    void patch_embedding_outliers();
     bool has_outlier_blocks(ggml_tensor * w) const;
     const llama_outlier_block_info * get_outlier_info(ggml_tensor * w) const;
 

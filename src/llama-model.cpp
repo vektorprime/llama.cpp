@@ -1249,6 +1249,135 @@ void llama_model::build_outlier_info() {
     }
 }
 
+void llama_model::patch_embedding_outliers() {
+    // For token_embd tensors with outlier info, pre-patch the Q4_0 data
+    // by dequantizing, adding delta values, and re-quantizing.
+    // This makes ggml_get_rows (embedding lookup) see corrected values
+    // without needing a new GGML op for sparse correction.
+
+    for (auto & [weight_tensor, info] : outlier_info) {
+        const std::string name = ggml_get_name(weight_tensor);
+
+        // Only patch token_embd tensors
+        if (name != "token_embd.weight" && name != "per_layer_token_embd.weight") {
+            continue;
+        }
+
+        // Only Q4_0 base type is supported for pre-patching
+        if (weight_tensor->type != GGML_TYPE_Q4_0) {
+            continue;
+        }
+
+        const int64_t nrows      = info.n_rows_out;
+        const int64_t ncols      = info.n_cols;
+        const size_t  q4_row_size  = (size_t)(ggml_row_size(GGML_TYPE_Q4_0, ncols));
+
+        const bool weight_on_gpu = weight_tensor->buffer &&
+            !ggml_backend_buffer_is_host(weight_tensor->buffer);
+        const bool values_on_gpu = info.values->buffer &&
+            !ggml_backend_buffer_is_host(info.values->buffer);
+
+        LLAMA_LOG_INFO("%s: pre-patching embedding '%s' with %lld outlier blocks (nrows=%lld, ncols=%lld)\n",
+                       __func__, name.c_str(), (long long)info.n_blocks,
+                       (long long)nrows, (long long)ncols);
+
+        // Read the whole sidecar values tensor to CPU once
+        std::vector<uint8_t> values_cpu_buf;
+        const uint8_t * values_cpu = nullptr;
+        size_t values_element_size = 0;
+
+        if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+            values_element_size = sizeof(block_q8_0);
+        } else {
+            values_element_size = 32 * sizeof(ggml_bf16_t); // 32 * 2 = 64
+        }
+
+        const size_t values_total_bytes = (size_t)info.n_blocks * values_element_size;
+        if (values_on_gpu) {
+            values_cpu_buf.resize(values_total_bytes);
+            ggml_backend_tensor_get(info.values, values_cpu_buf.data(), 0, values_total_bytes);
+            values_cpu = values_cpu_buf.data();
+        } else if (info.values->data) {
+            values_cpu = (const uint8_t *) info.values->data;
+        }
+
+        if (!values_cpu) {
+            LLAMA_LOG_WARN("%s: cannot read outlier values for '%s', skipping\n",
+                           __func__, name.c_str());
+            continue;
+        }
+
+        // Buffers for dequantization/re-quantization
+        std::vector<uint8_t> q4_row_buf(q4_row_size);
+        std::vector<float>   f32_row(ncols);
+
+        int64_t patched_rows = 0;
+        for (int64_t row = 0; row < nrows; row++) {
+            // Check if this row has any outlier blocks
+            int32_t row_start = info.row_ptr[row];
+            int32_t row_end   = info.row_ptr[row + 1];
+            if (row_start == row_end) {
+                continue;
+            }
+
+            // Read Q4_0 row data from GPU or CPU
+            const uint8_t * q4_src = nullptr;
+            const size_t row_offset = (size_t)row * q4_row_size;
+            if (weight_on_gpu) {
+                ggml_backend_tensor_get(weight_tensor, q4_row_buf.data(), row_offset, q4_row_size);
+                q4_src = q4_row_buf.data();
+            } else if (weight_tensor->data) {
+                q4_src = (const uint8_t *) weight_tensor->data + row_offset;
+            }
+            if (!q4_src) {
+                continue;
+            }
+
+            // Dequantize Q4_0 row -> FP32
+            dequantize_row_q4_0(reinterpret_cast<const block_q4_0 *>(q4_src),
+                                f32_row.data(), ncols);
+
+            // Add deltas for each outlier block in this row
+            for (int32_t bi = row_start; bi < row_end; bi++) {
+                int32_t block_col = info.block_col[bi];
+                int64_t col = (int64_t)block_col * 32;
+
+                if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+                    // Q8_0 delta: dequantize block and add
+                    const block_q8_0 * q8_blk = reinterpret_cast<const block_q8_0 *>(
+                        values_cpu + (size_t)bi * sizeof(block_q8_0));
+                    float delta_f32[32];
+                    dequantize_row_q8_0(q8_blk, delta_f32, 32);
+                    for (int j = 0; j < 32; j++) {
+                        f32_row[col + j] += delta_f32[j];
+                    }
+                } else {
+                    // BF16 delta: convert and add
+                    const ggml_bf16_t * delta_bf16 = reinterpret_cast<const ggml_bf16_t *>(
+                        values_cpu + (size_t)bi * 32 * sizeof(ggml_bf16_t));
+                    for (int j = 0; j < 32; j++) {
+                        f32_row[col + j] += ggml_bf16_to_fp32(delta_bf16[j]);
+                    }
+                }
+            }
+
+            // Re-quantize FP32 -> Q4_0
+            block_q4_0 * q4_out = reinterpret_cast<block_q4_0 *>(q4_row_buf.data());
+            quantize_row_q4_0_ref(f32_row.data(), q4_out, ncols);
+
+            // Write back to GPU or CPU
+            if (weight_on_gpu) {
+                ggml_backend_tensor_set(weight_tensor, q4_row_buf.data(), row_offset, q4_row_size);
+            }
+
+            patched_rows++;
+        }
+
+        LLAMA_LOG_INFO("%s: patched %lld/%lld rows of embedding '%s'\n",
+                       __func__, (long long)patched_rows, (long long)nrows, name.c_str());
+    }
+}
+
 bool llama_model::has_outlier_blocks(ggml_tensor * w) const {
     return outlier_info.find(w) != outlier_info.end();
 }
