@@ -7,6 +7,8 @@
 #include "llama-memory.h"
 #include "llama-vocab.h"
 
+#include "llama-outlier-stream.h"
+
 #include <map>
 #include <memory>
 #include <string>
@@ -605,6 +607,12 @@ struct llama_model {
     const llama_outlier_block_info * get_outlier_info(ggml_tensor * w) const;
 
     std::unordered_map<ggml_tensor *, llama_outlier_block_info> outlier_info;
+
+    // Predictive streaming cache for outlier sidecar data.
+    // Sidecars stay on CPU and are uploaded to GPU on-demand with a
+    // sliding window (default 6 = current + 5 ahead in layer order).
+    // Set to 0 to keep all sidecars on GPU (legacy mode).
+    llama_outlier_stream_cache outlier_cache;
 
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;

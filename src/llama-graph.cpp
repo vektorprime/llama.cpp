@@ -1064,35 +1064,46 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
 
     // Q8_0_BF16_OUTLIER: add sparse BF16 outlier correction for protected blocks
-    // Sidecar tensors (idx, values) are on the same backend as the weight.
-    // The op's split state follows the activation (src2) so it runs on each
-    // backend that has activation data (GPUs only when layers are offloaded).
+    // Uses the streaming cache: sidecars are uploaded from CPU to GPU
+    // on-demand with a sliding window for predictive prefetch.
     if (w && model.has_outlier_blocks(w)) {
         const auto * ob = model.get_outlier_info(w);
-        if (ob && ob->n_blocks > 0 && ob->idx && ob->values) {
-            ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
-                    ctx0, ob->idx, ob->values, cur,
-                    ob->n_rows_out, ob->n_cols);
-            if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
-                        w->name,
-                        (long long)res->ne[0], (long long)res->ne[1],
-                        (long long)corr->ne[0], (long long)corr->ne[1],
-                        (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
+        if (ob && ob->n_blocks > 0) {
+            // Try the streaming cache first
+            const std::string & name = ob->name;
+            ggml_tensor * gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+            ggml_tensor * gpu_values = model.outlier_cache.get_gpu_values(name);
+
+            // If not yet loaded, fall back to original GPU sidecar tensors
+            if (!gpu_idx || !gpu_values) {
+                gpu_idx    = ob->idx;
+                gpu_values = ob->values;
             }
-            res = ggml_add(ctx0, res, corr);
-            if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
-                        w->name, (long long)res->ne[0], (long long)res->ne[1]);
-            }
-            // One-time debug: report which weights use correction
-            static std::set<const ggml_tensor *> _printed_outlier;
-            if (_printed_outlier.insert(w).second) {
-                LLAMA_LOG_INFO("[outlier-corr] graph: %s — %lld outlier blocks (%.1f%% of %lld)\n",
-                    w->name, (long long)ob->n_blocks,
-                    (ob->n_rows_out * ob->n_cols / 32) > 0 ? 100.0 * ob->n_blocks / (ob->n_rows_out * ob->n_cols / 32) : 0.0,
-                    (long long)(ob->n_rows_out * ob->n_cols / 32));
-            }
+
+            if (gpu_idx && gpu_values) {
+                ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
+                        ctx0, gpu_idx, gpu_values, cur,
+                        ob->n_rows_out, ob->n_cols);
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
+                            w->name,
+                            (long long)res->ne[0], (long long)res->ne[1],
+                            (long long)corr->ne[0], (long long)corr->ne[1],
+                            (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
+                }
+                res = ggml_add(ctx0, res, corr);
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
+                            w->name, (long long)res->ne[0], (long long)res->ne[1]);
+                }
+                // One-time debug: report which weights use correction
+                static std::set<const ggml_tensor *> _printed_outlier;
+                if (_printed_outlier.insert(w).second) {
+                    LLAMA_LOG_INFO("[outlier-corr] graph: %s — %lld outlier blocks (%.1f%% of %lld)\n",
+                        w->name, (long long)ob->n_blocks,
+                        (ob->n_rows_out * ob->n_cols / 32) > 0 ? 100.0 * ob->n_blocks / (ob->n_rows_out * ob->n_cols / 32) : 0.0,
+                        (long long)(ob->n_rows_out * ob->n_cols / 32));
+                }
         } else {
             const char * reason = "no outlier info";
             if (!ob) reason = "get_outlier_info returned nullptr";

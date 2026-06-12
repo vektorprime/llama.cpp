@@ -1235,6 +1235,62 @@ void llama_model::build_outlier_info() {
         }
     }
 
+    // Populate outlier streaming cache with CPU copies of sidecar data.
+    // This enables predictive streaming from CPU→GPU during inference.
+    for (auto & [tensor, info] : outlier_info) {
+        // Read idx data to CPU
+        const int32_t * idx_data = nullptr;
+        std::vector<int32_t> idx_buf;
+        ggml_tensor * idx_t = info.idx;
+        ggml_tensor * val_t = info.values;
+
+        if (idx_t->buffer && ggml_backend_buffer_is_host(idx_t->buffer) && idx_t->data) {
+            idx_data = (const int32_t *) idx_t->data;
+        } else if (idx_t->buffer && idx_t->data) {
+            idx_buf.resize(info.n_blocks * 2);
+            ggml_backend_tensor_get(idx_t, idx_buf.data(), 0,
+                    info.n_blocks * 2 * sizeof(int32_t));
+            idx_data = idx_buf.data();
+        } else if (idx_t->data) {
+            idx_data = (const int32_t *) idx_t->data;
+        }
+
+        if (!idx_data) continue;
+
+        // Read values data to CPU
+        const uint8_t * val_data = nullptr;
+        std::vector<uint8_t> val_buf;
+
+        size_t val_elem = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
+            ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
+        size_t val_total = (size_t)info.n_blocks * val_elem;
+
+        if (val_t->buffer && ggml_backend_buffer_is_host(val_t->buffer) && val_t->data) {
+            val_data = (const uint8_t *) val_t->data;
+        } else if (val_t->buffer && val_t->data) {
+            val_buf.resize(val_total);
+            ggml_backend_tensor_get(val_t, val_buf.data(), 0, val_total);
+            val_data = val_buf.data();
+        } else if (val_t->data) {
+            val_data = (const uint8_t *) val_t->data;
+        }
+
+        if (!val_data) continue;
+
+        ggml_type vt = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
+            ? GGML_TYPE_Q8_0 : GGML_TYPE_BF16;
+
+        outlier_cache.add_entry(info.name, idx_data, val_data,
+                vt, info.n_blocks, info.n_rows_out, info.n_cols);
+    }
+
+    outlier_cache.finalize();
+
+    LLAMA_LOG_INFO("[outlier-stream] cache initialized: %d entries, %zu KB CPU, window=%d\n",
+            outlier_cache.total_entries(),
+            outlier_cache.total_cpu_bytes() / 1024,
+            outlier_cache.window_size);
+
     // Summary
     int64_t total_blocks = 0;
     int64_t total_base_blocks = 0;
