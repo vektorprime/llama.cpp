@@ -1033,6 +1033,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     rope_type        (hparams.rope_type),
     sched            (params.sched),
     backend_cpu      (params.backend_cpu),
+    backend          (params.backend),
     cvec             (params.cvec),
     loras            (params.loras),
     mctx             (params.mctx),
@@ -1069,10 +1070,20 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     if (w && model.has_outlier_blocks(w)) {
         const auto * ob = model.get_outlier_info(w);
         if (ob && ob->n_blocks > 0) {
-            // Try the streaming cache first
             const std::string & name = ob->name;
-            ggml_tensor * gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-            ggml_tensor * gpu_values = model.outlier_cache.get_gpu_values(name);
+            ggml_tensor * gpu_idx    = nullptr;
+            ggml_tensor * gpu_values = nullptr;
+
+            // Try the streaming cache first (ensure GPU upload if streaming enabled)
+            if (model.stream_outliers()) {
+                if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
+                    gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+                    gpu_values = model.outlier_cache.get_gpu_values(name);
+                }
+            } else {
+                gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+                gpu_values = model.outlier_cache.get_gpu_values(name);
+            }
 
             // If not yet loaded, fall back to original GPU sidecar tensors
             if (!gpu_idx || !gpu_values) {

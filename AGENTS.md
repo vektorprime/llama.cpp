@@ -13,5 +13,5 @@ example with cmd
 example with powershell
 & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe" \Zs llama-io.cpp
 
-Then, push your changes to git
+When fixing compilation errors, remember to also run git push after the commit.
 

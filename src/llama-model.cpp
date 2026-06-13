@@ -2735,6 +2735,7 @@ llama_model_params llama_model_default_params() {
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
         /*.no_alloc                    =*/ false,
+        /*.stream_outliers             =*/ false,
     };
 
     return result;
