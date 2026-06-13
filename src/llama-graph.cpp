@@ -1117,6 +1117,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     } else if (w && !model.has_outlier_blocks(w)) {
         // Not an outlier tensor, no logging needed
     }
+    }
 
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);
