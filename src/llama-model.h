@@ -601,7 +601,7 @@ struct llama_model {
         std::vector<int32_t> block_col;    // [n_blocks]
     };
 
-    void build_outlier_info();
+    void build_outlier_info(const struct llama_model_loader * ml = nullptr);
     void patch_embedding_outliers();
     bool has_outlier_blocks(ggml_tensor * w) const;
     const llama_outlier_block_info * get_outlier_info(ggml_tensor * w) const;

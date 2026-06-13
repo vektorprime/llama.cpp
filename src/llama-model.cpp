@@ -978,7 +978,7 @@ llama_model::~llama_model() {
     }
 }
 
-void llama_model::build_outlier_info() {
+void llama_model::build_outlier_info(const llama_model_loader * ml) {
     outlier_info.clear();
 
     std::unordered_map<std::string, ggml_tensor *> tensors_map;
@@ -1235,47 +1235,179 @@ void llama_model::build_outlier_info() {
         }
     }
 
+    // Phase 1b: When streaming is enabled, find sidecar pairs from GGUF metadata
+    // (sidecar tensors were not loaded into GPU memory)
+    if (params.stream_outliers && ml) {
+        for (const auto & [w_name, weight] : ml->weights_map) {
+            // Look for idx sidecar: name.outlier_idx
+            const size_t idx_suffix_len = 13; // ".outlier_idx"
+            if (w_name.size() <= idx_suffix_len ||
+                w_name.rfind(".outlier_idx") != w_name.size() - idx_suffix_len) {
+                continue;
+            }
+            const std::string parent_name = w_name.substr(0, w_name.size() - idx_suffix_len);
+            const std::string values_name = parent_name + ".outlier_bf16";
+
+            // Find parent weight tensor in loaded tensors
+            auto it_parent = tensors_map.find(parent_name);
+            if (it_parent == tensors_map.end()) continue;
+
+            // Skip if already registered via loaded sidecar tensors
+            if (outlier_info.count(it_parent->second)) continue;
+
+            // Find values sidecar in weights_map
+            auto it_val = ml->weights_map.find(values_name);
+            if (it_val == ml->weights_map.end()) continue;
+
+            const ggml_tensor * idx_meta = weight.tensor;
+            const ggml_tensor * val_meta = it_val->second.tensor;
+            if (!idx_meta || !val_meta) continue;
+
+            // Validate types
+            if (idx_meta->type != GGML_TYPE_I32) continue;
+            if (val_meta->type != GGML_TYPE_BF16 && val_meta->type != GGML_TYPE_Q8_0) continue;
+            if (idx_meta->ne[0] != 2 || val_meta->ne[0] != 32) continue;
+
+            const int64_t n_blocks = idx_meta->ne[1];
+            if (n_blocks != val_meta->ne[1]) continue;
+
+            ggml_tensor * parent_t = it_parent->second;
+
+            llama_outlier_block_info info;
+            info.name       = parent_name;
+            info.idx        = nullptr;   // no GPU tensor in streaming mode
+            info.values     = nullptr;
+            info.n_blocks   = n_blocks;
+            info.n_rows_out = parent_t->ne[1];
+            info.n_cols     = parent_t->ne[0];
+            info.value_type = val_meta->type == GGML_TYPE_Q8_0
+                ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 : LLAMA_OUTLIER_VALUE_TYPE_BF16;
+
+            // Read idx data from GGUF for CSR layout
+            std::vector<int32_t> idx_buf_gguf(n_blocks * 2);
+            size_t idx_nbytes = (size_t)n_blocks * 2 * sizeof(int32_t);
+            if (ml->use_mmap) {
+                const auto & mapping = ml->mappings.at(weight.idx);
+                memcpy(idx_buf_gguf.data(), (uint8_t *)mapping->addr() + weight.offs, idx_nbytes);
+            } else {
+                const auto & file = ml->files.at(weight.idx);
+                file->seek(weight.offs, SEEK_SET);
+                file->read_raw(idx_buf_gguf.data(), idx_nbytes);
+            }
+            const int32_t * idx_data = idx_buf_gguf.data();
+
+            // Build CSR layout
+            info.row_ptr.resize(info.n_rows_out + 1, 0);
+            for (int64_t k = 0; k < n_blocks; k++) {
+                int32_t row = idx_data[k * 2];
+                if (row < 0 || row >= info.n_rows_out) {
+                    info.row_ptr.clear();
+                    break;
+                }
+                info.row_ptr[row + 1]++;
+            }
+            if (info.row_ptr.empty()) continue;
+
+            for (int64_t r = 0; r < info.n_rows_out; r++) {
+                info.row_ptr[r + 1] += info.row_ptr[r];
+            }
+            info.block_col.resize(n_blocks, 0);
+            std::vector<int32_t> row_cursor = info.row_ptr;
+            for (int64_t k = 0; k < n_blocks; k++) {
+                int32_t row = idx_data[k * 2];
+                int32_t bcol = idx_data[k * 2 + 1];
+                if (bcol >= info.n_cols / 32) continue;
+                int32_t pos = row_cursor[row]++;
+                info.block_col[pos] = bcol;
+            }
+
+            outlier_info[parent_t] = std::move(info);
+
+            LLAMA_LOG_INFO("[outlier-stream] %s: registered from GGUF (%lld blocks, %.1f%%)\n",
+                parent_name.c_str(), (long long)n_blocks,
+                (info.n_rows_out * info.n_cols / 32) > 0
+                    ? 100.0 * n_blocks / (info.n_rows_out * info.n_cols / 32) : 0.0);
+        }
+    }
+
     // Populate outlier streaming cache with CPU copies of sidecar data.
     // This enables predictive streaming from CPU→GPU during inference.
+    // When streaming is enabled and sidecar tensors aren't loaded in GPU memory,
+    // reads the data directly from the GGUF file via the model loader.
     for (auto & [tensor, info] : outlier_info) {
-        // Read idx data to CPU
         const int32_t * idx_data = nullptr;
         std::vector<int32_t> idx_buf;
-        ggml_tensor * idx_t = info.idx;
-        ggml_tensor * val_t = info.values;
-
-        if (idx_t->buffer && ggml_backend_buffer_is_host(idx_t->buffer) && idx_t->data) {
-            idx_data = (const int32_t *) idx_t->data;
-        } else if (idx_t->buffer && idx_t->data) {
-            idx_buf.resize(info.n_blocks * 2);
-            ggml_backend_tensor_get(idx_t, idx_buf.data(), 0,
-                    info.n_blocks * 2 * sizeof(int32_t));
-            idx_data = idx_buf.data();
-        } else if (idx_t->data) {
-            idx_data = (const int32_t *) idx_t->data;
-        }
-
-        if (!idx_data) continue;
-
-        // Read values data to CPU
         const uint8_t * val_data = nullptr;
         std::vector<uint8_t> val_buf;
 
-        size_t val_elem = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
-            ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
-        size_t val_total = (size_t)info.n_blocks * val_elem;
+        ggml_tensor * idx_t = info.idx;
+        ggml_tensor * val_t = info.values;
 
-        if (val_t->buffer && ggml_backend_buffer_is_host(val_t->buffer) && val_t->data) {
-            val_data = (const uint8_t *) val_t->data;
-        } else if (val_t->buffer && val_t->data) {
-            val_buf.resize(val_total);
-            ggml_backend_tensor_get(val_t, val_buf.data(), 0, val_total);
-            val_data = val_buf.data();
-        } else if (val_t->data) {
-            val_data = (const uint8_t *) val_t->data;
+        if (idx_t && val_t) {
+            // Legacy path: read from loaded tensors (CPU or GPU)
+            if (idx_t->buffer && ggml_backend_buffer_is_host(idx_t->buffer) && idx_t->data) {
+                idx_data = (const int32_t *) idx_t->data;
+            } else if (idx_t->buffer && idx_t->data) {
+                idx_buf.resize(info.n_blocks * 2);
+                ggml_backend_tensor_get(idx_t, idx_buf.data(), 0,
+                        info.n_blocks * 2 * sizeof(int32_t));
+                idx_data = idx_buf.data();
+            } else if (idx_t->data) {
+                idx_data = (const int32_t *) idx_t->data;
+            }
+
+            if (idx_data) {
+                size_t val_elem = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
+                    ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
+                size_t val_total = (size_t)info.n_blocks * val_elem;
+
+                if (val_t->buffer && ggml_backend_buffer_is_host(val_t->buffer) && val_t->data) {
+                    val_data = (const uint8_t *) val_t->data;
+                } else if (val_t->buffer && val_t->data) {
+                    val_buf.resize(val_total);
+                    ggml_backend_tensor_get(val_t, val_buf.data(), 0, val_total);
+                    val_data = val_buf.data();
+                } else if (val_t->data) {
+                    val_data = (const uint8_t *) val_t->data;
+                }
+            }
+        } else if (ml && params.stream_outliers) {
+            // Streaming path: read from GGUF file directly
+            const std::string idx_name    = info.name + ".outlier_idx";
+            const std::string values_name = info.name + ".outlier_bf16";
+
+            const auto * w_idx = ml->get_weight(idx_name.c_str());
+            const auto * w_val = ml->get_weight(values_name.c_str());
+
+            if (w_idx && w_val) {
+                size_t idx_nbytes = (size_t)info.n_blocks * 2 * sizeof(int32_t);
+                size_t val_nbytes = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
+                    ? (size_t)info.n_blocks * 34
+                    : (size_t)info.n_blocks * 32 * sizeof(ggml_bf16_t);
+
+                idx_buf.resize(info.n_blocks * 2);
+                val_buf.resize(val_nbytes);
+
+                if (ml->use_mmap) {
+                    const auto & idx_mapping = ml->mappings.at(w_idx->idx);
+                    memcpy(idx_buf.data(), (uint8_t *)idx_mapping->addr() + w_idx->offs, idx_nbytes);
+                    const auto & val_mapping = ml->mappings.at(w_val->idx);
+                    memcpy(val_buf.data(), (uint8_t *)val_mapping->addr() + w_val->offs, val_nbytes);
+                } else {
+                    const auto & idx_file = ml->files.at(w_idx->idx);
+                    idx_file->seek(w_idx->offs, SEEK_SET);
+                    idx_file->read_raw(idx_buf.data(), idx_nbytes);
+                    const auto & val_file = ml->files.at(w_val->idx);
+                    val_file->seek(w_val->offs, SEEK_SET);
+                    val_file->read_raw(val_buf.data(), val_nbytes);
+                }
+
+                idx_data = idx_buf.data();
+                val_data = val_buf.data();
+            }
         }
 
-        if (!val_data) continue;
+        if (!idx_data || !val_data) continue;
 
         ggml_type vt = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
             ? GGML_TYPE_Q8_0 : GGML_TYPE_BF16;
@@ -1901,7 +2033,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // Skip host-transfer buffer types (e.g., CUDA_Host) — the CUDA backend cannot
     // access them (supports_buft returns false), so the scheduler would fail to route
     // the outlier op to a backend that can read the sidecar tensors.
-    {
+    // When --stream-outliers is set, sidecar tensors are managed by the streaming cache
+    // and are NOT allocated in GPU memory.
+    if (!params.stream_outliers) {
         for (auto & [buft, ctx_ptr] : ml.ctx_map) {
             ggml_context * ctx = ctx_ptr.get();
 

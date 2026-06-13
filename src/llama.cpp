@@ -340,7 +340,7 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         }
 
         // build Q8_0_BF16_OUTLIER sidecar index after tensor loading
-        model_ptr->build_outlier_info();
+        model_ptr->build_outlier_info(&ml);
 
         // pre-patch token embeddings with outlier deltas for ggml_get_rows support
         model_ptr->patch_embedding_outliers();
