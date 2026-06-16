@@ -33,6 +33,7 @@ struct llama_model_loader {
     struct llama_tensor_weight {
         uint16_t  idx; // source file index
         size_t   offs; // tensor data offset in the original file
+        size_t   size; // actual on-disk data size (including alignment padding)
 
         ggml_tensor * tensor;
 
@@ -43,7 +44,18 @@ struct llama_model_loader {
             }
 
             offs = gguf_get_data_offset(gguf_ctx) + gguf_get_tensor_offset(gguf_ctx, tensor_idx);
-            if (offs + ggml_nbytes(tensor) < offs || offs + ggml_nbytes(tensor) > file->size()) {
+
+            // Compute actual on-disk data size from adjacent tensor offsets
+            // This respects variable-length types (e.g. DF11) where the writer
+            // set custom data sizes via gguf_set_tensor_data_size.
+            const int64_t n_tensors = gguf_get_n_tensors(gguf_ctx);
+            if (tensor_idx + 1 < n_tensors) {
+                size = gguf_get_tensor_offset(gguf_ctx, tensor_idx + 1) - gguf_get_tensor_offset(gguf_ctx, tensor_idx);
+            } else {
+                size = file->size() - offs;
+            }
+
+            if (offs + size < offs || offs + size > file->size()) {
                 throw std::runtime_error(format("tensor '%s' data is not within the file bounds, model is corrupted or incomplete", ggml_get_name(tensor)));
             }
         }

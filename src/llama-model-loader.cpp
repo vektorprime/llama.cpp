@@ -1556,22 +1556,26 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
 void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     const auto & w = require_weight(ggml_get_name(cur));
 
+    // Use the actual on-disk data size, which respects variable-length types (e.g. DF11)
+    // where ggml_nbytes returns a conservative upper bound, not the actual compressed size.
+    const size_t nbytes = w.size;
+
     if (use_mmap) {
         const auto & mapping = mappings.at(w.idx);
         if (cur->data == nullptr) {
             cur->data = (uint8_t *)mapping->addr() + w.offs;
         } else {
-            memcpy(cur->data, (uint8_t *)mapping->addr() + w.offs, ggml_nbytes(cur));
+            memcpy(cur->data, (uint8_t *)mapping->addr() + w.offs, nbytes);
         }
     } else {
         GGML_ASSERT(cur->data != nullptr);
         GGML_ASSERT(w.idx < files.size());
         const auto & file = files.at(w.idx);
         file->seek(w.offs, SEEK_SET);
-        file->read_raw(cur->data, ggml_nbytes(cur));
+        file->read_raw(cur->data, nbytes);
     }
 
-    if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, ggml_nbytes(cur))) {
+    if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, nbytes)) {
         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
     }
 }
