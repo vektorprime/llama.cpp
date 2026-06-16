@@ -6138,6 +6138,12 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
     const uint32_t n_bytes    = x->n_bytes;
     const uint32_t n_elements = x->n_elements;
 
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] to_bf16: n_luts=%u n_bytes=%u n_elements=%u k=%lld\n",
+                n_luts, n_bytes, n_elements, (long long)k);
+        fflush(stderr);
+    }
+
     if (n_elements == 0 || k == 0) return;
 
     const uint8_t * data = ((const uint8_t *)x) + sizeof(block_df11);
@@ -6189,6 +6195,12 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
         ggml_bf16_t out;
         out.bits = bf16;
         y[output_idx++] = out;
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] to_bf16: decoded %d elements (of %u)\n",
+                (int)output_idx, n_elements);
+        fflush(stderr);
     }
 
     ggml_bf16_t zero;
