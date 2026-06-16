@@ -2648,6 +2648,8 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         src0_bf16.data = scratch_bf16.ptr;
         src0_bf16.nb[0] = sizeof(nv_bfloat16);
         src0_bf16.nb[1] = src0->ne[0] * sizeof(nv_bfloat16);
+        src0_bf16.nb[2] = src0_bf16.nb[1] * src0_bf16.ne[1];
+        src0_bf16.nb[3] = src0_bf16.nb[2] * src0_bf16.ne[2];
 
         // Dispatch through BF16 MMF / cuBLAS path
         bool use_mf = !split

@@ -5727,6 +5727,7 @@ static void df11_build_huffman(
             }
         }
 
+        nnodes = nleaves;
         heap.size = 0;
         for (int32_t i = 0; i < nnodes; i++) {
             nodes[i].parent = -1;
@@ -5853,12 +5854,13 @@ static int32_t df11_build_lut(
 
                     int32_t remaining = cbits - pl;
                     int32_t next_bits = (cval >> (cbits - pl - remaining)) & ((1 << remaining) - 1);
-                    int32_t next_byte = (int32_t)((uint32_t)next_bits << (8 - remaining));
-                    if (next_byte == bi) {
-                        lut[pi * 256 + bi] = (uint8_t)(sym & 0xFF);
-                        found = 1;
-                        break;
+                    int32_t fill_count = 1 << (8 - remaining);
+                    for (int32_t fill = 0; fill < fill_count; fill++) {
+                        int32_t fill_byte = (int32_t)((uint32_t)next_bits << (8 - remaining)) | fill;
+                        lut[pi * 256 + fill_byte] = (uint8_t)(sym & 0xFF);
                     }
+                    found = 1;
+                    break;
                 }
             }
 
@@ -6089,7 +6091,7 @@ void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRI
     int32_t  output_idx = 0;
 
     while (output_idx < (int32_t)n_elements && output_idx < (int32_t)k) {
-        while (buf_bits < 64 && byte_idx < (int32_t)n_bytes) {
+        while (buf_bits < 56 && byte_idx < (int32_t)n_bytes) {
             buf = (buf << 8) | codes[byte_idx++];
             buf_bits += 8;
         }
@@ -6112,7 +6114,7 @@ void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRI
         int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
         if (code_len <= 0) break;
 
-        buf_bits -= code_len;
+        buf_bits -= (code_len - levels * 8);
         buf &= (1ULL << buf_bits) - 1;
 
         uint8_t sm = sign_mant[output_idx];
@@ -6169,7 +6171,7 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
     int32_t  output_idx = 0;
 
     while (output_idx < (int32_t)n_elements && output_idx < (int32_t)k) {
-        while (buf_bits < 64 && byte_idx < (int32_t)n_bytes) {
+        while (buf_bits < 56 && byte_idx < (int32_t)n_bytes) {
             buf = (buf << 8) | codes[byte_idx++];
             buf_bits += 8;
         }
@@ -6192,7 +6194,7 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
         int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
         if (code_len <= 0) break;
 
-        buf_bits -= code_len;
+        buf_bits -= (code_len - levels * 8);
         buf &= (1ULL << buf_bits) - 1;
 
         uint8_t sm = sign_mant[output_idx];
@@ -6378,28 +6380,20 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
         }
         pos_idx++;
     }
-    if ((int32_t)n_blocks <= pos_idx) {
-        pos_out[pos_idx] = (uint32_t)k;
-    } else {
-        pos_out[n_blocks] = (uint32_t)k;
-    }
+    pos_out[n_blocks] = (uint32_t)k;
 
-    // Pack gaps into 5-bit big-endian format
+    // Pack gaps into 5-bit MSB-first format
     memset(gaps_out, 0, gaps_bytes);
     for (uint32_t t = 0; t < n_threads; t++) {
         int32_t gap_val = gaps_temp[t];
         if (gap_val > 31) gap_val = 0;
-        uint32_t bit_pos = t * 5;
-        uint32_t byte_pos = bit_pos / 8;
-        uint32_t bit_off  = bit_pos % 8;
-        uint32_t mask = (uint32_t)(gap_val & 0x1F);
-        if (bit_off <= 3) {
-            gaps_out[byte_pos] |= (uint8_t)(mask << (3 - bit_off));
-        } else {
-            uint32_t shift0 = bit_off - 3;
-            gaps_out[byte_pos] |= (uint8_t)(mask >> shift0);
-            if (byte_pos + 1 < gaps_bytes) {
-                gaps_out[byte_pos + 1] |= (uint8_t)(mask << (8 - shift0));
+        uint32_t start_bit = t * 5;
+        for (int b = 0; b < 5; b++) {
+            uint32_t bit_idx = start_bit + b;
+            uint32_t byte_idx = bit_idx / 8;
+            uint32_t bit_pos  = 7 - (bit_idx % 8);
+            if (gap_val & (1u << (4 - b))) {
+                gaps_out[byte_idx] |= (uint8_t)(1u << bit_pos);
             }
         }
     }

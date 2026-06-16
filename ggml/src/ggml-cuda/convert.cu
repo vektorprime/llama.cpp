@@ -953,13 +953,16 @@ __global__ void dequantize_df11_kernel(
     // Uses the same bit-tracking logic as the proven-correct CPU decoder:
     //   buf_bits = valid bits in buffer; load bytes: buf_bits += 8; consume: buf_bits -= code_len
     if (thread_has_data) {
-        // Phase 2: Read gap (5 bits per thread)
-        int bit_idx = global_thread_id * 5;
-        int byte_idx = bit_idx / 8;
-        int bit_off = bit_idx % 8;
-        uint8_t buf0 = gaps[byte_idx];
-        uint8_t buf1 = gaps[byte_idx + 1];
-        gap = (int)(((buf0 << bit_off) | (buf1 >> (8 - bit_off))) & 0x1F);
+        // Phase 2: Read gap (5 bits per thread, MSB-first packed, matching quantize encoder)
+        gap = 0;
+        for (int b = 0; b < 5; b++) {
+            int bit_idx = global_thread_id * 5 + b;
+            int byte_idx = bit_idx / 8;
+            int bit_pos = 7 - (bit_idx % 8);
+            if (gaps[byte_idx] & (1 << bit_pos)) {
+                gap |= (1 << (4 - b));
+            }
+        }
 
         // Build 64-bit buffer from bytes 0..7 (MSB first, matching CPU: buf = (buf << 8) | byte)
         uint64_t long_buffer = 0;
@@ -1010,8 +1013,8 @@ __global__ void dequantize_df11_kernel(
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
             if (code_len <= 0) break;
 
-            // Consume code_len bits (matching CPU: buf_bits -= code_len; buf &= mask)
-            buf_bits -= code_len;
+            // Consume code_len bits (matching CPU: buf_bits -= (code_len - levels*8); buf &= mask)
+            buf_bits -= (code_len - levels * 8);
             long_buffer &= (1ULL << buf_bits) - 1;
             thread_counter++;
         }
@@ -1091,7 +1094,7 @@ __global__ void dequantize_df11_kernel(
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
             if (code_len <= 0) break;
 
-            buf_bits -= code_len;
+            buf_bits -= (code_len - levels * 8);
             long_buffer &= (1ULL << buf_bits) - 1;
 
             uint8_t sm = sign_mantissa[output_idx];
