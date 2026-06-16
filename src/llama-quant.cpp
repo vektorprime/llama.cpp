@@ -2486,7 +2486,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             // the --dry-run option calculates the final quantization size without quantizing
             if (quantize) {
                 if (new_type == GGML_TYPE_DF11) {
-                    // DF11 is variable-length; estimate ~11 bits per element as upper bound
+                    // DF11 is whole-tensor variable-length compression (~12-14 bpw typical)
+                    // Use 2 bytes/element as a conservative dry-run upper bound
                     new_size = (size_t)ggml_nelements(tensor) * 2;
                 } else {
                     new_size = ggml_nrows(tensor) * ggml_row_size(new_type, tensor->ne[0]);
@@ -2592,80 +2593,13 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 const int64_t nthread_use = nthread > 1 ? std::max((int64_t)1, std::min((int64_t)nthread, nchunk)) : 1;
 
                 if (new_type == GGML_TYPE_DF11) {
-                    // DF11 is variable-length per row; use single-pass quantization directly
+                    // DF11 compresses the whole tensor as a single block (one LUT, one bitstream)
                     // 3D tensors not yet supported for DF11
                     if (tensor->ne[2] > 1) {
                         throw std::runtime_error("DF11 quantization does not yet support 3D expert tensors");
                     }
 
-                    const int n_th = nthread > 1 ? std::max(1, std::min(nthread, (int)nrows)) : 1;
-
-                    if (n_th <= 1) {
-                        new_size = quantize_df11(f32_data, new_data, nrows, n_per_row, nullptr);
-                    } else {
-                        // Multi-threaded: each thread quantizes a contiguous slice of rows
-                        // into a temporary buffer, then we merge them sequentially into `new_data`.
-                        const int64_t rpt = (nrows + n_th - 1) / n_th;
-
-                        std::vector<size_t> row_sizes((size_t)nrows, 0);
-                        std::vector<std::vector<uint8_t>> bufs(n_th);
-
-                        // Pre-allocate an upper bound for each thread's temp buffer
-                        for (int t = 0; t < n_th; t++) {
-                            const int64_t r0 = t * rpt;
-                            const int64_t r1 = std::min(r0 + rpt, nrows);
-                            if (r1 > r0) {
-                                // Upper bound: ~2 bytes per element per row
-                                bufs[t].resize((size_t)(r1 - r0) * (size_t)n_per_row * 2);
-                            }
-                        }
-
-                        auto worker_fn = [&](int tid, int64_t r0, int64_t r1) {
-                            uint8_t * buf = bufs[tid].data();
-                            size_t off = 0;
-                            for (int64_t r = r0; r < r1; r++) {
-                                block_df11 * rd = (block_df11 *)(buf + off);
-                                quantize_row_df11_ref(f32_data + r * n_per_row, rd, n_per_row);
-
-                                const uint32_t nb = rd->n_bytes;
-                                const uint32_t nl = rd->n_luts;
-                                const uint32_t ne = rd->n_elements;
-                                const uint32_t nblk = rd->n_blocks;
-                                const size_t gb = ((size_t)nblk * 512 * 5 + 7) / 8;
-                                const size_t sz = sizeof(block_df11) + (size_t)nl * 256 + nb + ne
-                                                + (size_t)(nblk + 1) * sizeof(uint32_t) + gb;
-
-                                row_sizes[r] = sz;
-                                off += sz;
-                            }
-                        };
-
-                        // Launch threads
-                        std::vector<std::thread> threads;
-                        for (int t = 0; t < n_th; t++) {
-                            const int64_t r0 = t * rpt;
-                            const int64_t r1 = std::min(r0 + rpt, nrows);
-                            if (r1 > r0) {
-                                threads.emplace_back(worker_fn, t, r0, r1);
-                            }
-                        }
-                        for (auto & th : threads) {
-                            th.join();
-                        }
-
-                        // Merge temp buffers into final output in row order
-                        new_size = 0;
-                        for (int t = 0; t < n_th; t++) {
-                            const int64_t r0 = t * rpt;
-                            const int64_t r1 = std::min(r0 + rpt, nrows);
-                            size_t off = 0;
-                            for (int64_t r = r0; r < r1; r++) {
-                                memcpy((uint8_t *)new_data + new_size, bufs[t].data() + off, row_sizes[r]);
-                                off += row_sizes[r];
-                                new_size += row_sizes[r];
-                            }
-                        }
-                    }
+                    new_size = quantize_df11(f32_data, new_data, nrows, n_per_row, nullptr);
                 } else {
                 // quantize each expert separately since they have different importance matrices
                 new_size = 0;

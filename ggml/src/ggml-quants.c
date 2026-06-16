@@ -6198,33 +6198,183 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
     }
 }
 
-// ---- Quantize: multi-row ----
+// ---- Quantize: multi-row (whole-tensor, single block_df11) ----
 size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows,
                      int64_t n_per_row, const float * imatrix) {
     GGML_UNUSED(imatrix);
 
-    uint8_t * out = (uint8_t *)dst;
-    size_t total_bytes = 0;
-
-    for (int64_t row = 0; row < nrows; row++) {
-        block_df11 * row_dst = (block_df11 *)(out + total_bytes);
-        quantize_row_df11_ref(src + row * n_per_row, row_dst, n_per_row);
-
-        uint32_t n_luts     = row_dst->n_luts;
-        uint32_t n_bytes    = row_dst->n_bytes;
-        uint32_t n_elements = row_dst->n_elements;
-        uint32_t n_blocks   = row_dst->n_blocks;
-
-        size_t gaps_bytes = ((size_t)n_blocks * DF11_THREADS_PER_BLOCK * 5 + 7) / 8;
-        size_t row_size   = sizeof(block_df11)
-                          + (size_t)n_luts * 256
-                          + n_bytes
-                          + n_elements
-                          + (size_t)(n_blocks + 1) * sizeof(uint32_t)
-                          + gaps_bytes;
-
-        total_bytes += row_size;
+    int64_t k = nrows * n_per_row;
+    if (k <= 0) {
+        return 0;
     }
 
-    return total_bytes;
+    // Phase 1: Count exponent frequencies across all rows
+    int32_t freqs[256] = {0};
+    for (int64_t i = 0; i < k; i++) {
+        ggml_bf16_t b = ggml_fp32_to_bf16(src[i]);
+        uint8_t exp = (uint8_t)((b.bits >> 7) & 0xFF);
+        freqs[exp]++;
+    }
+
+    // Phase 2: Build shared Huffman codes
+    int32_t code_bits[256] = {0};
+    int32_t code_vals[256] = {0};
+    int32_t node_count = 0;
+    df11_build_huffman(freqs, 256, code_bits, code_vals, &node_count);
+
+    // Phase 3: Build shared LUT
+    uint8_t * lut = (uint8_t *)calloc(256 * 256, 1);
+    int32_t lut_rows = df11_build_lut(code_bits, code_vals, 256, lut);
+
+    // Phase 4: Compute exact output layout sizes
+    uint64_t total_bits_exact = 0;
+    for (int32_t sym = 0; sym < 256; sym++) {
+        total_bits_exact += (uint64_t)freqs[sym] * (uint64_t)code_bits[sym];
+    }
+    uint32_t n_bytes  = (uint32_t)((total_bits_exact + 7) / 8);
+    uint32_t n_blocks = df11_blocks_for_bytes(n_bytes);
+    uint32_t n_threads = (uint32_t)n_blocks * DF11_THREADS_PER_BLOCK;
+    size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8;
+    size_t lut_total  = (size_t)(lut_rows + 1) * 256;
+
+    size_t total_size = sizeof(block_df11)
+                      + lut_total
+                      + (size_t)n_bytes
+                      + (size_t)k
+                      + (size_t)(n_blocks + 1) * sizeof(uint32_t)
+                      + gaps_bytes;
+
+    // Write header
+    block_df11 * header = (block_df11 *)dst;
+    header->n_luts     = (uint32_t)(lut_rows + 1);
+    header->n_bytes    = n_bytes;
+    header->n_elements = (uint32_t)k;
+    header->n_blocks   = n_blocks;
+    header->reserved_0 = 0;
+    header->reserved_1 = 0;
+
+    uint8_t * data = ((uint8_t *)dst) + sizeof(block_df11);
+
+    // Write LUT
+    memcpy(data, lut, lut_total);
+    free(lut);
+
+    // Output buffer pointers
+    uint8_t  * codes_out = data + lut_total;
+    uint8_t  * sm_out    = codes_out + n_bytes;
+    uint32_t * pos_out   = (uint32_t *)(sm_out + (size_t)k);
+    uint8_t  * gaps_out  = (uint8_t *)(pos_out + (size_t)(n_blocks + 1));
+
+    // Temp array for unpacked gaps
+    int32_t * gaps_temp = (int32_t *)calloc((size_t)n_threads, sizeof(int32_t));
+
+    // Phase 5: Encode all elements into one bitstream
+    uint64_t buf = 0;
+    int32_t  buf_bits = 0;
+    uint64_t coded_bits = 0;
+    uint32_t codes_written = 0;
+    int32_t  gap_idx = 0;
+    int32_t  pos_idx = 0;
+    int32_t  elem_count = 0;
+
+    uint64_t block_bits = (uint64_t)DF11_THREADS_PER_BLOCK * DF11_BYTES_PER_THREAD * 8;
+
+    gaps_temp[0] = 0;
+    gap_idx = 1;
+    pos_out[0] = 0;
+    pos_idx = 1;
+
+    for (int64_t i = 0; i < k; i++) {
+        ggml_bf16_t b = ggml_fp32_to_bf16(src[i]);
+        uint16_t bf16 = b.bits;
+        uint8_t exp = (uint8_t)((bf16 >> 7) & 0xFF);
+        uint8_t sm  = (uint8_t)(((bf16 >> 8) & 0x80) | (bf16 & 0x7F));
+
+        int32_t bits = code_bits[exp];
+        int32_t val  = code_vals[exp];
+
+        // Track gaps at thread boundaries (every 64 bits)
+        while (coded_bits / 64 + 1 > (uint64_t)gap_idx) {
+            if (gap_idx < (int32_t)n_threads) {
+                gaps_temp[gap_idx] = (int32_t)(coded_bits % 64);
+            }
+            gap_idx++;
+        }
+
+        // Track output positions at block boundaries
+        while (coded_bits / block_bits + 1 > (uint64_t)pos_idx) {
+            if (pos_idx <= (int32_t)n_blocks) {
+                pos_out[pos_idx] = (uint32_t)elem_count;
+            }
+            pos_idx++;
+        }
+
+        buf = (buf << bits) | ((uint64_t)val & ((1ULL << bits) - 1));
+        buf_bits += bits;
+        coded_bits += (uint64_t)bits;
+
+        while (buf_bits >= 8) {
+            codes_out[codes_written++] = (uint8_t)((buf >> (buf_bits - 8)) & 0xFF);
+            buf_bits -= 8;
+        }
+
+        sm_out[i] = sm;
+        elem_count++;
+    }
+
+    // Flush remaining partial byte
+    if (buf_bits > 0) {
+        codes_out[codes_written++] = (uint8_t)((buf << (8 - buf_bits)) & 0xFF);
+        coded_bits += (uint64_t)(8 - buf_bits);
+    }
+
+    // Final gaps after flush
+    while (coded_bits / 64 + 1 > (uint64_t)gap_idx) {
+        if (gap_idx < (int32_t)n_threads) {
+            gaps_temp[gap_idx] = (int32_t)(coded_bits % 64);
+        }
+        gap_idx++;
+    }
+
+    // Pad remaining gaps with 0
+    for (; gap_idx < (int32_t)n_threads; gap_idx++) {
+        gaps_temp[gap_idx] = 0;
+    }
+
+    // Final positions after flush
+    while (coded_bits / block_bits + 1 > (uint64_t)pos_idx) {
+        if (pos_idx <= (int32_t)n_blocks) {
+            pos_out[pos_idx] = (uint32_t)elem_count;
+        }
+        pos_idx++;
+    }
+    if ((int32_t)n_blocks <= pos_idx) {
+        pos_out[pos_idx] = (uint32_t)k;
+    } else {
+        pos_out[n_blocks] = (uint32_t)k;
+    }
+
+    // Pack gaps into 5-bit big-endian format
+    memset(gaps_out, 0, gaps_bytes);
+    for (uint32_t t = 0; t < n_threads; t++) {
+        int32_t gap_val = gaps_temp[t];
+        if (gap_val > 31) gap_val = 0;
+        uint32_t bit_pos = t * 5;
+        uint32_t byte_pos = bit_pos / 8;
+        uint32_t bit_off  = bit_pos % 8;
+        uint32_t mask = (uint32_t)(gap_val & 0x1F);
+        if (bit_off <= 3) {
+            gaps_out[byte_pos] |= (uint8_t)(mask << (3 - bit_off));
+        } else {
+            uint32_t shift0 = bit_off - 3;
+            gaps_out[byte_pos] |= (uint8_t)(mask >> shift0);
+            if (byte_pos + 1 < gaps_bytes) {
+                gaps_out[byte_pos + 1] |= (uint8_t)(mask << (8 - shift0));
+            }
+        }
+    }
+
+    free(gaps_temp);
+
+    return total_size;
 }
