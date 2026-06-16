@@ -507,24 +507,47 @@ CPU dequantize unaffected (doesn't use pos array).
 
 **Fix** (`ggml-quants.c`): Allocate `gaps_bytes = ceil(n_threads * 5 / 8) + 1`. Extra byte is zero-initialized. Kernel safely reads the padding byte for the last thread.
 
-### 6.10 Files Modified Summary
+### 6.10 Uninitialized Register Buffer & Broken Prefix Sum (CUDA Kernel)
+
+**Problem A — Uninitialized registers**: Threads beyond the valid codes range (`global_thread_id * 8 >= n_bytes`) had uninitialized `register_buffer[12]`. The Huffman decoder processed this garbage data, producing bogus `thread_counter` values that corrupted the parallel prefix sum, causing out-of-bounds writes → `cudaErrorIllegalMemoryAccess` (err=700).
+
+**Problem B — Broken prefix sum**: The initialization `counters[tid=0] = position_offsets[block_id]` (instead of `thread_counter`) discarded thread 0's symbol count. The prefix sum then produced wrong `output_idx` values, shifting all outputs within each block by thread 0's missing count.
+
+**Fix** (`ggml-cuda/convert.cu`):
+1. Zero-initialize `register_buffer[12] = {0}` — threads without data get all-zeros, not garbage
+2. Guard Phases 2–5 (Huffman counting) and Phases 7–8 (re-decode/write) with `if (thread_has_data)` — threads without codes produce 0 symbols and skip output
+3. Fix prefix sum: include ALL threads' `thread_counter` in initial values, use standard exclusive-scan (set `counters[n-1]=0` after up-sweep), add `position_offsets[block_id]` to `output_idx` at the end
+4. Restore per-byte bounds checks in Phase 1 code loading — handles the last valid thread with partial bytes (some bytes within n_bytes, some beyond)
+
+### 6.11 CUDA Graph Capture Safety (Header Cache + Debug Sync Guards)
+
+**Problem**: During CUDA graph capture (used by `--warmup` and subsequent inference passes), `cudaStreamSynchronize()` and `cudaMemcpy(device→host)` are not permitted — they return `cudaErrorStreamCaptureUnsupported` (err=901), invalidate the capture stream, and cause subsequent cuBLAS ops to fail with "an internal operation failed". Three sites were affected:
+1. `dequantize_df11_cuda()`: `cudaMemcpyAsync` + `cudaStreamSynchronize` to read the block_df11 header from device
+2. `dequantize_df11_cuda()`: `cudaMemcpy(pos_host, pos, ...)` to compute `max_elem` for shared memory sizing
+3. `ggml_cuda_compute_forward()` MUL_MAT DF11 path: debug `cudaStreamSynchronize` after dequantize
+
+**Fix** (`ggml-cuda/convert.cu`, `ggml-cuda/ggml-cuda.cu`):
+1. **Header cache**: Static `unordered_map<const void*, df11_header_cache_entry>` keyed by tensor data pointer. On first call (pre-capture warmup), the header and all derived values (n_luts, pointer offsets, `smem_size`) are read from device via synchronous `cudaMemcpy` and cached. On subsequent calls (during capture), the cache is hit and zero host-side CUDA API calls are made.
+2. **Debug sync guards**: Both `cudaStreamSynchronize` calls (in `dequantize_df11_cuda` and in the MUL_MAT path) are guarded with `cudaStreamIsCapturing()` — skipped during capture, preserving stream validity.
+
+### 6.12 Files Modified Summary
 
 | # | File | Change |
 |---|------|--------|
 | 6.1 | `ggml/src/ggml-quants.c` | Rewrite `quantize_df11()` — whole-tensor compression |
-| 6.2 | `ggml/src/ggml-quants.c` | Fix gap encoding byte alignment, pos alignment padding |
+| 6.2 | `ggml/src/ggml-quants.c` | Pos alignment padding, gaps_bytes +1 padding byte |
 | 6.2 | `ggml/src/gguf.cpp` | Reader: offset-difference size accumulation, `remaining()` |
-| 6.3 | `src/llama-model-loader.h` | `llama_tensor_weight.size` field, bounds check fix |
+| 6.3 | `src/llama-model-loader.h` | `llama_tensor_weight.size` field |
 | 6.3 | `src/llama-model-loader.cpp` | `load_data_for()` / `load_all_data()` use `w.size` |
 | 6.4 | `ggml/src/ggml-cpu/ops.cpp` | `ggml_compute_forward_get_rows_df11()` |
 | 6.5 | `ggml/src/ggml-cpu/ggml-cpu.c` | `type_traits_cpu[GGML_TYPE_DF11]` |
 | 6.5 | `ggml/src/ggml-cpu/ggml-cpu.cpp` | Reject DF11 MUL_MAT on CPU |
-| 6.5 | `ggml/src/ggml-cuda/ggml-cuda.cu` | Add DF11 to GPU MUL_MAT supports_op |
+| 6.5 | `ggml/src/ggml-cuda/ggml-cuda.cu` | Add DF11 to GPU MUL_MAT supports_op + debug sync guards |
 | 6.6 | `src/llama-model.cpp` | Shrink DF11 nb[1] for GPU buffer size |
-| 6.7 | `ggml/src/ggml-cuda/convert.cu` | cudaMemcpy header+pos from device to host |
-| 6.7 | `ggml/src/ggml-cuda/convert.cu` | Pos alignment in reader |
-| 6.7 | `ggml/src/ggml-alloc.c` | Debug prints (gated by `--custom-logs`) |
-| 6.9 | `ggml/src/ggml-quants.c` | gaps_bytes +1 padding byte |
+| 6.7 | `ggml/src/ggml-cuda/convert.cu` | `dequantize_df11_cuda()`: cudaMemcpy header+pos from device |
+| 6.10 | `ggml/src/ggml-cuda/convert.cu` | Zero-init register buffer, fix prefix sum, thread_has_data guards |
+| 6.11 | `ggml/src/ggml-cuda/convert.cu` | Graph-capture-safe header cache, debug sync guard |
+| 6.11 | `ggml/src/ggml-cuda/ggml-cuda.cu` | Guard MUL_MAT debug sync against graph capture |
 
 ---
 
