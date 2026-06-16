@@ -5869,9 +5869,14 @@ static int32_t df11_build_lut(
                     for (int32_t fill = 0; fill < fill_count; fill++) {
                         int32_t fill_byte = (int32_t)((uint32_t)next_bits << (8 - remaining)) | fill;
                         lut[pi * 256 + fill_byte] = (uint8_t)(sym & 0xFF);
+                        if (fill_byte == bi) {
+                            found = 1;
+                        }
                     }
-                    found = 1;
-                    break;
+                    if (found) {
+                        if (pi == 0) code_match_count++;
+                        break;
+                    }
                 }
             }
 
