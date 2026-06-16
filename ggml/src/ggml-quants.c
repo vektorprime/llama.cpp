@@ -5889,6 +5889,18 @@ static int32_t df11_build_lut(
 
             if (!found) {
                 lut[pi * 256 + bi] = 0;
+                if (pi == 0 && bi == 0x19) {
+                    fprintf(stderr, "[DF11-debug] LUT row0 bi=0x19: no prefix match (found=0)\n");
+                    for (int32_t pj = 0; pj < nprefix; pj++) {
+                        if (prefix_lens[pj] == 8) {
+                            int32_t bv = 0;
+                            for (int b=0;b<8;b++) bv=(bv<<1)|((prefix_table[pj][b]=='1')?1:0);
+                            fprintf(stderr, "  pj=%d byte_val=0x%02x bi=0x%02x match=%d\n",
+                                    (int)pj, bv, bi, bv==bi);
+                        }
+                    }
+                    fflush(stderr);
+                }
             }
         }
     }
