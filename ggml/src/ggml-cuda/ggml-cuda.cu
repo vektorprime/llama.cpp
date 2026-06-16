@@ -2633,7 +2633,11 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
 
         if (ggml_custom_logs_enabled()) {
-            cudaError_t err = cudaStreamSynchronize(ctx.stream());
+            cudaStreamCaptureStatus cap_status;
+            cudaError_t err = cudaSuccess;
+            if (cudaStreamIsCapturing(ctx.stream(), &cap_status) == cudaSuccess && cap_status == cudaStreamCaptureStatusNone) {
+                err = cudaStreamSynchronize(ctx.stream());
+            }
             fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: dequantize done, sync_err=%d, dispatching matmul\n", (int)err);
             fflush(stderr);
         }
