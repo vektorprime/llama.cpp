@@ -15,3 +15,12 @@ example with powershell
 
 When fixing compilation errors, remember to also run git push after the commit.
 
+## Gotchas
+
+### OUTPUT tensor category in llama_tensor_get_type_impl
+`src/llama-quant.cpp`: In the OUTPUT category block (~line 447), there's a catch-all `else if`
+at the end that forces unknown ftypes to `GGML_TYPE_Q6_K`. When adding a new ftype, you must
+either add an explicit case in that block or exclude the new ftype from the catch-all condition
+(like `LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER` and `LLAMA_FTYPE_MOSTLY_DF11` are excluded).
+Otherwise output tensors (output_norm.weight, etc.) won't use the new type.
+

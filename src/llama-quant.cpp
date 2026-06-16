@@ -462,7 +462,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q5_K;
             }
-            else if (new_type != GGML_TYPE_Q8_0 && ftype != LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER) {
+            else if (new_type != GGML_TYPE_Q8_0 && ftype != LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER && ftype != LLAMA_FTYPE_MOSTLY_DF11) {
                 new_type = GGML_TYPE_Q6_K;
             }
         }
@@ -2635,7 +2635,12 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
             // update the gguf meta data as we go
             gguf_set_tensor_type(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_type);
-            GGML_ASSERT(gguf_get_tensor_size(ctx_outs[cur_split].get(), gguf_find_tensor(ctx_outs[cur_split].get(), metadata[i].name.c_str())) == new_size);
+            if (new_type == GGML_TYPE_DF11) {
+                // DF11 is variable-length; override GGUF's computed data size
+                gguf_set_tensor_data_size(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_size);
+            } else {
+                GGML_ASSERT(gguf_get_tensor_size(ctx_outs[cur_split].get(), gguf_find_tensor(ctx_outs[cur_split].get(), metadata[i].name.c_str())) == new_size);
+            }
             gguf_set_tensor_data(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_data);
 
             // write tensor data + padding
