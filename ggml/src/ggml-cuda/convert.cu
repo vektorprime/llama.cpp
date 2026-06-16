@@ -1119,9 +1119,14 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
     CUDA_CHECK(cudaMemcpyAsync(&hdr_host, vx, sizeof(block_df11), cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
+    const uint32_t n_luts     = hdr_host.n_luts;
+    const uint32_t n_bytes    = hdr_host.n_bytes;
+    const uint32_t n_elements = hdr_host.n_elements;
+    const uint32_t n_blocks   = hdr_host.n_blocks;
+
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[DF11-debug] header: n_luts=%u n_bytes=%u n_elements=%u n_blocks=%u\n",
-                hdr_host.n_luts, hdr_host.n_bytes, hdr_host.n_elements, hdr_host.n_blocks);
+                n_luts, n_bytes, n_elements, n_blocks);
         // compute expected total size
         size_t lut_sz  = (size_t)n_luts * 256;
         size_t code_sz = (size_t)n_bytes;
@@ -1135,11 +1140,6 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
                 lut_sz, code_sz, sm_sz, sm_pad_calc, pos_sz, gaps_sz, total);
         fflush(stderr);
     }
-
-    const uint32_t n_luts     = hdr_host.n_luts;
-    const uint32_t n_bytes    = hdr_host.n_bytes;
-    const uint32_t n_elements = hdr_host.n_elements;
-    const uint32_t n_blocks   = hdr_host.n_blocks;
 
     const uint8_t * data = ((const uint8_t *)vx) + sizeof(block_df11);
     const uint8_t * luts   = data;

@@ -2618,15 +2618,6 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
                         ggml_backend_buffer_get_size(src0->buffer), ggml_nbytes(src0));
             }
             fflush(stderr);
-            // Allocate BF16 scratch buffer via cuda pool
-            ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
-
-            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: scratch_bf16=%p, calling dequantize_df11_cuda\n",
-                    (void*)scratch_bf16.ptr);
-            fflush(stderr);
-        } else {
-            // Allocate BF16 scratch buffer via cuda pool
-            ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
         }
 
         // Allocate BF16 scratch buffer via cuda pool
