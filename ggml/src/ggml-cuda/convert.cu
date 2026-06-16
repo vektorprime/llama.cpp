@@ -1244,9 +1244,13 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
         fprintf(stderr, "[DF11-debug] kernel launch: err=%d n_blocks=%u n_luts=%u n_bytes=%u n_elements=%u\n",
                 (int)kern_err, n_blocks, n_luts, n_bytes, n_elements);
         fflush(stderr);
-        cudaError_t sync_err = cudaStreamSynchronize(stream);
-        fprintf(stderr, "[DF11-debug] kernel sync: err=%d\n", (int)sync_err);
-        fflush(stderr);
+        cudaStreamCaptureStatus cap_status;
+        if (cudaStreamIsCapturing(stream, &cap_status) != cudaSuccess) cap_status = cudaStreamCaptureStatusNone;
+        if (cap_status == cudaStreamCaptureStatusNone) {
+            cudaError_t sync_err = cudaStreamSynchronize(stream);
+            fprintf(stderr, "[DF11-debug] kernel sync: err=%d\n", (int)sync_err);
+            fflush(stderr);
+        }
     }
 }
 
