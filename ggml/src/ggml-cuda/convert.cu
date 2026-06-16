@@ -2,6 +2,9 @@
 #include "dequantize.cuh"
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <unordered_map>
 
 #define CUDA_Q8_0_NE_ALIGN 2048
 
@@ -1123,21 +1126,97 @@ __global__ void dequantize_df11_kernel(
     }
 }
 
-void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t stream) {
-    // Read block_df11 header from device to host — vx is a device pointer
-    block_df11 hdr_host;
-    CUDA_CHECK(cudaMemcpyAsync(&hdr_host, vx, sizeof(block_df11), cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+// ----- Graph-capture-safe header cache -----
+struct df11_header_cache_entry {
+    uint32_t n_luts;
+    uint32_t n_bytes;
+    uint32_t n_elements;
+    uint32_t n_blocks;
+    int smem_size;
+    // Pointer offsets (computed from the base data pointer)
+    const uint8_t * luts;
+    const uint8_t * codes;
+    const uint8_t * sm;
+    const uint32_t * pos;
+    const uint8_t * gaps;
+};
 
-    const uint32_t n_luts     = hdr_host.n_luts;
-    const uint32_t n_bytes    = hdr_host.n_bytes;
-    const uint32_t n_elements = hdr_host.n_elements;
-    const uint32_t n_blocks   = hdr_host.n_blocks;
+static std::unordered_map<const void *, df11_header_cache_entry> g_df11_header_cache;
+
+void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t stream) {
+    uint32_t n_luts, n_bytes, n_elements, n_blocks;
+    const uint8_t * luts;
+    const uint8_t * codes;
+    const uint8_t * sm;
+    const uint32_t * pos;
+    const uint8_t * gaps;
+    int smem_size;
+
+    auto it = g_df11_header_cache.find(vx);
+    if (it != g_df11_header_cache.end()) {
+        const auto & e = it->second;
+        n_luts     = e.n_luts;
+        n_bytes    = e.n_bytes;
+        n_elements = e.n_elements;
+        n_blocks   = e.n_blocks;
+        luts       = e.luts;
+        codes      = e.codes;
+        sm         = e.sm;
+        pos        = e.pos;
+        gaps       = e.gaps;
+        smem_size  = e.smem_size;
+    } else {
+        // Read block_df11 header from device to host
+        block_df11 hdr_host;
+        CUDA_CHECK(cudaMemcpy(&hdr_host, vx, sizeof(block_df11), cudaMemcpyDeviceToHost));
+
+        n_luts     = hdr_host.n_luts;
+        n_bytes    = hdr_host.n_bytes;
+        n_elements = hdr_host.n_elements;
+        n_blocks   = hdr_host.n_blocks;
+
+        const uint8_t * data = ((const uint8_t *)vx) + sizeof(block_df11);
+        luts  = data;
+        codes = luts + (size_t)n_luts * 256;
+        sm    = codes + n_bytes;
+
+        uintptr_t sm_end = (uintptr_t)(sm + n_elements);
+        uintptr_t pos_off = (sm_end + 3) & ~(uintptr_t)3;
+        pos  = (const uint32_t *)pos_off;
+        gaps = (const uint8_t *)(pos + n_blocks + 1);
+
+        int max_elem = 0;
+        if (n_blocks > 0) {
+            uint32_t * pos_host = (uint32_t *)malloc((n_blocks + 1) * sizeof(uint32_t));
+            CUDA_CHECK(cudaMemcpy(pos_host, pos, (n_blocks + 1) * sizeof(uint32_t), cudaMemcpyDeviceToHost));
+            for (uint32_t b = 0; b < n_blocks; b++) {
+                int blk_elems = (int)(pos_host[b + 1] - pos_host[b]);
+                if (blk_elems > max_elem) max_elem = blk_elems;
+            }
+            free(pos_host);
+        }
+        int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
+        int smem_write = max_elem * sizeof(uint16_t);
+        smem_size = smem_counters + smem_write;
+
+        // Cache for graph capture
+        df11_header_cache_entry entry;
+        entry.n_luts     = n_luts;
+        entry.n_bytes    = n_bytes;
+        entry.n_elements = n_elements;
+        entry.n_blocks   = n_blocks;
+        entry.luts       = luts;
+        entry.codes      = codes;
+        entry.sm         = sm;
+        entry.pos        = pos;
+        entry.gaps       = gaps;
+        entry.smem_size  = smem_size;
+        g_df11_header_cache[vx] = entry;
+    }
 
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[DF11-debug] header: n_luts=%u n_bytes=%u n_elements=%u n_blocks=%u\n",
                 n_luts, n_bytes, n_elements, n_blocks);
-        // compute expected total size
         size_t lut_sz  = (size_t)n_luts * 256;
         size_t code_sz = (size_t)n_bytes;
         size_t sm_sz   = (size_t)n_elements;
@@ -1150,32 +1229,6 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
                 lut_sz, code_sz, sm_sz, sm_pad_calc, pos_sz, gaps_sz, total);
         fflush(stderr);
     }
-
-    const uint8_t * data = ((const uint8_t *)vx) + sizeof(block_df11);
-    const uint8_t * luts   = data;
-    const uint8_t * codes  = luts + (size_t)n_luts * 256;
-    const uint8_t * sm     = codes + n_bytes;
-
-    // Align pos to 4 bytes (pad may have been added by quantize_df11)
-    uintptr_t sm_end = (uintptr_t)(sm + n_elements);
-    uintptr_t pos_off = (sm_end + 3) & ~(uintptr_t)3;
-    const uint32_t * pos = (const uint32_t *)pos_off;
-    const uint8_t * gaps = (const uint8_t *)(pos + n_blocks + 1);
-
-    int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
-    int max_elem = 0;
-    if (n_blocks > 0) {
-        // Copy pos array from device to host — pos is also a device pointer
-        uint32_t * pos_host = (uint32_t *)malloc((n_blocks + 1) * sizeof(uint32_t));
-        CUDA_CHECK(cudaMemcpy(pos_host, pos, (n_blocks + 1) * sizeof(uint32_t), cudaMemcpyDeviceToHost));
-        for (uint32_t b = 0; b < n_blocks; b++) {
-            int blk_elems = (int)(pos_host[b + 1] - pos_host[b]);
-            if (blk_elems > max_elem) max_elem = blk_elems;
-        }
-        free(pos_host);
-    }
-    int smem_write = max_elem * sizeof(uint16_t);
-    int smem_size = smem_counters + smem_write;
 
     dim3 grid((unsigned int)n_blocks, 1, 1);
     dim3 block(DF11_THREADS_PER_BLOCK, 1, 1);
