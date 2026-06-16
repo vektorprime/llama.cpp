@@ -5043,6 +5043,12 @@ static void ggml_compute_forward_get_rows_df11(
         fflush(stderr);
     }
     const block_df11 * block = (const block_df11 *)src0->data;
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] get_rows_df11: block=%p n_luts=%u n_bytes=%u n_elements=%u n_blocks=%u\n",
+                (void*)block, (unsigned)block->n_luts, (unsigned)block->n_bytes,
+                (unsigned)block->n_elements, (unsigned)block->n_blocks);
+        fflush(stderr);
+    }
     dequantize_row_df11_to_bf16(block, bf16_buf, n_total);
 
     if (ggml_custom_logs_enabled()) {
