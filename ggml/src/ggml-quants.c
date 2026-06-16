@@ -5904,24 +5904,31 @@ static int32_t df11_build_lut(
         }
         fprintf(stderr, "[DF11-debug] build_lut: nsym=%d n_syms_with_code=%d nprefix=%d\n",
                 nsym, n_syms_with_code, nprefix);
-        fprintf(stderr, "[DF11-debug] build_lut: first 10 code lengths:");
-        for (int i=0;i<10;i++) fprintf(stderr," %d",(int)code_bits[i]);
+        // Dump all 8-bit-prefix byte_vals
+        fprintf(stderr, "[DF11-debug] build_lut: 8-bit prefix byte_vals:");
+        for (int32_t pj = 0; pj < nprefix; pj++) {
+            if (prefix_lens[pj] == 8) {
+                int32_t bv = 0;
+                for (int b=0; b<8; b++) bv = (bv<<1)|((prefix_table[pj][b]=='1')?1:0);
+                fprintf(stderr, " pj=%d:0x%02x", pj, bv);
+            }
+        }
         fprintf(stderr,"\n");
-        fprintf(stderr, "[DF11-debug] build_lut: first 10 code vals:");
-        for (int i=0;i<10;i++) fprintf(stderr," 0x%x",code_vals[i]);
-        fprintf(stderr,"\n");
-        fprintf(stderr, "[DF11-debug] build_lut: prefix lengths:");
-        for (int i=0;i<nprefix;i++) fprintf(stderr," %d",prefix_lens[i]);
-        fprintf(stderr,"\n");
-        fprintf(stderr, "[DF11-debug] build_lut: latest 10 prefix lens:");
-        int start = nprefix > 10 ? nprefix - 10 : 0;
-        for (int i=start;i<nprefix;i++) fprintf(stderr," %d",prefix_lens[i]);
+        // Dump first 10 code lengths, skipping zeros
+        fprintf(stderr, "[DF11-debug] build_lut: first 10 non-zero code lengths+vals:");
+        int c = 0;
+        for (int i=0; i<nsym && c<10; i++) {
+            if (code_bits[i] > 0) {
+                fprintf(stderr, " sym=%d:bits=%d:val=0x%x", i, code_bits[i], code_vals[i]);
+                c++;
+            }
+        }
         fprintf(stderr,"\n");
         int nz0 = 0;
         for (int i=0;i<256;i++) { if (lut[i]!=0) nz0++; }
-        fprintf(stderr, "[DF11-debug] build_lut: row0 nz=%d\n", nz0);
-        for (int i=0;i<256&&nz0<20;i++) {
-            if (lut[i]!=0) { fprintf(stderr," [0x%02x]=%u", i,(unsigned)lut[i]); }
+        fprintf(stderr, "[DF11-debug] build_lut: row0 nz=%d", nz0);
+        for (int i=0;i<256;i++) {
+            if (lut[i]!=0) fprintf(stderr, " [0x%02x]=%u", i, (unsigned)lut[i]);
         }
         fprintf(stderr,"\n");
         fflush(stderr);
