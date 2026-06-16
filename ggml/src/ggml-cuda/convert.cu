@@ -1114,33 +1114,45 @@ __global__ void dequantize_df11_kernel(
 }
 
 void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t stream) {
-    const block_df11 * hdr = (const block_df11 *)vx;
+    // Read block_df11 header from device to host — vx is a device pointer
+    block_df11 hdr_host;
+    CUDA_CHECK(cudaMemcpyAsync(&hdr_host, vx, sizeof(block_df11), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    const uint32_t n_luts     = hdr_host.n_luts;
+    const uint32_t n_bytes    = hdr_host.n_bytes;
+    const uint32_t n_elements = hdr_host.n_elements;
+    const uint32_t n_blocks   = hdr_host.n_blocks;
 
     const uint8_t * data = ((const uint8_t *)vx) + sizeof(block_df11);
     const uint8_t * luts   = data;
-    const uint8_t * codes  = luts + (size_t)hdr->n_luts * 256;
-    const uint8_t * sm     = codes + hdr->n_bytes;
-    const uint32_t * pos   = (const uint32_t *)(sm + hdr->n_elements);
-    const uint8_t * gaps   = (const uint8_t *)(pos + hdr->n_blocks + 1);
+    const uint8_t * codes  = luts + (size_t)n_luts * 256;
+    const uint8_t * sm     = codes + n_bytes;
+    const uint32_t * pos   = (const uint32_t *)(sm + n_elements);
+    const uint8_t * gaps   = (const uint8_t *)(pos + n_blocks + 1);
 
     int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
     int max_elem = 0;
-    if (hdr->n_blocks > 0) {
-        for (uint32_t b = 0; b < hdr->n_blocks; b++) {
-            int blk_elems = (int)(pos[b + 1] - pos[b]);
+    if (n_blocks > 0) {
+        // Copy pos array from device to host — pos is also a device pointer
+        uint32_t * pos_host = (uint32_t *)malloc((n_blocks + 1) * sizeof(uint32_t));
+        CUDA_CHECK(cudaMemcpy(pos_host, pos, (n_blocks + 1) * sizeof(uint32_t), cudaMemcpyDeviceToHost));
+        for (uint32_t b = 0; b < n_blocks; b++) {
+            int blk_elems = (int)(pos_host[b + 1] - pos_host[b]);
             if (blk_elems > max_elem) max_elem = blk_elems;
         }
+        free(pos_host);
     }
     int smem_write = max_elem * sizeof(uint16_t);
     int smem_size = smem_counters + smem_write;
 
-    dim3 grid((unsigned int)hdr->n_blocks, 1, 1);
+    dim3 grid((unsigned int)n_blocks, 1, 1);
     dim3 block(DF11_THREADS_PER_BLOCK, 1, 1);
 
     dequantize_df11_kernel<<<grid, block, smem_size, stream>>>(
         luts, codes, sm, pos, gaps,
         (nv_bfloat16 *)vy,
-        (int)hdr->n_luts, (int)hdr->n_bytes, (int)hdr->n_elements
+        (int)n_luts, (int)n_bytes, (int)n_elements
     );
 }
 
