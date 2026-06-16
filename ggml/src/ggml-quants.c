@@ -5835,6 +5835,11 @@ static int32_t df11_build_lut(
     for (int32_t pi = 0; pi < nprefix; pi++) {
         int32_t pl = prefix_lens[pi];
 
+        if (pi == 0) {
+            fprintf(stderr, "[DF11-debug] LUT build row0: pl=%d nprefix=%d\n", (int)pl, (int)nprefix);
+            fflush(stderr);
+        }
+
         for (int32_t bi = 0; bi < 256; bi++) {
             int32_t found = 0;
             // Check if prefix + this byte completes a code
@@ -5866,13 +5871,26 @@ static int32_t df11_build_lut(
 
             if (found) continue;
 
+            if (pi == 0 && bi == 0x19) {
+                fprintf(stderr, "[DF11-debug] LUT row0 bi=0x19: entering prefix check, found=%d\n", (int)found);
+                fflush(stderr);
+            }
+
             // Check if prefix + bi is a valid longer prefix
+            int32_t n_pj_checked = 0;
             for (int32_t pj = 0; pj < nprefix; pj++) {
-                if (prefix_lens[pj] == pl + 8 && memcmp(prefix_table[pj], prefix_table[pi], pl) == 0) {
+                int32_t plen = prefix_lens[pj];
+                if (plen == pl + 8 && memcmp(prefix_table[pj], prefix_table[pi], pl) == 0) {
+                    n_pj_checked++;
                     int32_t byte_val = 0;
                     int32_t bit;
                     for (bit = 0; bit < 8; bit++) {
                         byte_val = (byte_val << 1) | ((prefix_table[pj][pl+bit] == '1') ? 1 : 0);
+                    }
+                    if (pi == 0 && bi == 0x19) {
+                        fprintf(stderr, "[DF11-debug] LUT row0 bi=0x19: pj=%d plen=%d byte_val=0x%02x\n",
+                                (int)pj, (int)plen, byte_val);
+                        fflush(stderr);
                     }
                     if (byte_val == bi) {
                         if (pi == 0) {
