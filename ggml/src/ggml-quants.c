@@ -5792,25 +5792,25 @@ static int32_t df11_build_lut(
         int32_t val  = code_vals[sym];
 
         int32_t prefix_bits = ((bits - 1) / 8) * 8;
-        if (prefix_bits > 0) {
+        for (int32_t level = 8; level <= prefix_bits; level += 8) {
             char prefix[DF11_MAX_HUFFMAN_BITS + 1];
-            int32_t pval = val >> (bits - prefix_bits);
+            int32_t pval = val >> (bits - level);
             int32_t pi;
-            for (pi = 0; pi < prefix_bits; pi++) {
-                prefix[pi] = ((pval >> (prefix_bits - 1 - pi)) & 1) ? '1' : '0';
+            for (pi = 0; pi < level; pi++) {
+                prefix[pi] = ((pval >> (level - 1 - pi)) & 1) ? '1' : '0';
             }
-            prefix[prefix_bits] = '\0';
+            prefix[level] = '\0';
 
             int32_t found = 0;
             for (int32_t j = 0; j < nprefix; j++) {
-                if (prefix_lens[j] == prefix_bits && memcmp(prefix_table[j], prefix, prefix_bits) == 0) {
+                if (prefix_lens[j] == level && memcmp(prefix_table[j], prefix, level) == 0) {
                     found = 1;
                     break;
                 }
             }
             if (!found) {
-                memcpy(prefix_table[nprefix], prefix, prefix_bits + 1);
-                prefix_lens[nprefix] = prefix_bits;
+                memcpy(prefix_table[nprefix], prefix, level + 1);
+                prefix_lens[nprefix] = level;
                 nprefix++;
             }
         }
