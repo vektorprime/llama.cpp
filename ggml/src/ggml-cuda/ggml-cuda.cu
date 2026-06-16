@@ -2608,6 +2608,13 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     if (src0->type == GGML_TYPE_DF11) {
         const int64_t n_elements = src0->ne[0] * src0->ne[1];
 
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: src0=%s ne[0]=%lld ne[1]=%lld n_elements=%lld data=%p\n",
+                    ggml_get_name(src0), (long long)src0->ne[0], (long long)src0->ne[1],
+                    (long long)n_elements, (void*)src0->data);
+            fflush(stderr);
+        }
+
         // Allocate BF16 scratch buffer via cuda pool
         ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
 

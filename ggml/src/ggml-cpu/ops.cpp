@@ -5026,10 +5026,21 @@ static void ggml_compute_forward_get_rows_df11(
 
     const int64_t n_total = ne01 * ne00;
 
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] get_rows_df11: src0=%s ne00=%lld ne01=%lld n_total=%lld data=%p\n",
+                ggml_get_name(src0), (long long)ne00, (long long)ne01, (long long)n_total, (void*)src0->data);
+        fflush(stderr);
+    }
+
     // Decompress entire DF11 tensor to a BF16 scratch buffer
     ggml_bf16_t * bf16_buf = (ggml_bf16_t *)malloc(n_total * sizeof(ggml_bf16_t));
     if (!bf16_buf) {
         GGML_ABORT("out of memory");
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] get_rows_df11: bf16_buf=%p, starting decompress\n", (void*)bf16_buf);
+        fflush(stderr);
     }
     const block_df11 * block = (const block_df11 *)src0->data;
     dequantize_row_df11_to_bf16(block, bf16_buf, n_total);
