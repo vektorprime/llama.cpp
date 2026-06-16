@@ -5836,10 +5836,16 @@ static int32_t df11_build_lut(
         int32_t pl = prefix_lens[pi];
 
         if (pi == 0) {
-            fprintf(stderr, "[DF11-debug] LUT build row0: pl=%d nprefix=%d\n", (int)pl, (int)nprefix);
+            fprintf(stderr, "[DF11-debug] LUT build row0 START: pl=%d nprefix=%d\n", (int)pl, (int)nprefix);
+            // Dump prefix_lens to verify ordering
+            fprintf(stderr, "[DF11-debug] LUT build prefix_lens[0..8]:");
+            for (int d=0; d<9 && d<nprefix; d++) fprintf(stderr," %d",(int)prefix_lens[d]);
+            fprintf(stderr,"\n");
             fflush(stderr);
         }
 
+        int32_t code_match_count = 0;
+        int32_t prefix_match_count = 0;
         for (int32_t bi = 0; bi < 256; bi++) {
             int32_t found = 0;
             // Check if prefix + this byte completes a code
@@ -5869,10 +5875,16 @@ static int32_t df11_build_lut(
                 }
             }
 
-            if (found) continue;
+            if (found) {
+                if (pi == 0 && bi < 4) {
+                    fprintf(stderr, "[DF11-debug] LUT row0 bi=%d: found by code loop, skipping prefix check\n", (int)bi);
+                    fflush(stderr);
+                }
+                continue;
+            }
 
-            if (pi == 0 && bi == 0x19) {
-                fprintf(stderr, "[DF11-debug] LUT row0 bi=0x19: entering prefix check, found=%d\n", (int)found);
+            if (pi == 0 && bi < 10) {
+                fprintf(stderr, "[DF11-debug] LUT row0 bi=%d: entering prefix check, found=%d\n", (int)bi, (int)found);
                 fflush(stderr);
             }
 
@@ -5900,6 +5912,7 @@ static int32_t df11_build_lut(
                         }
                         lut[pi * 256 + bi] = (uint8_t)(256 - pj);
                         found = 1;
+                        if (pi == 0) prefix_match_count++;
                         break;
                     }
                 }
@@ -5920,6 +5933,12 @@ static int32_t df11_build_lut(
                     fflush(stderr);
                 }
             }
+        }
+
+        if (pi == 0) {
+            fprintf(stderr, "[DF11-debug] LUT row0 END: code_matches=%d prefix_matches=%d\n",
+                    (int)code_match_count, (int)prefix_match_count);
+            fflush(stderr);
         }
     }
 
