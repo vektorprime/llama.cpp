@@ -6010,7 +6010,7 @@ void quantize_row_df11_ref(const float * GGML_RESTRICT x, block_df11 * GGML_REST
 
     // 7. Pack gaps into 5-bit big-endian format
     uint32_t n_threads = (uint32_t)n_blocks * DF11_THREADS_PER_BLOCK;
-    size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8;
+    size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8 + 1;
     uint8_t * packed_gaps = (uint8_t *)calloc(gaps_bytes, 1);
 
     for (uint32_t t = 0; t < n_threads; t++) {
@@ -6234,7 +6234,8 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     uint32_t n_bytes  = (uint32_t)((total_bits_exact + 7) / 8);
     uint32_t n_blocks = df11_blocks_for_bytes(n_bytes);
     uint32_t n_threads = (uint32_t)n_blocks * DF11_THREADS_PER_BLOCK;
-    size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8;
+    // +1 extra byte: CUDA kernel reads gaps[byte_idx+1]; last thread needs this byte.
+    size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8 + 1;
     size_t lut_total  = (size_t)(lut_rows + 1) * 256;
 
     // Pad sm section so pos array starts at 4-byte alignment
