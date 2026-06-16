@@ -1119,6 +1119,12 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
     CUDA_CHECK(cudaMemcpyAsync(&hdr_host, vx, sizeof(block_df11), cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] header: n_luts=%u n_bytes=%u n_elements=%u n_blocks=%u\n",
+                hdr_host.n_luts, hdr_host.n_bytes, hdr_host.n_elements, hdr_host.n_blocks);
+        fflush(stderr);
+    }
+
     const uint32_t n_luts     = hdr_host.n_luts;
     const uint32_t n_bytes    = hdr_host.n_bytes;
     const uint32_t n_elements = hdr_host.n_elements;
@@ -1158,6 +1164,16 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
         (nv_bfloat16 *)vy,
         (int)n_luts, (int)n_bytes, (int)n_elements
     );
+
+    if (ggml_custom_logs_enabled()) {
+        cudaError_t kern_err = cudaGetLastError();
+        fprintf(stderr, "[DF11-debug] kernel launch: err=%d n_blocks=%u n_luts=%u n_bytes=%u n_elements=%u\n",
+                (int)kern_err, n_blocks, n_luts, n_bytes, n_elements);
+        fflush(stderr);
+        cudaError_t sync_err = cudaStreamSynchronize(stream);
+        fprintf(stderr, "[DF11-debug] kernel sync: err=%d\n", (int)sync_err);
+        fflush(stderr);
+    }
 }
 
 static void dequantize_row_df11_fp16_cuda(const void * vx, half * vy, int64_t k, cudaStream_t stream) {
