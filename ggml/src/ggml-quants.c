@@ -6179,6 +6179,24 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
         if (buf_bits < 8) break;
 
         int32_t top_byte = (int32_t)((buf >> (buf_bits - 8)) & 0xFF);
+
+        if (ggml_custom_logs_enabled() && output_idx == 0) {
+            int32_t tv = (int32_t)luts[top_byte];
+            fprintf(stderr, "[DF11-debug] to_bf16: iter0 top_byte=0x%02x luts[%d]=%d\n",
+                    top_byte, top_byte, tv);
+            fprintf(stderr, "[DF11-debug] to_bf16: first 16 nz row0:");
+            int nz = 0;
+            for (int i = 0; i < 256 && nz < 16; i++) {
+                if (luts[i] != 0) { fprintf(stderr, " [0x%02x]=%u", i, (unsigned)luts[i]); nz++; }
+            }
+            fprintf(stderr, "\n");
+            int last = (n_lut_rows - 1) * 256;
+            fprintf(stderr, "[DF11-debug] to_bf16: last_row first 8:");
+            for (int i = 0; i < 8; i++) fprintf(stderr, " %u", (unsigned)luts[last + i]);
+            fprintf(stderr, "\n");
+            fflush(stderr);
+        }
+
         int32_t decoded  = (int32_t)luts[(0) * 256 + top_byte];
         int32_t lut_row  = 0;
         int32_t levels   = 0;
