@@ -5599,7 +5599,7 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
 #define DF11_BYTES_PER_THREAD    8
 #define DF11_THREADS_PER_BLOCK   512
 #define DF11_MAX_HUFFMAN_BITS    32
-#define DF11_LUT_THRESHOLD       240
+#define DF11_LUT_THRESHOLD       192
 
 // ---- Huffman tree node for code building ----
 typedef struct {

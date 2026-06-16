@@ -908,7 +908,7 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
 
 #define DF11_BYTES_PER_THREAD 8
 #define DF11_THREADS_PER_BLOCK 512
-#define DF11_LUT_THRESHOLD 240
+#define DF11_LUT_THRESHOLD 192
 
 __global__ void dequantize_df11_kernel(
     const uint8_t * __restrict__ luts,
