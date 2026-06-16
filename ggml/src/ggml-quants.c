@@ -6237,10 +6237,17 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8;
     size_t lut_total  = (size_t)(lut_rows + 1) * 256;
 
+    // Pad sm section so pos array starts at 4-byte alignment
+    // layout: header(24) + luts(lut_total) + codes(n_bytes) + sm(k) [+pad] + pos(...) + gaps(...)
+    // header(24) and luts are always aligned. Pad after sm to make pos 32-bit aligned.
+    size_t sm_bytes = (size_t)k;
+    size_t sm_pad   = ((size_t)4 - (lut_total + (size_t)n_bytes + sm_bytes) % (size_t)4) % (size_t)4;
+
     size_t total_size = sizeof(block_df11)
                       + lut_total
                       + (size_t)n_bytes
-                      + (size_t)k
+                      + sm_bytes
+                      + sm_pad
                       + (size_t)(n_blocks + 1) * sizeof(uint32_t)
                       + gaps_bytes;
 
@@ -6262,7 +6269,7 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     // Output buffer pointers
     uint8_t  * codes_out = data + lut_total;
     uint8_t  * sm_out    = codes_out + n_bytes;
-    uint32_t * pos_out   = (uint32_t *)(sm_out + (size_t)k);
+    uint32_t * pos_out   = (uint32_t *)(sm_out + sm_bytes + sm_pad);
     uint8_t  * gaps_out  = (uint8_t *)(pos_out + (size_t)(n_blocks + 1));
 
     // Temp array for unpacked gaps

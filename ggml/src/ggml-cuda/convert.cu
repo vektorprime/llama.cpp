@@ -1128,8 +1128,12 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
     const uint8_t * luts   = data;
     const uint8_t * codes  = luts + (size_t)n_luts * 256;
     const uint8_t * sm     = codes + n_bytes;
-    const uint32_t * pos   = (const uint32_t *)(sm + n_elements);
-    const uint8_t * gaps   = (const uint8_t *)(pos + n_blocks + 1);
+
+    // Align pos to 4 bytes (pad may have been added by quantize_df11)
+    uintptr_t sm_end = (uintptr_t)(sm + n_elements);
+    uintptr_t pos_off = (sm_end + 3) & ~(uintptr_t)3;
+    const uint32_t * pos = (const uint32_t *)pos_off;
+    const uint8_t * gaps = (const uint8_t *)(pos + n_blocks + 1);
 
     int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
     int max_elem = 0;
