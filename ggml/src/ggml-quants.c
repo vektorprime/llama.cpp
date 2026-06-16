@@ -5897,7 +5897,7 @@ static int32_t df11_build_lut(
         lut[last_row + sym] = 0;
     }
 
-    if (ggml_custom_logs_enabled()) {
+    {
         int n_syms_with_code = 0;
         for (int32_t sym = 0; sym < nsym; sym++) {
             if (code_bits[sym] > 0) n_syms_with_code++;
