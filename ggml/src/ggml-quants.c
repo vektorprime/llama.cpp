@@ -5897,6 +5897,36 @@ static int32_t df11_build_lut(
         lut[last_row + sym] = 0;
     }
 
+    if (ggml_custom_logs_enabled()) {
+        int n_syms_with_code = 0;
+        for (int32_t sym = 0; sym < nsym; sym++) {
+            if (code_bits[sym] > 0) n_syms_with_code++;
+        }
+        fprintf(stderr, "[DF11-debug] build_lut: nsym=%d n_syms_with_code=%d nprefix=%d\n",
+                nsym, n_syms_with_code, nprefix);
+        fprintf(stderr, "[DF11-debug] build_lut: first 10 code lengths:");
+        for (int i=0;i<10;i++) fprintf(stderr," %d",(int)code_bits[i]);
+        fprintf(stderr,"\n");
+        fprintf(stderr, "[DF11-debug] build_lut: first 10 code vals:");
+        for (int i=0;i<10;i++) fprintf(stderr," 0x%x",code_vals[i]);
+        fprintf(stderr,"\n");
+        fprintf(stderr, "[DF11-debug] build_lut: prefix lengths:");
+        for (int i=0;i<nprefix;i++) fprintf(stderr," %d",prefix_lens[i]);
+        fprintf(stderr,"\n");
+        fprintf(stderr, "[DF11-debug] build_lut: latest 10 prefix lens:");
+        int start = nprefix > 10 ? nprefix - 10 : 0;
+        for (int i=start;i<nprefix;i++) fprintf(stderr," %d",prefix_lens[i]);
+        fprintf(stderr,"\n");
+        int nz0 = 0;
+        for (int i=0;i<256;i++) { if (lut[i]!=0) nz0++; }
+        fprintf(stderr, "[DF11-debug] build_lut: row0 nz=%d\n", nz0);
+        for (int i=0;i<256&&nz0<20;i++) {
+            if (lut[i]!=0) { fprintf(stderr," [0x%02x]=%u", i,(unsigned)lut[i]); }
+        }
+        fprintf(stderr,"\n");
+        fflush(stderr);
+    }
+
     return nprefix;
 }
 
