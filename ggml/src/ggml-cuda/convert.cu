@@ -916,7 +916,7 @@ __global__ void dequantize_df11_kernel(
     nv_bfloat16 * __restrict__ outputs,
     const int n_luts, const int n_bytes, const int n_elements
 ) {
-    uint8_t register_buffer[12];
+    uint8_t register_buffer[12] = {0};
     extern __shared__ uint8_t shared_mem[];
     volatile uint32_t * counters = (volatile uint32_t *)shared_mem;
     volatile uint16_t * write_buf = (volatile uint16_t *)(shared_mem + DF11_THREADS_PER_BLOCK * sizeof(int));
@@ -925,106 +925,114 @@ __global__ void dequantize_df11_kernel(
     const int block_id = blockIdx.x;
     const int global_thread_id = block_id * DF11_THREADS_PER_BLOCK + tid;
 
+    const bool thread_has_data = (global_thread_id * DF11_BYTES_PER_THREAD < n_bytes);
+
     // Phase 1: Load codes into registers
-    if (global_thread_id * DF11_BYTES_PER_THREAD < n_bytes) register_buffer[0] = codes[global_thread_id * DF11_BYTES_PER_THREAD];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 1 < n_bytes) register_buffer[1] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 1];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 2 < n_bytes) register_buffer[2] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 2];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 3 < n_bytes) register_buffer[3] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 3];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 4 < n_bytes) register_buffer[4] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 4];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 5 < n_bytes) register_buffer[5] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 5];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 6 < n_bytes) register_buffer[6] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 6];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 7 < n_bytes) register_buffer[7] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 7];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 8 < n_bytes) register_buffer[8] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 8];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 9 < n_bytes) register_buffer[9] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 9];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 10 < n_bytes) register_buffer[10] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 10];
-    if (global_thread_id * DF11_BYTES_PER_THREAD + 11 < n_bytes) register_buffer[11] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 11];
+    if (thread_has_data) {
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 0  < n_bytes) register_buffer[0]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 0];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 1  < n_bytes) register_buffer[1]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 1];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 2  < n_bytes) register_buffer[2]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 2];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 3  < n_bytes) register_buffer[3]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 3];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 4  < n_bytes) register_buffer[4]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 4];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 5  < n_bytes) register_buffer[5]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 5];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 6  < n_bytes) register_buffer[6]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 6];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 7  < n_bytes) register_buffer[7]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 7];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 8  < n_bytes) register_buffer[8]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 8];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 9  < n_bytes) register_buffer[9]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 9];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 10 < n_bytes) register_buffer[10] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 10];
+        if (global_thread_id * DF11_BYTES_PER_THREAD + 11 < n_bytes) register_buffer[11] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 11];
+    }
+    int thread_counter = 0;
+    int gap = 0;
     __syncthreads();
 
-    // Phase 2: Read gap (5 bits per thread)
-    int bit_idx = global_thread_id * 5;
-    int byte_idx = bit_idx / 8;
-    int bit_off = bit_idx % 8;
-    uint8_t buf0 = gaps[byte_idx];
-    uint8_t buf1 = gaps[byte_idx + 1];
-    int gap = (int)(((buf0 << bit_off) | (buf1 >> (8 - bit_off))) & 0x1F);
+    // Phases 2-5: Huffman decoding to count symbols (data threads only)
+    if (thread_has_data) {
+        // Phase 2: Read gap (5 bits per thread)
+        int bit_idx = global_thread_id * 5;
+        int byte_idx = bit_idx / 8;
+        int bit_off = bit_idx % 8;
+        uint8_t buf0 = gaps[byte_idx];
+        uint8_t buf1 = gaps[byte_idx + 1];
+        gap = (int)(((buf0 << bit_off) | (buf1 >> (8 - bit_off))) & 0x1F);
 
-    // Build 64-bit buffer from register bytes
-    uint64_t long_buffer = 0;
-    long_buffer = (long_buffer << 8) | register_buffer[0];
-    long_buffer = (long_buffer << 8) | register_buffer[1];
-    long_buffer = (long_buffer << 8) | register_buffer[2];
-    long_buffer = (long_buffer << 8) | register_buffer[3];
-    long_buffer = (long_buffer << 8) | register_buffer[4];
-    long_buffer = (long_buffer << 8) | register_buffer[5];
-    long_buffer = (long_buffer << 8) | register_buffer[6];
-    long_buffer = (long_buffer << 8) | register_buffer[7];
+        // Build 64-bit buffer from register bytes
+        uint64_t long_buffer = 0;
+        long_buffer = (long_buffer << 8) | register_buffer[0];
+        long_buffer = (long_buffer << 8) | register_buffer[1];
+        long_buffer = (long_buffer << 8) | register_buffer[2];
+        long_buffer = (long_buffer << 8) | register_buffer[3];
+        long_buffer = (long_buffer << 8) | register_buffer[4];
+        long_buffer = (long_buffer << 8) | register_buffer[5];
+        long_buffer = (long_buffer << 8) | register_buffer[6];
+        long_buffer = (long_buffer << 8) | register_buffer[7];
 
-    long_buffer <<= gap;
-    int free_bits = 64 - gap;
-    int thread_counter = 0;
+        long_buffer <<= gap;
+        int free_bits = 64 - gap;
 
-    // Phase 3: Pre-decode until free_bits >= 32
-    while (free_bits < 32) {
-        int top_byte = (int)((long_buffer >> 56) & 0xFF);
-        int decoded = (int)luts[top_byte];
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 48) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        // Phase 3: Pre-decode until free_bits >= 32
+        while (free_bits < 32) {
+            int top_byte = (int)((long_buffer >> 56) & 0xFF);
+            int decoded = (int)luts[top_byte];
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 48) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 40) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 32) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) break;
+
+            int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
+            long_buffer <<= code_len;
+            free_bits += code_len;
+            thread_counter++;
         }
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 40) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 32) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) break;
 
-        int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-        long_buffer <<= code_len;
-        free_bits += code_len;
-        thread_counter++;
+        // Phase 4: Load extra 4 bytes and subtract 32 free bits
+        uint32_t extra = ((uint32_t)register_buffer[8]  << 24) |
+                         ((uint32_t)register_buffer[9]  << 16) |
+                         ((uint32_t)register_buffer[10] <<  8) |
+                         ((uint32_t)register_buffer[11]);
+        long_buffer |= ((uint64_t)extra << (free_bits - 32));
+        free_bits -= 32;
+
+        // Phase 5: Decode remaining symbols to count
+        int bytes_consumed = 0;
+        while (bytes_consumed < DF11_BYTES_PER_THREAD) {
+            if (free_bits < 32) break;
+
+            int top_byte = (int)((long_buffer >> 56) & 0xFF);
+            int decoded = (int)luts[top_byte];
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 48) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 40) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 32) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) break;
+
+            int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
+            long_buffer <<= code_len;
+            free_bits += code_len;
+            thread_counter++;
+            bytes_consumed++;
+        }
     }
 
-    // Phase 4: Load extra 4 bytes and subtract 32 free bits
-    uint32_t extra = ((uint32_t)register_buffer[8]  << 24) |
-                     ((uint32_t)register_buffer[9]  << 16) |
-                     ((uint32_t)register_buffer[10] <<  8) |
-                     ((uint32_t)register_buffer[11]);
-    long_buffer |= ((uint64_t)extra << (free_bits - 32));
-    free_bits -= 32;
-
-    // Phase 5: Decode remaining symbols to count
-    int bytes_consumed = 0;
-    while (bytes_consumed < DF11_BYTES_PER_THREAD) {
-        if (free_bits < 32) break;
-
-        int top_byte = (int)((long_buffer >> 56) & 0xFF);
-        int decoded = (int)luts[top_byte];
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 48) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 40) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 32) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) break;
-
-        int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-        long_buffer <<= code_len;
-        free_bits += code_len;
-        thread_counter++;
-        bytes_consumed++;
-    }
-
-    // Phase 6: Parallel prefix sum for output positions
-    counters[tid] = (tid == 0) ? (int)position_offsets[block_id] : thread_counter;
+    // Phase 6: Parallel prefix sum for output positions (ALL threads)
+    counters[tid] = thread_counter;
     __syncthreads();
 
     for (int stride = 1; stride < DF11_THREADS_PER_BLOCK; stride *= 2) {
@@ -1036,7 +1044,7 @@ __global__ void dequantize_df11_kernel(
     }
 
     if (tid == 0) {
-        counters[DF11_THREADS_PER_BLOCK - 1] = (int)position_offsets[block_id + 1];
+        counters[DF11_THREADS_PER_BLOCK - 1] = 0;
     }
     __syncthreads();
 
@@ -1050,58 +1058,60 @@ __global__ void dequantize_df11_kernel(
         __syncthreads();
     }
 
-    int output_idx = counters[tid];
-    int end_idx = (tid < DF11_THREADS_PER_BLOCK - 1) ? counters[tid + 1] : counters[DF11_THREADS_PER_BLOCK - 1];
     int write_offset = (int)position_offsets[block_id];
+    int output_idx = (int)counters[tid] + write_offset;
+    int end_idx = (tid < DF11_THREADS_PER_BLOCK - 1) ? ((int)counters[tid + 1] + write_offset) : (int)position_offsets[block_id + 1];
 
-    // Phase 7: Re-decode and reconstruct BF16 values
-    long_buffer = 0;
-    long_buffer = (long_buffer << 8) | register_buffer[0];
-    long_buffer = (long_buffer << 8) | register_buffer[1];
-    long_buffer = (long_buffer << 8) | register_buffer[2];
-    long_buffer = (long_buffer << 8) | register_buffer[3];
-    long_buffer = (long_buffer << 8) | register_buffer[4];
-    long_buffer = (long_buffer << 8) | register_buffer[5];
-    long_buffer = (long_buffer << 8) | register_buffer[6];
-    long_buffer = (long_buffer << 8) | register_buffer[7];
+    // Phase 7: Re-decode and reconstruct BF16 values (data threads only)
+    if (thread_has_data && output_idx < end_idx) {
+        uint64_t long_buffer = 0;
+        long_buffer = (long_buffer << 8) | register_buffer[0];
+        long_buffer = (long_buffer << 8) | register_buffer[1];
+        long_buffer = (long_buffer << 8) | register_buffer[2];
+        long_buffer = (long_buffer << 8) | register_buffer[3];
+        long_buffer = (long_buffer << 8) | register_buffer[4];
+        long_buffer = (long_buffer << 8) | register_buffer[5];
+        long_buffer = (long_buffer << 8) | register_buffer[6];
+        long_buffer = (long_buffer << 8) | register_buffer[7];
 
-    long_buffer <<= gap;
-    free_bits = 64 - gap;
+        long_buffer <<= gap;
+        int free_bits = 64 - gap;
 
-    while (output_idx < end_idx) {
-        if (free_bits < 32) {
-            long_buffer = (long_buffer << 8) | register_buffer[8];
-            long_buffer = (long_buffer << 8) | register_buffer[9];
-            long_buffer = (long_buffer << 8) | register_buffer[10];
-            long_buffer = (long_buffer << 8) | register_buffer[11];
-            free_bits += 32;
+        while (output_idx < end_idx) {
+            if (free_bits < 32) {
+                long_buffer = (long_buffer << 8) | register_buffer[8];
+                long_buffer = (long_buffer << 8) | register_buffer[9];
+                long_buffer = (long_buffer << 8) | register_buffer[10];
+                long_buffer = (long_buffer << 8) | register_buffer[11];
+                free_bits += 32;
+            }
+
+            int top_byte = (int)((long_buffer >> 56) & 0xFF);
+            int decoded = (int)luts[top_byte];
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 48) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 40) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                top_byte = (int)((long_buffer >> 32) & 0xFF);
+                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            }
+
+            int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
+            long_buffer <<= code_len;
+            free_bits += code_len;
+
+            uint8_t sm = sign_mantissa[output_idx];
+            uint8_t high_byte = (sm & 0x80) | ((uint8_t)(decoded >> 1));
+            uint8_t low_byte  = (uint8_t)(decoded << 7) | (sm & 0x7F);
+            uint16_t bf16_val = ((uint16_t)high_byte << 8) | low_byte;
+            write_buf[output_idx - write_offset] = bf16_val;
+            output_idx++;
         }
-
-        int top_byte = (int)((long_buffer >> 56) & 0xFF);
-        int decoded = (int)luts[top_byte];
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 48) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 40) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-        if (decoded >= DF11_LUT_THRESHOLD) {
-            top_byte = (int)((long_buffer >> 32) & 0xFF);
-            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-        }
-
-        int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-        long_buffer <<= code_len;
-        free_bits += code_len;
-
-        uint8_t sm = sign_mantissa[output_idx];
-        uint8_t high_byte = (sm & 0x80) | ((uint8_t)(decoded >> 1));
-        uint8_t low_byte  = (uint8_t)(decoded << 7) | (sm & 0x7F);
-        uint16_t bf16_val = ((uint16_t)high_byte << 8) | low_byte;
-        write_buf[output_idx - write_offset] = bf16_val;
-        output_idx++;
     }
     __syncthreads();
 
