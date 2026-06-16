@@ -6121,7 +6121,9 @@ void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRI
         bf16 |= (uint16_t)(decoded & 0x01) << 7;
         bf16 |= (uint16_t)(sm & 0x7F);
 
-        y[output_idx++] = ggml_bf16_to_fp32_row_value(bf16);
+        ggml_bf16_t tmp_bf;
+        tmp_bf.bits = bf16;
+        y[output_idx++] = ggml_bf16_to_fp32(tmp_bf);
     }
 
     for (int32_t i = output_idx; i < (int32_t)k; i++) {
