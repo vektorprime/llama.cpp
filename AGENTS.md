@@ -13,6 +13,13 @@ example with cmd
 example with powershell
 & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe" \Zs llama-io.cpp
 
+After every file edit, validate the edit was applied correctly:
+- Use `git diff` to review the exact changes
+- Use `rg`/`grep` to verify the edit appears in the file at the expected location
+- Verify no unintended side effects (e.g. `replaceAll` hitting wrong occurrences)
+- If an edit fails with "oldString not found" or "Found multiple matches", re-read the file
+  and use more surrounding context to make the match unique
+
 When fixing compilation errors, remember to also run git push after the commit.
 
 ## Gotchas
