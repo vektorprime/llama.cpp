@@ -1725,6 +1725,14 @@ bool llama_model_loader::load_all_data(
         // (e.g. DF11) where ggml_nbytes() returns a conservative upper bound.
         size_t n_size = weight->size;
 
+        if (ggml_custom_logs_enabled() && cur->type == GGML_TYPE_DF11) {
+            fprintf(stderr, "[DF11-debug] load_all_data: %s n_size=%zu ggml_nbytes=%zu offs=%zu data=%p buf_is_host=%d\n",
+                    ggml_get_name(cur), n_size, ggml_nbytes(cur),
+                    weight->offs, (void*)cur->data,
+                    cur->buffer ? ggml_backend_buffer_is_host(cur->buffer) : -1);
+            fflush(stderr);
+        }
+
         if (use_mmap) {
             const auto & mapping = mappings.at(weight->idx);
             ggml_backend_buffer_t buf_mmap = nullptr;

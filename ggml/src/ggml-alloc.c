@@ -1183,6 +1183,15 @@ static ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors_from_buft_impl(
             this_size = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), alignment);
         }
 
+        if (ggml_custom_logs_enabled() && t->type == GGML_TYPE_DF11) {
+            fprintf(stderr, "[DF11-debug] ctx_tensors_alloc: %s ne[0]=%lld ne[1]=%lld this_size=%zu ggml_nbytes=%zu nb[0]=%zu nb[1]=%zu\n",
+                    ggml_get_name(t),
+                    (long long)t->ne[0], (long long)t->ne[1],
+                    this_size, ggml_nbytes(t),
+                    t->nb[0], t->nb[1]);
+            fflush(stderr);
+        }
+
         if (cur_buf_size > 0 && (cur_buf_size + this_size) > max_size) {
             // allocate tensors in the current buffer
             if (!no_alloc && !alloc_tensor_range(ctx, first, t, buft, cur_buf_size, &buffers, &n_buffers)) {

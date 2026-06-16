@@ -1122,6 +1122,17 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[DF11-debug] header: n_luts=%u n_bytes=%u n_elements=%u n_blocks=%u\n",
                 hdr_host.n_luts, hdr_host.n_bytes, hdr_host.n_elements, hdr_host.n_blocks);
+        // compute expected total size
+        size_t lut_sz  = (size_t)n_luts * 256;
+        size_t code_sz = (size_t)n_bytes;
+        size_t sm_sz   = (size_t)n_elements;
+        size_t sm_pad_calc = ((size_t)4 - (lut_sz + code_sz + sm_sz) % (size_t)4) % (size_t)4;
+        size_t pos_sz  = (size_t)(n_blocks + 1) * sizeof(uint32_t);
+        size_t thread_cnt = (size_t)n_blocks * DF11_THREADS_PER_BLOCK;
+        size_t gaps_sz= ((size_t)thread_cnt * 5 + 7) / 8;
+        size_t total   = 24 + lut_sz + code_sz + sm_sz + sm_pad_calc + pos_sz + gaps_sz;
+        fprintf(stderr, "[DF11-debug] layout: lut=%zu code=%zu sm=%zu pad=%zu pos=%zu gaps=%zu total=%zu\n",
+                lut_sz, code_sz, sm_sz, sm_pad_calc, pos_sz, gaps_sz, total);
         fflush(stderr);
     }
 

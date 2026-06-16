@@ -2609,17 +2609,43 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         const int64_t n_elements = src0->ne[0] * src0->ne[1];
 
         if (ggml_custom_logs_enabled()) {
-            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: src0=%s ne[0]=%lld ne[1]=%lld n_elements=%lld data=%p\n",
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: src0=%s ne[0]=%lld ne[1]=%lld n_elements=%lld data=%p nb[0]=%zu nb[1]=%zu\n",
                     ggml_get_name(src0), (long long)src0->ne[0], (long long)src0->ne[1],
-                    (long long)n_elements, (void*)src0->data);
+                    (long long)n_elements, (void*)src0->data,
+                    src0->nb[0], src0->nb[1]);
+            if (src0->buffer) {
+                fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: tensor buffer size=%zu ggml_nbytes=%zu\n",
+                        ggml_backend_buffer_get_size(src0->buffer), ggml_nbytes(src0));
+            }
             fflush(stderr);
+            // Allocate BF16 scratch buffer via cuda pool
+            ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
+
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: scratch_bf16=%p, calling dequantize_df11_cuda\n",
+                    (void*)scratch_bf16.ptr);
+            fflush(stderr);
+        } else {
+            // Allocate BF16 scratch buffer via cuda pool
+            ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
         }
 
         // Allocate BF16 scratch buffer via cuda pool
         ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
 
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: scratch_bf16=%p, calling dequantize_df11_cuda\n",
+                    (void*)scratch_bf16.ptr);
+            fflush(stderr);
+        }
+
         // Decode DF11 -> BF16
         dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
+
+        if (ggml_custom_logs_enabled()) {
+            cudaError_t err = cudaStreamSynchronize(ctx.stream());
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: dequantize done, sync_err=%d, dispatching matmul\n", (int)err);
+            fflush(stderr);
+        }
 
         // Create a temporary tensor struct that wraps the scratch BF16 buffer
         ggml_tensor src0_bf16 = *src0;
