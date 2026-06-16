@@ -754,6 +754,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_iq4_xs_cuda;
         case GGML_TYPE_IQ3_S:
             return dequantize_row_iq3_s_cuda;
+        case GGML_TYPE_DF11:
+            return dequantize_row_df11_fp16_cuda;
         case GGML_TYPE_MXFP4:
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
@@ -809,6 +811,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_iq4_xs_cuda;
         case GGML_TYPE_IQ3_S:
             return dequantize_row_iq3_s_cuda;
+        case GGML_TYPE_DF11:
+            return dequantize_row_df11_fp32_cuda;
         case GGML_TYPE_MXFP4:
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
@@ -889,4 +893,265 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
         default:
             return nullptr;
     }
+}
+
+//
+// ============================ Dfloat11 CUDA ============================
+//
+
+#define DF11_BYTES_PER_THREAD 8
+#define DF11_THREADS_PER_BLOCK 512
+#define DF11_LUT_THRESHOLD 240
+
+__global__ void dequantize_df11_kernel(
+    const uint8_t * __restrict__ luts,
+    const uint8_t * __restrict__ codes,
+    const uint8_t * __restrict__ sign_mantissa,
+    const uint32_t * __restrict__ position_offsets,
+    const uint8_t * __restrict__ gaps,
+    nv_bfloat16 * __restrict__ outputs,
+    const int n_luts, const int n_bytes, const int n_elements
+) {
+    uint8_t register_buffer[12];
+    extern __shared__ uint8_t shared_mem[];
+    volatile uint32_t * counters = (volatile uint32_t *)shared_mem;
+    volatile uint16_t * write_buf = (volatile uint16_t *)(shared_mem + DF11_THREADS_PER_BLOCK * sizeof(int));
+
+    const int tid = threadIdx.x;
+    const int block_id = blockIdx.x;
+    const int global_thread_id = block_id * DF11_THREADS_PER_BLOCK + tid;
+
+    // Phase 1: Load codes into registers
+    if (global_thread_id * DF11_BYTES_PER_THREAD < n_bytes) register_buffer[0] = codes[global_thread_id * DF11_BYTES_PER_THREAD];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 1 < n_bytes) register_buffer[1] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 1];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 2 < n_bytes) register_buffer[2] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 2];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 3 < n_bytes) register_buffer[3] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 3];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 4 < n_bytes) register_buffer[4] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 4];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 5 < n_bytes) register_buffer[5] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 5];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 6 < n_bytes) register_buffer[6] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 6];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 7 < n_bytes) register_buffer[7] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 7];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 8 < n_bytes) register_buffer[8] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 8];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 9 < n_bytes) register_buffer[9] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 9];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 10 < n_bytes) register_buffer[10] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 10];
+    if (global_thread_id * DF11_BYTES_PER_THREAD + 11 < n_bytes) register_buffer[11] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 11];
+    __syncthreads();
+
+    // Phase 2: Read gap (5 bits per thread)
+    int bit_idx = global_thread_id * 5;
+    int byte_idx = bit_idx / 8;
+    int bit_off = bit_idx % 8;
+    uint8_t buf0 = gaps[byte_idx];
+    uint8_t buf1 = gaps[byte_idx + 1];
+    int gap = (int)(((buf0 << bit_off) | (buf1 >> (8 - bit_off))) & 0x1F);
+
+    // Build 64-bit buffer from register bytes
+    uint64_t long_buffer = 0;
+    long_buffer = (long_buffer << 8) | register_buffer[0];
+    long_buffer = (long_buffer << 8) | register_buffer[1];
+    long_buffer = (long_buffer << 8) | register_buffer[2];
+    long_buffer = (long_buffer << 8) | register_buffer[3];
+    long_buffer = (long_buffer << 8) | register_buffer[4];
+    long_buffer = (long_buffer << 8) | register_buffer[5];
+    long_buffer = (long_buffer << 8) | register_buffer[6];
+    long_buffer = (long_buffer << 8) | register_buffer[7];
+
+    long_buffer <<= gap;
+    int free_bits = 64 - gap;
+    int thread_counter = 0;
+
+    // Phase 3: Pre-decode until free_bits >= 32
+    while (free_bits < 32) {
+        int top_byte = (int)((long_buffer >> 56) & 0xFF);
+        int decoded = (int)luts[top_byte];
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 48) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 40) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 32) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) break;
+
+        int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
+        long_buffer <<= code_len;
+        free_bits += code_len;
+        thread_counter++;
+    }
+
+    // Phase 4: Load extra 4 bytes and subtract 32 free bits
+    uint32_t extra = ((uint32_t)register_buffer[8]  << 24) |
+                     ((uint32_t)register_buffer[9]  << 16) |
+                     ((uint32_t)register_buffer[10] <<  8) |
+                     ((uint32_t)register_buffer[11]);
+    long_buffer |= ((uint64_t)extra << (free_bits - 32));
+    free_bits -= 32;
+
+    // Phase 5: Decode remaining symbols to count
+    int bytes_consumed = 0;
+    while (bytes_consumed < DF11_BYTES_PER_THREAD) {
+        if (free_bits < 32) break;
+
+        int top_byte = (int)((long_buffer >> 56) & 0xFF);
+        int decoded = (int)luts[top_byte];
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 48) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 40) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 32) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) break;
+
+        int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
+        long_buffer <<= code_len;
+        free_bits += code_len;
+        thread_counter++;
+        bytes_consumed++;
+    }
+
+    // Phase 6: Parallel prefix sum for output positions
+    counters[tid] = (tid == 0) ? (int)position_offsets[block_id] : thread_counter;
+    __syncthreads();
+
+    for (int stride = 1; stride < DF11_THREADS_PER_BLOCK; stride *= 2) {
+        int idx = (tid + 1) * stride * 2 - 1;
+        if (idx < DF11_THREADS_PER_BLOCK) {
+            counters[idx] += counters[idx - stride];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        counters[DF11_THREADS_PER_BLOCK - 1] = (int)position_offsets[block_id + 1];
+    }
+    __syncthreads();
+
+    for (int stride = DF11_THREADS_PER_BLOCK / 2; stride > 0; stride /= 2) {
+        int idx = (tid + 1) * stride * 2 - 1;
+        if (idx < DF11_THREADS_PER_BLOCK) {
+            int temp = counters[idx - stride];
+            counters[idx - stride] = counters[idx];
+            counters[idx] += temp;
+        }
+        __syncthreads();
+    }
+
+    int output_idx = counters[tid];
+    int end_idx = (tid < DF11_THREADS_PER_BLOCK - 1) ? counters[tid + 1] : counters[DF11_THREADS_PER_BLOCK - 1];
+    int write_offset = (int)position_offsets[block_id];
+
+    // Phase 7: Re-decode and reconstruct BF16 values
+    long_buffer = 0;
+    long_buffer = (long_buffer << 8) | register_buffer[0];
+    long_buffer = (long_buffer << 8) | register_buffer[1];
+    long_buffer = (long_buffer << 8) | register_buffer[2];
+    long_buffer = (long_buffer << 8) | register_buffer[3];
+    long_buffer = (long_buffer << 8) | register_buffer[4];
+    long_buffer = (long_buffer << 8) | register_buffer[5];
+    long_buffer = (long_buffer << 8) | register_buffer[6];
+    long_buffer = (long_buffer << 8) | register_buffer[7];
+
+    long_buffer <<= gap;
+    free_bits = 64 - gap;
+
+    while (output_idx < end_idx) {
+        if (free_bits < 32) {
+            long_buffer = (long_buffer << 8) | register_buffer[8];
+            long_buffer = (long_buffer << 8) | register_buffer[9];
+            long_buffer = (long_buffer << 8) | register_buffer[10];
+            long_buffer = (long_buffer << 8) | register_buffer[11];
+            free_bits += 32;
+        }
+
+        int top_byte = (int)((long_buffer >> 56) & 0xFF);
+        int decoded = (int)luts[top_byte];
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 48) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 40) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            top_byte = (int)((long_buffer >> 32) & 0xFF);
+            decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+        }
+
+        int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
+        long_buffer <<= code_len;
+        free_bits += code_len;
+
+        uint8_t sm = sign_mantissa[output_idx];
+        uint8_t high_byte = (sm & 0x80) | ((uint8_t)(decoded >> 1));
+        uint8_t low_byte  = (uint8_t)(decoded << 7) | (sm & 0x7F);
+        uint16_t bf16_val = ((uint16_t)high_byte << 8) | low_byte;
+        write_buf[output_idx - write_offset] = bf16_val;
+        output_idx++;
+    }
+    __syncthreads();
+
+    // Phase 8: Scatter from shared memory to global
+    int n_elem_this_block = (int)position_offsets[block_id + 1] - write_offset;
+    int n_left = n_elements - write_offset;
+    for (int i = tid; i < n_elem_this_block && i < n_left; i += DF11_THREADS_PER_BLOCK) {
+        outputs[i + write_offset] = *(nv_bfloat16 *)&write_buf[i];
+    }
+}
+
+void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t stream) {
+    const block_df11 * hdr = (const block_df11 *)vx;
+
+    const uint8_t * data = ((const uint8_t *)vx) + sizeof(block_df11);
+    const uint8_t * luts   = data;
+    const uint8_t * codes  = luts + (size_t)hdr->n_luts * 256;
+    const uint8_t * sm     = codes + hdr->n_bytes;
+    const uint32_t * pos   = (const uint32_t *)(sm + hdr->n_elements);
+    const uint8_t * gaps   = (const uint8_t *)(pos + hdr->n_blocks + 1);
+
+    int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
+    int max_elem = 0;
+    if (hdr->n_blocks > 0) {
+        for (uint32_t b = 0; b < hdr->n_blocks; b++) {
+            int blk_elems = (int)(pos[b + 1] - pos[b]);
+            if (blk_elems > max_elem) max_elem = blk_elems;
+        }
+    }
+    int smem_write = max_elem * sizeof(uint16_t);
+    int smem_size = smem_counters + smem_write;
+
+    dim3 grid((unsigned int)hdr->n_blocks, 1, 1);
+    dim3 block(DF11_THREADS_PER_BLOCK, 1, 1);
+
+    dequantize_df11_kernel<<<grid, block, smem_size, stream>>>(
+        luts, codes, sm, pos, gaps,
+        (nv_bfloat16 *)vy,
+        (int)hdr->n_luts, (int)hdr->n_bytes, (int)hdr->n_elements
+    );
+}
+
+static void dequantize_row_df11_fp16_cuda(const void * vx, half * vy, int64_t k, cudaStream_t stream) {
+    nv_bfloat16 * scratch = nullptr;
+    cudaMallocAsync(&scratch, (size_t)k * sizeof(nv_bfloat16), stream);
+    dequantize_df11_cuda(vx, scratch, k, stream);
+    convert_unary_cont_cuda<nv_bfloat16, half>(scratch, vy, k, stream);
+    cudaFreeAsync(scratch, stream);
+}
+
+static void dequantize_row_df11_fp32_cuda(const void * vx, float * vy, int64_t k, cudaStream_t stream) {
+    nv_bfloat16 * scratch = nullptr;
+    cudaMallocAsync(&scratch, (size_t)k * sizeof(nv_bfloat16), stream);
+    dequantize_df11_cuda(vx, scratch, k, stream);
+    convert_unary_cont_cuda<nv_bfloat16, float>(scratch, vy, k, stream);
+    cudaFreeAsync(scratch, stream);
 }

@@ -68,6 +68,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q8_0",     LLAMA_FTYPE_MOSTLY_Q8_0,     " 7.96G, +0.0026 ppl @ Llama-3-8B",  },
     { "Q8_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER, " mostly Q8_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
     { "Q4_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER, " mostly Q4_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
+    { "DF11",     LLAMA_FTYPE_MOSTLY_DF11,    " lossless BF16 compression (Huffman-coded exponents)", },
     { "F16",      LLAMA_FTYPE_MOSTLY_F16,      "14.00G, +0.0020 ppl @ Mistral-7B",  },
     { "BF16",     LLAMA_FTYPE_MOSTLY_BF16,     "14.00G, -0.0050 ppl @ Mistral-7B",  },
     { "F32",      LLAMA_FTYPE_ALL_F32,         "26.00G              @ 7B",          },

@@ -4,6 +4,7 @@
 
 #include "ggml-cuda/allreduce.cuh"
 #include "ggml-cuda/common.cuh"
+#include "ggml-cuda/dequantize.cuh"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
@@ -2600,6 +2601,41 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
 
     const int32_t hint = ggml_get_op_params_i32(dst, 1);
     if (hint == GGML_HINT_SRC0_IS_HADAMARD && !split && ggml_cuda_op_fwht(ctx, src1, dst)) {
+        return;
+    }
+
+    // DF11 on-the-fly decompression: decode compressed weights to BF16 scratch, then dispatch as BF16
+    if (src0->type == GGML_TYPE_DF11) {
+        const int64_t n_elements = src0->ne[0] * src0->ne[1];
+
+        // Allocate BF16 scratch buffer via cuda pool
+        ggml_cuda_pool_alloc<nv_bfloat16> scratch_bf16(ctx.pool(), n_elements);
+
+        // Decode DF11 -> BF16
+        dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
+
+        // Create a temporary tensor struct that wraps the scratch BF16 buffer
+        ggml_tensor src0_bf16 = *src0;
+        src0_bf16.type = GGML_TYPE_BF16;
+        src0_bf16.data = scratch_bf16.ptr;
+        src0_bf16.nb[0] = sizeof(nv_bfloat16);
+        src0_bf16.nb[1] = src0->ne[0] * sizeof(nv_bfloat16);
+
+        // Dispatch through BF16 MMF / cuBLAS path
+        bool use_mf = !split
+            && ggml_cuda_should_use_mmf(GGML_TYPE_BF16, cc, ggml_cuda_info().devices[ctx.device].warp_size,
+                                        src0_bf16.ne, src0_bf16.nb, src1->ne[1], false);
+
+        if (use_mf) {
+            ggml_cuda_mul_mat_f(ctx, &src0_bf16, src1, nullptr, dst);
+        } else if (src1->ne[2] * src1->ne[3] > 1 && bf16_mma_hardware_available(cc)
+                   && !ggml_is_transposed(&src0_bf16) && !ggml_is_transposed(src1)) {
+            ggml_cuda_mul_mat_batched_cublas(ctx, &src0_bf16, src1, dst);
+        } else {
+            ggml_cuda_op_mul_mat(ctx, &src0_bf16, src1, dst,
+                                 ggml_cuda_op_mul_mat_cublas, nullptr);
+        }
+
         return;
     }
 

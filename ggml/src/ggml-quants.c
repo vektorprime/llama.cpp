@@ -5589,3 +5589,639 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
 
     return true;
 }
+
+//
+// ============================ Dfloat11 ============================
+// Lossless BF16 compression via Huffman coding of 8-bit exponents.
+//
+
+#define DF11_BYTES_PER_THREAD    8
+#define DF11_THREADS_PER_BLOCK   512
+#define DF11_MAX_HUFFMAN_BITS    32
+#define DF11_LUT_THRESHOLD       240
+
+// ---- Huffman tree node for code building ----
+typedef struct {
+    int32_t  left;
+    int32_t  right;
+    int32_t  parent;
+    int32_t  symbol;
+    uint64_t freq;
+} df11_hnode;
+
+// ---- Min-heap for Huffman tree construction ----
+typedef struct {
+    int32_t * data;
+    int32_t   size;
+} df11_heap;
+
+static void df11_heap_push(df11_heap * h, df11_hnode * nodes, int32_t idx) {
+    int32_t i = h->size++;
+    while (i > 0) {
+        int32_t p = (i - 1) / 2;
+        if (nodes[h->data[p]].freq <= nodes[idx].freq) break;
+        h->data[i] = h->data[p];
+        i = p;
+    }
+    h->data[i] = idx;
+}
+
+static int32_t df11_heap_pop(df11_heap * h, df11_hnode * nodes) {
+    int32_t root = h->data[0];
+    int32_t last = h->data[--h->size];
+    int32_t i = 0;
+    for (;;) {
+        int32_t left = 2*i + 1;
+        if (left >= h->size) break;
+        int32_t right = left + 1;
+        int32_t child = (right < h->size && nodes[h->data[right]].freq < nodes[h->data[left]].freq) ? right : left;
+        if (nodes[last].freq <= nodes[h->data[child]].freq) break;
+        h->data[i] = h->data[child];
+        i = child;
+    }
+    h->data[i] = last;
+    return root;
+}
+
+// ---- Build Huffman tree, enforce max code length ≤ 32 ----
+static void df11_build_huffman(
+    const int32_t * freqs, int32_t nsym,
+    int32_t * code_bits, int32_t * code_vals,
+    int32_t * node_count
+) {
+    int32_t nleaves = 0;
+    int32_t hdata[512];
+    df11_heap heap = { hdata, 0 };
+    df11_hnode nodes[512];
+    int32_t nnodes = 0;
+
+    // Create leaves for symbols with non-zero freq
+    for (int32_t i = 0; i < nsym; i++) {
+        if (freqs[i] > 0) {
+            nodes[nnodes] = (df11_hnode){ -1, -1, -1, i, (uint64_t)freqs[i] };
+            df11_heap_push(&heap, nodes, nnodes);
+            nnodes++;
+            nleaves++;
+        }
+    }
+
+    if (nleaves == 0) {
+        for (int32_t i = 0; i < nsym; i++) { code_bits[i] = 0; code_vals[i] = 0; }
+        *node_count = 0;
+        return;
+    }
+
+    if (nleaves == 1) {
+        int32_t sym = nodes[0].symbol;
+        code_bits[sym] = 1;
+        code_vals[sym] = 0;
+        *node_count = nnodes;
+        return;
+    }
+
+    // Build tree by merging two smallest frequencies
+    while (heap.size > 1) {
+        int32_t a = df11_heap_pop(&heap, nodes);
+        int32_t b = df11_heap_pop(&heap, nodes);
+        nodes[nnodes] = (df11_hnode){ a, b, -1, -1, nodes[a].freq + nodes[b].freq };
+        nodes[a].parent = nnodes;
+        nodes[b].parent = nnodes;
+        df11_heap_push(&heap, nodes, nnodes);
+        nnodes++;
+    }
+    int32_t root = heap.size > 0 ? heap.data[0] : -1;
+
+    // Generate codes by walking from each leaf to root
+    int32_t max_len = 0;
+    for (int32_t i = 0; i < nnodes; i++) {
+        if (nodes[i].symbol >= 0) {
+            int32_t sym  = nodes[i].symbol;
+            int32_t bits = 0;
+            int32_t val  = 0;
+            int32_t cur  = i;
+            while (nodes[cur].parent >= 0) {
+                int32_t p = nodes[cur].parent;
+                if (nodes[p].left == cur) {
+                    val <<= 1;
+                } else {
+                    val = (val << 1) | 1;
+                }
+                bits++;
+                cur = p;
+            }
+            code_bits[sym] = bits;
+            code_vals[sym] = val;
+            if (bits > max_len) max_len = bits;
+        }
+    }
+
+    // Enforce max code length ≤ 32: lower freqs of rare symbols
+    (void)root;
+    while (max_len > DF11_MAX_HUFFMAN_BITS) {
+        int32_t adjusted = 0;
+        for (int32_t i = 0; i < nnodes && adjusted < 2; i++) {
+            if (nodes[i].symbol >= 0 && nodes[i].freq > 1) {
+                nodes[i].freq = 1;
+                adjusted++;
+            }
+        }
+
+        heap.size = 0;
+        for (int32_t i = 0; i < nnodes; i++) {
+            nodes[i].parent = -1;
+            if (nodes[i].symbol >= 0) {
+                df11_heap_push(&heap, nodes, i);
+            }
+        }
+
+        while (heap.size > 1) {
+            int32_t a = df11_heap_pop(&heap, nodes);
+            int32_t b = df11_heap_pop(&heap, nodes);
+            nodes[nnodes] = (df11_hnode){ a, b, -1, -1, nodes[a].freq + nodes[b].freq };
+            nodes[a].parent = nnodes;
+            nodes[b].parent = nnodes;
+            df11_heap_push(&heap, nodes, nnodes);
+            nnodes++;
+        }
+
+        max_len = 0;
+        for (int32_t i = 0; i < nnodes; i++) {
+            if (nodes[i].symbol >= 0) {
+                int32_t sym  = nodes[i].symbol;
+                int32_t bits = 0;
+                int32_t val  = 0;
+                int32_t cur  = i;
+                while (nodes[cur].parent >= 0) {
+                    int32_t p = nodes[cur].parent;
+                    if (nodes[p].left == cur) {
+                        val <<= 1;
+                    } else {
+                        val = (val << 1) | 1;
+                    }
+                    bits++;
+                    cur = p;
+                }
+                code_bits[sym] = bits;
+                code_vals[sym] = val;
+                if (bits > max_len) max_len = bits;
+            }
+        }
+    }
+
+    *node_count = nnodes;
+}
+
+// ---- Build LUT prefix-tree ----
+static int32_t df11_build_lut(
+    const int32_t * code_bits, const int32_t * code_vals, int32_t nsym,
+    uint8_t * lut
+) {
+    char prefix_table[256][DF11_MAX_HUFFMAN_BITS + 1];
+    int32_t prefix_lens[256];
+    int32_t nprefix = 0;
+
+    prefix_table[0][0] = '\0';
+    prefix_lens[0] = 0;
+    nprefix = 1;
+
+    for (int32_t sym = 0; sym < nsym; sym++) {
+        if (code_bits[sym] == 0) continue;
+        int32_t bits = code_bits[sym];
+        int32_t val  = code_vals[sym];
+
+        int32_t prefix_bits = ((bits - 1) / 8) * 8;
+        if (prefix_bits > 0) {
+            char prefix[DF11_MAX_HUFFMAN_BITS + 1];
+            int32_t pval = val >> (bits - prefix_bits);
+            int32_t pi;
+            for (pi = 0; pi < prefix_bits; pi++) {
+                prefix[pi] = ((pval >> (prefix_bits - 1 - pi)) & 1) ? '1' : '0';
+            }
+            prefix[prefix_bits] = '\0';
+
+            int32_t found = 0;
+            for (int32_t j = 0; j < nprefix; j++) {
+                if (prefix_lens[j] == prefix_bits && memcmp(prefix_table[j], prefix, prefix_bits) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                memcpy(prefix_table[nprefix], prefix, prefix_bits + 1);
+                prefix_lens[nprefix] = prefix_bits;
+                nprefix++;
+            }
+        }
+    }
+
+    // Sort prefixes by length (bubble sort)
+    for (int32_t i = 0; i < nprefix - 1; i++) {
+        for (int32_t j = i + 1; j < nprefix; j++) {
+            if (prefix_lens[i] > prefix_lens[j]) {
+                int32_t tmp_len = prefix_lens[i];
+                prefix_lens[i] = prefix_lens[j];
+                prefix_lens[j] = tmp_len;
+                char tmp_str[DF11_MAX_HUFFMAN_BITS + 1];
+                memcpy(tmp_str, prefix_table[i], DF11_MAX_HUFFMAN_BITS + 1);
+                memcpy(prefix_table[i], prefix_table[j], DF11_MAX_HUFFMAN_BITS + 1);
+                memcpy(prefix_table[j], tmp_str, DF11_MAX_HUFFMAN_BITS + 1);
+            }
+        }
+    }
+
+    // For each prefix row, fill 256 entries
+    for (int32_t pi = 0; pi < nprefix; pi++) {
+        int32_t pl = prefix_lens[pi];
+
+        for (int32_t bi = 0; bi < 256; bi++) {
+            int32_t found = 0;
+            // Check if prefix + this byte completes a code
+            for (int32_t sym = 0; sym < nsym; sym++) {
+                if (code_bits[sym] == 0) continue;
+                int32_t cbits = code_bits[sym];
+                int32_t cval  = code_vals[sym];
+
+                if ((cbits - 1) / 8 == pl / 8 && cbits > pl) {
+                    int32_t code_prefix = cval >> (cbits - pl);
+                    int32_t pfx_val = 0;
+                    int32_t pi2;
+                    for (pi2 = 0; pi2 < pl; pi2++) {
+                        pfx_val = (pfx_val << 1) | ((prefix_table[pi][pi2] == '1') ? 1 : 0);
+                    }
+                    if (code_prefix != pfx_val) continue;
+
+                    int32_t remaining = cbits - pl;
+                    int32_t next_bits = (cval >> (cbits - pl - remaining)) & ((1 << remaining) - 1);
+                    int32_t next_byte = (int32_t)((uint32_t)next_bits << (8 - remaining));
+                    if (next_byte == bi) {
+                        lut[pi * 256 + bi] = (uint8_t)(sym & 0xFF);
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (found) continue;
+
+            // Check if prefix + bi is a valid longer prefix
+            for (int32_t pj = 0; pj < nprefix; pj++) {
+                if (prefix_lens[pj] == pl + 8 && memcmp(prefix_table[pj], prefix_table[pi], pl) == 0) {
+                    int32_t byte_val = 0;
+                    int32_t bit;
+                    for (bit = 0; bit < 8; bit++) {
+                        byte_val = (byte_val << 1) | ((prefix_table[pj][pl+bit] == '1') ? 1 : 0);
+                    }
+                    if (byte_val == bi) {
+                        lut[pi * 256 + bi] = (uint8_t)(256 - pj);
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (!found) {
+                lut[pi * 256 + bi] = 0;
+            }
+        }
+    }
+
+    // Last row: code lengths for each symbol
+    int32_t last_row = nprefix * 256;
+    for (int32_t sym = 0; sym < nsym; sym++) {
+        lut[last_row + sym] = (uint8_t)code_bits[sym];
+    }
+    for (int32_t sym = nsym; sym < 256; sym++) {
+        lut[last_row + sym] = 0;
+    }
+
+    return nprefix;
+}
+
+static uint32_t df11_blocks_for_bytes(uint32_t n_bytes) {
+    uint32_t denom = (uint32_t)DF11_THREADS_PER_BLOCK * DF11_BYTES_PER_THREAD;
+    return (n_bytes + denom - 1) / denom;
+}
+
+// ---- Quantize: row_ref ----
+void quantize_row_df11_ref(const float * GGML_RESTRICT x, block_df11 * GGML_RESTRICT dst, int64_t k) {
+    if (k <= 0) {
+        memset(dst, 0, sizeof(block_df11));
+        return;
+    }
+
+    // 1. Convert FP32 → BF16
+    uint16_t * bf16_vals = (uint16_t *)calloc((size_t)k, sizeof(uint16_t));
+    for (int64_t i = 0; i < k; i++) {
+        ggml_bf16_t b = ggml_fp32_to_bf16(x[i]);
+        bf16_vals[i] = b.bits;
+    }
+
+    // 2. Split into exponent and sign_mantissa
+    uint8_t * exponents     = (uint8_t *)calloc((size_t)k, 1);
+    uint8_t * sign_mantissa = (uint8_t *)calloc((size_t)k, 1);
+    for (int64_t i = 0; i < k; i++) {
+        uint16_t bf16 = bf16_vals[i];
+        exponents[i]     = (uint8_t)((bf16 >> 7) & 0xFF);
+        sign_mantissa[i] = (uint8_t)(((bf16 >> 8) & 0x80) | (bf16 & 0x7F));
+    }
+
+    // 3. Count exponent frequencies
+    int32_t freqs[256] = {0};
+    for (int64_t i = 0; i < k; i++) {
+        freqs[exponents[i]]++;
+    }
+
+    // 4. Build Huffman codes
+    int32_t code_bits[256] = {0};
+    int32_t code_vals[256] = {0};
+    int32_t node_count = 0;
+    df11_build_huffman(freqs, 256, code_bits, code_vals, &node_count);
+
+    // 5. Build LUT
+    uint8_t * lut = (uint8_t *)calloc(256 * 256, 1);
+    int32_t n_luts = df11_build_lut(code_bits, code_vals, 256, lut);
+    int32_t lut_rows = n_luts;
+
+    // 6. Huffman-encode exponents
+    size_t max_codes_val = (size_t)k * 4 + 256;
+    uint8_t * codes = (uint8_t *)calloc(max_codes_val, 1);
+    uint64_t n_codes = 0;
+    uint64_t buf = 0;
+    int32_t  buf_bits = 0;
+    uint64_t total_bits = 0;
+
+    size_t max_gaps = (size_t)k * 32 / 64 + 256;
+    int32_t * gaps = (int32_t *)calloc(max_gaps, sizeof(int32_t));
+    int32_t  n_gaps = 0;
+
+    size_t max_pos = (size_t)k * 32 / (DF11_THREADS_PER_BLOCK * DF11_BYTES_PER_THREAD * 8) + 256;
+    int32_t * out_pos = (int32_t *)calloc(max_pos, sizeof(int32_t));
+    int32_t  n_out_pos = 0;
+    int32_t  element_count = 0;
+
+    gaps[n_gaps++] = 0;
+    out_pos[n_out_pos++] = 0;
+
+    for (int64_t i = 0; i < k; i++) {
+        int32_t sym = (int32_t)exponents[i];
+        int32_t bits = code_bits[sym];
+        int32_t val  = code_vals[sym];
+
+        while (total_bits / 64 + 1 > (uint64_t)n_gaps) {
+            gaps[n_gaps++] = (int32_t)(((int64_t)total_bits) % 64);
+        }
+
+        uint64_t block_bits = (uint64_t)DF11_THREADS_PER_BLOCK * DF11_BYTES_PER_THREAD * 8;
+        while (total_bits / block_bits + 1 > (uint64_t)n_out_pos) {
+            out_pos[n_out_pos++] = element_count;
+        }
+
+        buf = (buf << bits) | ((uint64_t)val & ((1ULL << bits) - 1));
+        buf_bits += bits;
+        total_bits += (uint64_t)bits;
+
+        while (buf_bits >= 8) {
+            codes[n_codes++] = (uint8_t)((buf >> (buf_bits - 8)) & 0xFF);
+            buf_bits -= 8;
+        }
+        element_count++;
+    }
+
+    // Flush remaining bits
+    if (buf_bits > 0) {
+        codes[n_codes++] = (uint8_t)((buf << (8 - buf_bits)) & 0xFF);
+        total_bits += (uint64_t)(8 - buf_bits);
+        buf_bits = 0;
+    }
+
+    while (total_bits / 64 + 1 > (uint64_t)n_gaps) {
+        gaps[n_gaps++] = (int32_t)(((int64_t)total_bits) % 64);
+    }
+
+    uint64_t block_bits_end = (uint64_t)DF11_THREADS_PER_BLOCK * DF11_BYTES_PER_THREAD * 8;
+    while (total_bits / block_bits_end + 1 > (uint64_t)n_out_pos) {
+        out_pos[n_out_pos++] = element_count;
+    }
+    out_pos[n_out_pos++] = (int32_t)k;
+
+    uint32_t n_bytes = (uint32_t)n_codes;
+    uint32_t n_blocks = df11_blocks_for_bytes(n_bytes);
+
+    // 7. Pack gaps into 5-bit big-endian format
+    uint32_t n_threads = (uint32_t)n_blocks * DF11_THREADS_PER_BLOCK;
+    size_t gaps_bytes = ((size_t)n_threads * 5 + 7) / 8;
+    uint8_t * packed_gaps = (uint8_t *)calloc(gaps_bytes, 1);
+
+    for (uint32_t t = 0; t < n_threads; t++) {
+        int32_t gap_val = (t < (uint32_t)n_gaps) ? gaps[t] : 0;
+        if (gap_val > 31) gap_val = 0;
+        uint32_t bit_pos = t * 5;
+        uint32_t byte_pos = bit_pos / 8;
+        uint32_t bit_off  = bit_pos % 8;
+        uint32_t mask = (uint32_t)(gap_val & 0x1F);
+        if (bit_off <= 3) {
+            packed_gaps[byte_pos] |= (uint8_t)(mask << (3 - bit_off));
+        } else {
+            uint32_t shift0 = bit_off - 3;
+            packed_gaps[byte_pos] |= (uint8_t)(mask >> shift0);
+            packed_gaps[byte_pos + 1] |= (uint8_t)(mask << (8 - shift0));
+        }
+    }
+
+    // 8. Write header
+    dst->n_luts     = (uint32_t)(lut_rows + 1);
+    dst->n_bytes    = n_bytes;
+    dst->n_elements = (uint32_t)k;
+    dst->n_blocks   = n_blocks;
+    dst->reserved_0 = 0;
+    dst->reserved_1 = 0;
+
+    // 9. Write data after header
+    uint8_t * data = ((uint8_t *)dst) + sizeof(block_df11);
+
+    size_t lut_total = (size_t)(lut_rows + 1) * 256;
+    memcpy(data, lut, lut_total);
+    data += lut_total;
+
+    memcpy(data, codes, n_bytes);
+    data += n_bytes;
+
+    memcpy(data, sign_mantissa, (size_t)k);
+    data += k;
+
+    uint32_t * out_pos32 = (uint32_t *)data;
+    for (uint32_t i = 0; i <= n_blocks && i < (uint32_t)n_out_pos; i++) {
+        out_pos32[i] = (uint32_t)out_pos[i];
+    }
+    data += (size_t)(n_blocks + 1) * sizeof(uint32_t);
+
+    memcpy(data, packed_gaps, gaps_bytes);
+
+    free(bf16_vals);
+    free(exponents);
+    free(sign_mantissa);
+    free(lut);
+    free(codes);
+    free(gaps);
+    free(out_pos);
+    free(packed_gaps);
+}
+
+// ---- Dequantize: row to float ----
+void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    const uint32_t n_luts     = x->n_luts;
+    const uint32_t n_bytes    = x->n_bytes;
+    const uint32_t n_elements = x->n_elements;
+
+    if (n_elements == 0 || k == 0) return;
+
+    const uint8_t * data = ((const uint8_t *)x) + sizeof(block_df11);
+    const uint8_t * luts        = data;
+    const uint8_t * codes       = luts + (size_t)n_luts * 256;
+    const uint8_t * sign_mant   = codes + n_bytes;
+
+    int32_t n_lut_rows = (int32_t)n_luts;
+
+    uint64_t buf = 0;
+    int32_t  buf_bits = 0;
+    int32_t  byte_idx = 0;
+    int32_t  output_idx = 0;
+
+    while (output_idx < (int32_t)n_elements && output_idx < (int32_t)k) {
+        while (buf_bits < 32 && byte_idx < (int32_t)n_bytes) {
+            buf = (buf << 8) | codes[byte_idx++];
+            buf_bits += 8;
+        }
+
+        if (buf_bits < 8) break;
+
+        int32_t top_byte = (int32_t)((buf >> (buf_bits - 8)) & 0xFF);
+        int32_t decoded  = (int32_t)luts[(0) * 256 + top_byte];
+        int32_t lut_row  = 0;
+        int32_t levels   = 0;
+
+        while (decoded >= DF11_LUT_THRESHOLD && buf_bits >= 8 * (levels + 2)) {
+            levels++;
+            buf_bits -= 8;
+            top_byte = (int32_t)((buf >> (buf_bits - 8)) & 0xFF);
+            lut_row  = 256 - decoded;
+            decoded  = (int32_t)luts[lut_row * 256 + top_byte];
+        }
+
+        int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
+        if (code_len <= 0) break;
+
+        buf_bits -= code_len;
+        buf &= (1ULL << buf_bits) - 1;
+
+        uint8_t sm = sign_mant[output_idx];
+        uint16_t bf16;
+        bf16  = (uint16_t)(sm & 0x80) << 8;
+        bf16 |= (uint16_t)(decoded & 0xFE) << 7;
+        bf16 |= (uint16_t)(decoded & 0x01) << 7;
+        bf16 |= (uint16_t)(sm & 0x7F);
+
+        y[output_idx++] = ggml_bf16_to_fp32_row_value(bf16);
+    }
+
+    for (int32_t i = output_idx; i < (int32_t)k; i++) {
+        y[i] = 0.0f;
+    }
+}
+
+// ---- Dequantize: row to BF16 ----
+void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t * GGML_RESTRICT y, int64_t k) {
+    const uint32_t n_luts     = x->n_luts;
+    const uint32_t n_bytes    = x->n_bytes;
+    const uint32_t n_elements = x->n_elements;
+
+    if (n_elements == 0 || k == 0) return;
+
+    const uint8_t * data = ((const uint8_t *)x) + sizeof(block_df11);
+    const uint8_t * luts        = data;
+    const uint8_t * codes       = luts + (size_t)n_luts * 256;
+    const uint8_t * sign_mant   = codes + n_bytes;
+
+    int32_t n_lut_rows = (int32_t)n_luts;
+
+    uint64_t buf = 0;
+    int32_t  buf_bits = 0;
+    int32_t  byte_idx = 0;
+    int32_t  output_idx = 0;
+
+    while (output_idx < (int32_t)n_elements && output_idx < (int32_t)k) {
+        while (buf_bits < 32 && byte_idx < (int32_t)n_bytes) {
+            buf = (buf << 8) | codes[byte_idx++];
+            buf_bits += 8;
+        }
+
+        if (buf_bits < 8) break;
+
+        int32_t top_byte = (int32_t)((buf >> (buf_bits - 8)) & 0xFF);
+        int32_t decoded  = (int32_t)luts[(0) * 256 + top_byte];
+        int32_t lut_row  = 0;
+        int32_t levels   = 0;
+
+        while (decoded >= DF11_LUT_THRESHOLD && buf_bits >= 8 * (levels + 2)) {
+            levels++;
+            buf_bits -= 8;
+            top_byte = (int32_t)((buf >> (buf_bits - 8)) & 0xFF);
+            lut_row  = 256 - decoded;
+            decoded  = (int32_t)luts[lut_row * 256 + top_byte];
+        }
+
+        int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
+        if (code_len <= 0) break;
+
+        buf_bits -= code_len;
+        buf &= (1ULL << buf_bits) - 1;
+
+        uint8_t sm = sign_mant[output_idx];
+        uint16_t bf16;
+        bf16  = (uint16_t)(sm & 0x80) << 8;
+        bf16 |= (uint16_t)(decoded & 0xFE) << 7;
+        bf16 |= (uint16_t)(decoded & 0x01) << 7;
+        bf16 |= (uint16_t)(sm & 0x7F);
+
+        ggml_bf16_t out;
+        out.bits = bf16;
+        y[output_idx++] = out;
+    }
+
+    ggml_bf16_t zero;
+    zero.bits = 0;
+    for (int32_t i = output_idx; i < (int32_t)k; i++) {
+        y[i] = zero;
+    }
+}
+
+// ---- Quantize: multi-row ----
+size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows,
+                     int64_t n_per_row, const float * imatrix) {
+    GGML_UNUSED(imatrix);
+
+    uint8_t * out = (uint8_t *)dst;
+    size_t total_bytes = 0;
+
+    for (int64_t row = 0; row < nrows; row++) {
+        block_df11 * row_dst = (block_df11 *)(out + total_bytes);
+        quantize_row_df11_ref(src + row * n_per_row, row_dst, n_per_row);
+
+        uint32_t n_luts     = row_dst->n_luts;
+        uint32_t n_bytes    = row_dst->n_bytes;
+        uint32_t n_elements = row_dst->n_elements;
+        uint32_t n_blocks   = row_dst->n_blocks;
+
+        size_t gaps_bytes = ((size_t)n_blocks * DF11_THREADS_PER_BLOCK * 5 + 7) / 8;
+        size_t row_size   = sizeof(block_df11)
+                          + (size_t)n_luts * 256
+                          + n_bytes
+                          + n_elements
+                          + (size_t)(n_blocks + 1) * sizeof(uint32_t)
+                          + gaps_bytes;
+
+        total_bytes += row_size;
+    }
+
+    return total_bytes;
+}

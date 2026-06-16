@@ -938,6 +938,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
+    [GGML_TYPE_DF11] = {
+        .type_name                = "df11",
+        .blck_size                = QK_DF11,
+        .type_size                = sizeof(block_df11),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_df11,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_df11_ref,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
