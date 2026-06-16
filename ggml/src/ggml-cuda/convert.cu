@@ -1235,6 +1235,14 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
         if (cap_status == cudaStreamCaptureStatusNone) {
             cudaError_t sync_err = cudaStreamSynchronize(stream);
             fprintf(stderr, "[DF11-debug] kernel sync: err=%d\n", (int)sync_err);
+            // Verify first 5 decoded BF16 values
+            if (sync_err == cudaSuccess && n_elements > 0) {
+                uint16_t first_vals[5];
+                CUDA_CHECK(cudaMemcpy(first_vals, vy, sizeof(first_vals), cudaMemcpyDeviceToHost));
+                fprintf(stderr, "[DF11-debug] first 5 BF16 values: 0x%04x 0x%04x 0x%04x 0x%04x 0x%04x\n",
+                        (unsigned)first_vals[0], (unsigned)first_vals[1], (unsigned)first_vals[2],
+                        (unsigned)first_vals[3], (unsigned)first_vals[4]);
+            }
             fflush(stderr);
         }
     }

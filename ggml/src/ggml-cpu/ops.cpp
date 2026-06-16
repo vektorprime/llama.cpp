@@ -5045,6 +5045,14 @@ static void ggml_compute_forward_get_rows_df11(
     const block_df11 * block = (const block_df11 *)src0->data;
     dequantize_row_df11_to_bf16(block, bf16_buf, n_total);
 
+    if (ggml_custom_logs_enabled()) {
+        // Print first 5 decoded BF16 values for comparison with GPU
+        fprintf(stderr, "[DF11-debug] get_rows_df11: first 5 BF16 values: 0x%04x 0x%04x 0x%04x 0x%04x 0x%04x\n",
+                (unsigned)bf16_buf[0].bits, (unsigned)bf16_buf[1].bits, (unsigned)bf16_buf[2].bits,
+                (unsigned)bf16_buf[3].bits, (unsigned)bf16_buf[4].bits);
+        fflush(stderr);
+    }
+
     // rows per thread
     const int64_t dr = (nr + nth - 1)/nth;
     const int64_t ir0 = dr*ith;
