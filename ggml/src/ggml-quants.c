@@ -5875,6 +5875,11 @@ static int32_t df11_build_lut(
                         byte_val = (byte_val << 1) | ((prefix_table[pj][pl+bit] == '1') ? 1 : 0);
                     }
                     if (byte_val == bi) {
+                        if (pi == 0) {
+                            fprintf(stderr, "[DF11-debug] LUT row0: setting [0x%02x]=%u (pj=%d pl=%d)\n",
+                                    bi, (unsigned)(256 - pj), (int)pj, (int)pl);
+                            fflush(stderr);
+                        }
                         lut[pi * 256 + bi] = (uint8_t)(256 - pj);
                         found = 1;
                         break;
