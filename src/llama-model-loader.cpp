@@ -1721,7 +1721,9 @@ bool llama_model_loader::load_all_data(
             }
         }
 
-        size_t n_size = ggml_nbytes(cur);
+        // Use the actual on-disk data size, which is correct for variable-length types
+        // (e.g. DF11) where ggml_nbytes() returns a conservative upper bound.
+        size_t n_size = weight->size;
 
         if (use_mmap) {
             const auto & mapping = mappings.at(weight->idx);
