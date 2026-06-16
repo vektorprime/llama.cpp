@@ -5578,7 +5578,8 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:
         case GGML_TYPE_I64:
-            // nothing to validate
+        case GGML_TYPE_DF11:
+            // nothing to validate (DF11 is self-validating via header)
             break;
         default:
             {

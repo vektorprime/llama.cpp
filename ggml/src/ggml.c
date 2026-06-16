@@ -7802,11 +7802,14 @@ size_t ggml_quantize_chunk(
                 result = n * elemsize;
                 memcpy((uint8_t *)dst + start * elemsize, src + start, result);
             } break;
+        case GGML_TYPE_DF11:
+            result = quantize_df11(src + start, (char *)dst + start_row * row_size, nrows, n_per_row, imatrix);
+            break;
         default:
             assert(false);
     }
 
-    GGML_ASSERT(result == nrows * row_size);
+    assert(result == nrows * row_size || type == GGML_TYPE_DF11);
 
     return result;
 }

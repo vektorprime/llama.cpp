@@ -2485,7 +2485,12 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         if (params->dry_run) {
             // the --dry-run option calculates the final quantization size without quantizing
             if (quantize) {
-                new_size = ggml_nrows(tensor) * ggml_row_size(new_type, tensor->ne[0]);
+                if (new_type == GGML_TYPE_DF11) {
+                    // DF11 is variable-length; estimate ~11 bits per element as upper bound
+                    new_size = (size_t)ggml_nelements(tensor) * 2;
+                } else {
+                    new_size = ggml_nrows(tensor) * ggml_row_size(new_type, tensor->ne[0]);
+                }
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB (%s)\n",
                                tensor_size/1024.0/1024.0,
                                new_size/1024.0/1024.0,
@@ -2586,6 +2591,14 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 const int64_t nchunk = (nelements_matrix + chunk_size - 1)/chunk_size;
                 const int64_t nthread_use = nthread > 1 ? std::max((int64_t)1, std::min((int64_t)nthread, nchunk)) : 1;
 
+                if (new_type == GGML_TYPE_DF11) {
+                    // DF11 is variable-length per row; use single-pass quantization directly
+                    // 3D tensors not yet supported for DF11
+                    if (tensor->ne[2] > 1) {
+                        throw std::runtime_error("DF11 quantization does not yet support 3D expert tensors");
+                    }
+                    new_size = quantize_df11(f32_data, new_data, nrows, n_per_row, nullptr);
+                } else {
                 // quantize each expert separately since they have different importance matrices
                 new_size = 0;
                 for (int64_t i03 = 0; i03 < tensor->ne[2]; ++i03) {
@@ -2594,6 +2607,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     const float * imatrix_03 = imatrix ? imatrix + i03 * n_per_row : nullptr;
 
                     new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
+                }
                 }
 
                 // Compute BF16 deltas for outlier blocks: delta = original_F32 - Q8_dequantized
