@@ -709,6 +709,10 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
     }
 }
 
+// DF11 wrapper forward declarations
+static void dequantize_row_df11_fp16_cuda(const void * vx, half * vy, int64_t k, cudaStream_t stream);
+static void dequantize_row_df11_fp32_cuda(const void * vx, float * vy, int64_t k, cudaStream_t stream);
+
 to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:
