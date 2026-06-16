@@ -6151,6 +6151,16 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
     const uint8_t * codes       = luts + (size_t)n_luts * 256;
     const uint8_t * sign_mant   = codes + n_bytes;
 
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] to_bf16: codes[0..7] = %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                codes[0], codes[1], codes[2], codes[3],
+                codes[4], codes[5], codes[6], codes[7]);
+        fprintf(stderr, "[DF11-debug] to_bf16: luts[0..3] = %02x %02x %02x %02x\n",
+                luts[0], luts[1], luts[2], luts[3]);
+        fflush(stderr);
+    }
+    // (data, luts, codes, sign_mant declared above)
+
     int32_t n_lut_rows = (int32_t)n_luts;
 
     uint64_t buf = 0;
