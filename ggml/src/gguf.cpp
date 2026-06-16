@@ -366,6 +366,10 @@ struct gguf_reader {
         return data_offset;
     }
 
+    uint64_t remaining() const {
+        return nbytes_remain;
+    }
+
     bool seek(uint64_t absolute_offset) const {
         const uint64_t end_offset = uint64_t(data_offset) + nbytes_remain;
         if (absolute_offset > end_offset) {
@@ -761,6 +765,9 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
 
     // compute the total size of the data section, taking into account the alignment
     {
+        // Total bytes remaining in the file from the data section start
+        const size_t total_data_size = (size_t)gr.remaining();
+
         ctx->size = 0;
         for (size_t i = 0; i < ctx->info.size(); ++i) {
             const gguf_tensor_info & ti = ctx->info[i];
@@ -771,7 +778,15 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
                 gguf_free(ctx);
                 return nullptr;
             }
-            size_t padded_size = GGML_PAD(ggml_nbytes(&ti.t), ctx->alignment);
+            // Use the offset of the next tensor to compute the padded size.
+            // This respects variable-length types where the writer used custom_nbytes
+            // instead of the fixed ggml_nbytes for offset calculation.
+            size_t padded_size;
+            if (i + 1 < ctx->info.size()) {
+                padded_size = (size_t)(ctx->info[i + 1].offset - ti.offset);
+            } else {
+                padded_size = total_data_size - ctx->size;
+            }
             if (SIZE_MAX - ctx->size < padded_size) {
                 GGML_LOG_ERROR("%s: tensor '%s' size overflow, cannot accumulate size %zu + %zu\n",
                     __func__, ti.t.name, ctx->size, padded_size);
