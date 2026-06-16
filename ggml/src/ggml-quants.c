@@ -6089,7 +6089,7 @@ void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRI
     int32_t  output_idx = 0;
 
     while (output_idx < (int32_t)n_elements && output_idx < (int32_t)k) {
-        while (buf_bits < 32 && byte_idx < (int32_t)n_bytes) {
+        while (buf_bits < 64 && byte_idx < (int32_t)n_bytes) {
             buf = (buf << 8) | codes[byte_idx++];
             buf_bits += 8;
         }
@@ -6169,7 +6169,7 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
     int32_t  output_idx = 0;
 
     while (output_idx < (int32_t)n_elements && output_idx < (int32_t)k) {
-        while (buf_bits < 32 && byte_idx < (int32_t)n_bytes) {
+        while (buf_bits < 64 && byte_idx < (int32_t)n_bytes) {
             buf = (buf << 8) | codes[byte_idx++];
             buf_bits += 8;
         }
