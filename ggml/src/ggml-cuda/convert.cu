@@ -950,6 +950,8 @@ __global__ void dequantize_df11_kernel(
     __syncthreads();
 
     // Phases 2-5: Huffman decoding to count symbols (data threads only)
+    // Uses the same bit-tracking logic as the proven-correct CPU decoder:
+    //   buf_bits = valid bits in buffer; load bytes: buf_bits += 8; consume: buf_bits -= code_len
     if (thread_has_data) {
         // Phase 2: Read gap (5 bits per thread)
         int bit_idx = global_thread_id * 5;
@@ -959,7 +961,7 @@ __global__ void dequantize_df11_kernel(
         uint8_t buf1 = gaps[byte_idx + 1];
         gap = (int)(((buf0 << bit_off) | (buf1 >> (8 - bit_off))) & 0x1F);
 
-        // Build 64-bit buffer from register bytes
+        // Build 64-bit buffer from bytes 0..7 (MSB first, matching CPU: buf = (buf << 8) | byte)
         uint64_t long_buffer = 0;
         long_buffer = (long_buffer << 8) | register_buffer[0];
         long_buffer = (long_buffer << 8) | register_buffer[1];
@@ -969,68 +971,49 @@ __global__ void dequantize_df11_kernel(
         long_buffer = (long_buffer << 8) | register_buffer[5];
         long_buffer = (long_buffer << 8) | register_buffer[6];
         long_buffer = (long_buffer << 8) | register_buffer[7];
+        int buf_bits = 64;
 
-        long_buffer <<= gap;
-        int free_bits = 64 - gap;
+        // Consume gap bits (matching CPU: buf_bits -= gap; buf &= mask)
+        buf_bits -= gap;
+        long_buffer &= (1ULL << buf_bits) - 1;
 
-        // Phase 3: Pre-decode until free_bits >= 32
-        while (free_bits < 32) {
-            int top_byte = (int)((long_buffer >> 56) & 0xFF);
+        // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
+        // Byte refill index: byte_idx tracks which of the extra bytes (register_buffer[8..11])
+        // have already been shifted into the buffer.
+        int extra_byte = 0;
+
+        // Decode loop — matching CPU decoder exactly
+        while (1) {
+            // Refill buffer to >= 32 bits if possible (matching CPU inner while loop)
+            while (buf_bits < 32 && extra_byte < 4) {
+                long_buffer = (long_buffer << 8) | register_buffer[8 + extra_byte];
+                extra_byte++;
+                buf_bits += 8;
+            }
+
+            // Need at least 8 bits for one byte of Huffman lookup (matching CPU: if (buf_bits < 8) break)
+            if (buf_bits < 8) break;
+
+            int top_byte = (int)((long_buffer >> (buf_bits - 8)) & 0xFF);
             int decoded = (int)luts[top_byte];
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 48) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            int levels = 0;
+
+            // Multi-level LUT lookup (matching CPU inner while)
+            while (decoded >= DF11_LUT_THRESHOLD && buf_bits >= 8 * (levels + 2)) {
+                levels++;
+                buf_bits -= 8;
+                top_byte = (int)((long_buffer >> (buf_bits - 8)) & 0xFF);
+                int lut_row = 256 - decoded;
+                decoded = (int)luts[lut_row * 256 + top_byte];
             }
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 40) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 32) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) break;
 
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-            long_buffer <<= code_len;
-            free_bits += code_len;
+            if (code_len <= 0) break;
+
+            // Consume code_len bits (matching CPU: buf_bits -= code_len; buf &= mask)
+            buf_bits -= code_len;
+            long_buffer &= (1ULL << buf_bits) - 1;
             thread_counter++;
-        }
-
-        // Phase 4: Load extra 4 bytes and subtract 32 free bits
-        uint32_t extra = ((uint32_t)register_buffer[8]  << 24) |
-                         ((uint32_t)register_buffer[9]  << 16) |
-                         ((uint32_t)register_buffer[10] <<  8) |
-                         ((uint32_t)register_buffer[11]);
-        long_buffer |= ((uint64_t)extra << (free_bits - 32));
-        free_bits -= 32;
-
-        // Phase 5: Decode remaining symbols to count
-        int bytes_consumed = 0;
-        while (bytes_consumed < DF11_BYTES_PER_THREAD) {
-            if (free_bits < 32) break;
-
-            int top_byte = (int)((long_buffer >> 56) & 0xFF);
-            int decoded = (int)luts[top_byte];
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 48) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 40) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 32) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) break;
-
-            int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-            long_buffer <<= code_len;
-            free_bits += code_len;
-            thread_counter++;
-            bytes_consumed++;
         }
     }
 
@@ -1066,6 +1049,7 @@ __global__ void dequantize_df11_kernel(
     int end_idx = (tid < DF11_THREADS_PER_BLOCK - 1) ? ((int)counters[tid + 1] + write_offset) : (int)position_offsets[block_id + 1];
 
     // Phase 7: Re-decode and reconstruct BF16 values (data threads only)
+    // Uses identical bit-tracking logic as the counting phase above and the CPU decoder
     if (thread_has_data && output_idx < end_idx) {
         uint64_t long_buffer = 0;
         long_buffer = (long_buffer << 8) | register_buffer[0];
@@ -1076,37 +1060,39 @@ __global__ void dequantize_df11_kernel(
         long_buffer = (long_buffer << 8) | register_buffer[5];
         long_buffer = (long_buffer << 8) | register_buffer[6];
         long_buffer = (long_buffer << 8) | register_buffer[7];
+        int buf_bits = 64;
 
-        long_buffer <<= gap;
-        int free_bits = 64 - gap;
+        buf_bits -= gap;
+        long_buffer &= (1ULL << buf_bits) - 1;
+
+        int extra_byte = 0;
 
         while (output_idx < end_idx) {
-            if (free_bits < 32) {
-                long_buffer = (long_buffer << 8) | register_buffer[8];
-                long_buffer = (long_buffer << 8) | register_buffer[9];
-                long_buffer = (long_buffer << 8) | register_buffer[10];
-                long_buffer = (long_buffer << 8) | register_buffer[11];
-                free_bits += 32;
+            while (buf_bits < 32 && extra_byte < 4) {
+                long_buffer = (long_buffer << 8) | register_buffer[8 + extra_byte];
+                extra_byte++;
+                buf_bits += 8;
             }
 
-            int top_byte = (int)((long_buffer >> 56) & 0xFF);
+            if (buf_bits < 8) break;
+
+            int top_byte = (int)((long_buffer >> (buf_bits - 8)) & 0xFF);
             int decoded = (int)luts[top_byte];
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 48) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 40) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
-            }
-            if (decoded >= DF11_LUT_THRESHOLD) {
-                top_byte = (int)((long_buffer >> 32) & 0xFF);
-                decoded = (int)luts[(256 - decoded) * 256 + top_byte];
+            int levels = 0;
+
+            while (decoded >= DF11_LUT_THRESHOLD && buf_bits >= 8 * (levels + 2)) {
+                levels++;
+                buf_bits -= 8;
+                top_byte = (int)((long_buffer >> (buf_bits - 8)) & 0xFF);
+                int lut_row = 256 - decoded;
+                decoded = (int)luts[lut_row * 256 + top_byte];
             }
 
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-            long_buffer <<= code_len;
-            free_bits += code_len;
+            if (code_len <= 0) break;
+
+            buf_bits -= code_len;
+            long_buffer &= (1ULL << buf_bits) - 1;
 
             uint8_t sm = sign_mantissa[output_idx];
             uint8_t high_byte = (sm & 0x80) | ((uint8_t)(decoded >> 1));
