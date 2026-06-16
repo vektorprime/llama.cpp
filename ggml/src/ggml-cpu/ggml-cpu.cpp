@@ -452,6 +452,11 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
                 op->type != GGML_TYPE_IQ1_S   &&
                 op->type != GGML_TYPE_IQ1_M; // missing type_traits.from_float
         case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+            // DF11 matmul is handled by the GPU backend via on-the-fly BF16 decompression
+            if (src0->type == GGML_TYPE_DF11) {
+                return false;
+            }
             return src1->type == GGML_TYPE_F32 || src1->type == ggml_get_type_traits_cpu(src0->type)->vec_dot_type;
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
             return src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_BF16 && src2->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
