@@ -25,9 +25,11 @@ BF16 (16 bits) = sign[15] | exponent[14:7] | mantissa[6:0]
 |---|---|
 | `BYTES_PER_THREAD` | 8 |
 | `THREADS_PER_BLOCK` | 512 |
-| `MAX_HUFFMAN_CODE_BITS` | 32 |
-| `LUT_THRESHOLD` | 240 (values ≥ 240 = continue decoding at next LUT row) |
+| `MAX_HUFFMAN_CODE_BITS` | 8 (was 32; reduced for complete LUT coverage) |
+| `LUT_THRESHOLD` | 192 (was 240; allows up to 64 prefix pointer slots) |
 | `QK_DF11` | 1 (one "block" per tensor — DF11 is full-tensor, not sub-block) |
+| `DF11_BYTES_PER_THREAD` | 8 (codes bytes per CUDA thread) |
+| `DF11_THREADS_PER_BLOCK` | 512 |
 
 ### Per-Tensor Compressed Data Layout
 
@@ -41,10 +43,11 @@ BF16 (16 bits) = sign[15] | exponent[14:7] | mantissa[6:0]
   uint32_t reserved_1
 
 [  luts:  (n_luts) rows × 256 bytes  ]
-  Each row i (0 ≤ i < n_luts-1) is a 256-entry prefix-tree node:
-    entry[b] < 240  →  symbol decoded, this is the exponent value
-    entry[b] ≥ 240 →  continue at LUT row (256 – entry[b])
-  Last row: code length for each exponent value 0..255
+   Row 0: 256 direct symbol fills. entry[b] = Huffman symbol for byte b.
+     Symbols < LUT_THRESHOLD are decoded directly; symbols ≥ LUT_THRESHOLD
+     are prefix pointers (256 - entry = next LUT row). With MAX_BITS=8,
+     n_luts=2 and row 0 contains only direct fills.
+   Last row: code length for each exponent value 0..255
 
 [  codes:  n_bytes bytes  ]
   Huffman-encoded exponent bitstream (big-endian bit packing)
@@ -58,10 +61,9 @@ BF16 (16 bits) = sign[15] | exponent[14:7] | mantissa[6:0]
    4-byte aligned — padded after sign_mantissa if needed
 
 [  gaps:  ceil(n_blocks × THREADS_PER_BLOCK × 5 / 8) + 1 bytes  ]
-   5-bit per-thread gap, packed big-endian within each byte
-   Thread 0 occupies bits [4:0], thread 1 occupies bits [9:5], etc.
-   Extra +1 byte: CUDA kernel reads gaps[byte_idx+1] for last thread.
-   Gap values range 0–63 (tracked in 6 bits during encode, stored as 5 LSBs).
+    5-bit per-thread gap, packed MSB-first (bit 0 of stream = MSB of byte 0).
+    Gap t occupies stream bits [t*5 .. t*5+4].
+    Extra +1 byte: GPU kernel reads gaps[byte_idx+1] for last thread.
 ```
 
 ---
@@ -548,6 +550,84 @@ CPU dequantize unaffected (doesn't use pos array).
 | 6.10 | `ggml/src/ggml-cuda/convert.cu` | Zero-init register buffer, fix prefix sum, thread_has_data guards |
 | 6.11 | `ggml/src/ggml-cuda/convert.cu` | Graph-capture-safe header cache, debug sync guard |
 | 6.11 | `ggml/src/ggml-cuda/ggml-cuda.cu` | Guard MUL_MAT debug sync against graph capture |
+
+### 6.13 LUT Construction Bugs (Fill Range, Prefix Entries, Bit Over-Consumption)
+
+**Problem A — Fill loop wrote entries but `found` was set unconditionally**: The code-matching loop set `found=1` for EVERY byte value `bi` (0..255) whenever ANY ≤8-bit code existed at the LUT row. This caused `if (found) continue;` to skip the prefix check for all 256 byte values, preventing prefix-pointer entries from being created. Only the ≤8-bit code's fill entries survived; all other bytes were left as 0 → gaps.
+
+**Problem B — Prefix extraction only created maximal prefixes**: For a code of n bits, `prefix_bits = ((n-1)/8)*8` computed the maximal byte-aligned prefix (e.g., 24 bits for 29-bit code). The LUT prefix check at level pl looked for a prefix of length `pl+8`, which would never match a 24-bit prefix at pl=0 or pl=8. No intermediate 8/16-bit prefixes were created → multi-level LUT traversal impossible.
+
+**Problem C — Bit over-consumption**: The inner LUT loop consumed `levels * 8` bits via `buf_bits -= 8`, but the outer `buf_bits -= code_len` then consumed the FULL code length again. For a 16-bit code at level 1: the inner loop consumed 8 bits, then `code_len=16` consumed 16 more → 24 bits total (8 over-consumed).
+
+**Problem D — Buffer overflow on refill**: `buf_bits < 64` could load 8 bytes (64 bits) then shift `buf << 8` which would push valid bits past bit 63 of `uint64_t`, discarding data. Fixed threshold to `buf_bits < 56`.
+
+**Problem E — Huffman tree rebuild overflow**: The `nnodes` counter was never reset inside the `while (max_len > MAX_HUFFMAN_BITS)` retry loop, causing successive rebuilds to append nodes past `nodes[512]`.
+
+**Problem F — pos_out past array bounds**: `pos_out[n_blocks + 1]` was written, which is one past the allocated array. Fixed to always write `pos_out[n_blocks] = k`.
+
+**Fix** (`ggml-quants.c`):
+1. Changed `found = 1; break;` to only set `found` when `fill_byte == bi` (this bi's byte value is actually covered)
+2. Added `for (level = 8; level <= prefix_bits; level += 8)` to generate all intermediate prefixes
+3. Changed `buf_bits -= code_len` to `buf_bits -= (code_len - levels * 8)` in both CPU decoders
+4. Changed `buf_bits < 64` to `buf_bits < 56` for safe refill
+5. Added `nnodes = nleaves` reset before each retry iteration
+6. Replaced conditional `pos_out[pos_idx/n_blocks]` with direct `pos_out[n_blocks] = k`
+7. Rewrote gap packing from positional-shift formulas to per-bit MSB-first loops (matching GPU decoder)
+
+### 6.14 Complete LUT Coverage (MAX_HUFFMAN_BITS=8, 256-Symbol Tree)
+
+**Problem**: With 33 used exponents and MAX_HUFFMAN_CODE_BITS=32, the Huffman tree produced codes 22-30 bits long with deep multi-level LUT prefixes (n_luts up to 45). The LUT had byte-value gaps because:
+- Not all 8-bit prefixes were covered by direct code fills (no 2-bit code for prefix `01`)
+- Not all gap bytes had 8-bit prefix entries (no code started with those exact bytes)
+- Gap bytes appeared in the bitstream when codes didn't align to byte boundaries
+
+**Root cause**: The byte-aligned LUT decoding requires 100% coverage: every possible 8-bit byte value must map to either a complete code or a valid longer prefix. Only a full 256-leaf Huffman tree guarantees this. With 33 leaves, coverage is incomplete.
+
+**Fix** (`ggml-quants.c`):
+1. Reduced `DF11_MAX_HUFFMAN_BITS` from 32 → 8. All codes now ≤8 bits, fitting in one byte.
+2. Set `freqs[sym] = max(freqs[sym], 1)` for all 256 exponent symbols before building the Huffman tree. Real frequencies are saved for accurate bitstream size estimation (`total_bits_exact` uses `freqs_saved`, not the augmented `freqs`).
+3. With 256 symbols and max 8 bits, the LUT has exactly 2 rows: one data row (256 direct fills) and one code-length row. No prefixes, no multi-level lookups.
+4. Lowered `DF11_LUT_THRESHOLD` from 240 → 192 to accommodate up to 64 prefix pointer slots (from 16) for the intermediate-prefix scenario (needed before the 8-bit max change; retained for safety).
+
+**Trade-off**: Compression ratio decreases because unused exponents get 8-bit codes. However, these codes never appear in the bitstream (freq=0), so actual bitstream size is unchanged. The LUT is larger (2 rows × 256 = 512 bytes vs previously sparse multi-row) but well within the `calloc(256*256,1)` allocation.
+
+### 6.15 CUDA Kernel Refill Bounds (Phantom Zero-Byte Elements)
+
+**Problem**: The refill loop `while (buf_bits < 32 && extra_byte < 4)` loaded from `register_buffer[8..11]`. For the last thread(s) whose extra bytes fall beyond `n_bytes`, these register slots stay at zero (initialized). A zero byte decodes as symbol 0 with an 8-bit code, producing extra phantom elements beyond the expected count. These overflowed the shared memory `write_buf`, causing `cudaErrorIllegalMemoryAccess` (err=700).
+
+**Fix** (`ggml-cuda/convert.cu`): Compute `valid_extra = min(4, max(0, n_bytes - (thread_start + 8)))` — the number of refill bytes actually within bounds. Change refill loop condition from `extra_byte < 4` to `extra_byte < valid_extra`. Applied to both Phase 3-5 (counting pass) and Phase 7 (decode/scatter pass).
+
+### 6.16 CPU Decoder Gap Handling
+
+**Problem**: When the CPU decoder hits a LUT byte entry of 0 (no code or prefix match), `code_len = 0` → `if (code_len <= 0) break;` terminates decoding prematurely. With the original 33-symbol LUT, this happened after only 8 elements.
+
+**Fix** (`ggml-quants.c`): Changed `if (code_len <= 0) break;` to consume 1 bit from the buffer and `continue` (retry with the next byte alignment). Both `dequantize_row_df11` and `dequantize_row_df11_to_bf16` updated.
+
+**Note**: This fallback is now unnecessary because the 256-symbol approach (6.14) provides complete LUT coverage. The change is retained as a safety net.
+
+### 6.17 GPU Gap Encoding/Decoding Consistency
+
+**Problem**: The quantize encoder and GPU kernel used different bit-packing schemes for the 5-bit-per-thread gap array. Encoder used MSB-first positional formulas (gap at byte bits `[3-bit_off..7-bit_off]`), while GPU decoder assumed LSB-first (reading `bits [4:0]`). For non-zero gap values, the GPU read completely disjoint bit positions.
+
+**Fix** (`ggml-quants.c`, `ggml-cuda/convert.cu`): Rewrote both encoder and GPU decoder to use per-bit MSB-first packing loops, ensuring bit-identical encoding/decoding.
+
+### 6.18 Files Modified Summary (Sections 6.13-6.17)
+
+| # | File | Change |
+|---|------|--------|
+| 6.13 | `ggml/src/ggml-quants.c` | Fill-match fix, intermediate prefix levels, bit over-consumption, refill threshold, nnodes reset, pos_out bounds, gap packing |
+| 6.14 | `ggml/src/ggml-quants.c` | MAX_HUFFMAN_BITS 32→8, LUT_THRESHOLD 240→192, 256-symbol tree with freq≥1 |
+| 6.14 | `ggml/src/ggml-cuda/convert.cu` | LUT_THRESHOLD 240→192 |
+| 6.15 | `ggml/src/ggml-cuda/convert.cu` | Refill byte bounds: `valid_extra` computation, loop condition change |
+| 6.16 | `ggml/src/ggml-quants.c` | Gap-tolerant decoder: consume 1 bit on `code_len <= 0` |
+| 6.17 | `ggml/src/ggml-quants.c` | MSB-first per-bit gap packing (encoder) |
+| 6.17 | `ggml/src/ggml-cuda/convert.cu` | MSB-first per-bit gap unpacking (GPU decoder) |
+
+### 6.19 BF16 Alias Stride Fix (Matmul Dispatch)
+
+**Problem**: The BF16 alias tensor (`src0_bf16 = *src0`) inherited `nb[2]` and `nb[3]` from the DF11 tensor, where `nb[1]` had been shrunk to reflect actual compressed size. This produced incorrect strides for batched cuBLAS matmul dispatches.
+
+**Fix** (`ggml-cuda/ggml-cuda.cu`): Explicitly set `nb[2]` and `nb[3]` based on the BF16 element stride after overwriting `nb[0]` and `nb[1]`.
 
 ---
 
