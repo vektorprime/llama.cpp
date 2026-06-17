@@ -1461,7 +1461,17 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     const size_t actual = wit->second.size;
                     const int64_t row0 = t->ne[0] * t->nb[0]; // nb[0] = sizeof(block_df11) = 24
                     if (actual > (size_t)row0) {
+                        const int64_t old_nb1 = t->nb[1];
                         t->nb[1] = (int64_t)((actual - row0 + t->ne[1] - 2) / (t->ne[1] - 1));
+                        if (ggml_custom_logs_enabled()) {
+                            fprintf(stderr, "[DF11-debug] nb[1] shrink: %s ne=[%lld,%lld,%lld,%lld] row0=%lld actual=%zu old_nb1=%lld new_nb1=%lld ggml_nbytes_before=%zu ggml_nbytes_after=%zu\n",
+                                    ggml_get_name(t),
+                                    (long long)t->ne[0], (long long)t->ne[1], (long long)t->ne[2], (long long)t->ne[3],
+                                    (long long)row0, actual, (long long)old_nb1, (long long)t->nb[1],
+                                    sizeof(block_df11) + (t->ne[0]-1)*t->nb[0] + (t->ne[1]-1)*old_nb1 + (t->ne[2]-1)*t->nb[2] + (t->ne[3]-1)*t->nb[3],
+                                    ggml_nbytes(t));
+                            fflush(stderr);
+                        }
                     }
                 }
             }
