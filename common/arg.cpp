@@ -1609,7 +1609,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             llama_set_custom_logs(true);
             ggml_set_custom_logs(true);
         }
-    ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--spm-infill"},
         string_format(

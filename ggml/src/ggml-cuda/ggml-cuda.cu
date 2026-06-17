@@ -2617,6 +2617,14 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         }
 
         ggml_cuda_pool_alloc<ggml_bf16_t> scratch_bf16(ctx.pool(), n_elements);
+
+        if (ggml_custom_logs_enabled()) {
+            cudaError_t pre_sync_err = cudaDeviceSynchronize();
+            if (pre_sync_err != cudaSuccess) {
+                fprintf(stderr, "[DF11-debug] PRE-DEQ STALE ERR: %s\n", cudaGetErrorString(pre_sync_err));
+            }
+        }
+
         dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
 
         if (ggml_custom_logs_enabled()) {
