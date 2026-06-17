@@ -253,3 +253,13 @@ The CUDA kernel failed with `cudaMemcpy: invalid argument` because the graph bui
 3. **Window overflow guard:** When all loaded entries are latched and a new upload is needed, `evict_lru()` returns without evicting anything. The `while (loaded_count >= window_size)` loop breaks when `loaded_count` doesn't decrease — the window temporarily exceeds the limit. The excess entries are cleaned up on the next `release_all_latches()` + eviction cycle.
 
 **Moral:** Any cache that evicts entries during graph building must track which entries have graph nodes referencing them. A simple "latch" mechanism (mark in-use) prevents use-after-free without complex reference counting.
+
+**Tradeoff:** Latching means entries loaded during a forward pass stay in VRAM until the pass completes. The window grows monotonically during graph building — every weight tensor touched in that pass is latched and cannot be evicted. For a 24-layer model with ~8 weight tensors per layer, all ~192 sidecar tensors end up in VRAM during the pass (same peak as non-streaming). VRAM savings only materialize *between* passes: `release_all_latches()` at the next `build_graph()` call makes all entries eligible for eviction, and the cache compacts back to `window_size` (12) on subsequent uploads. To get intra-pass VRAM savings, entries would need reference counting from graph nodes — evict only entries whose graph nodes have already been computed.
+
+### 7. Allocated buffer can be 32x larger than data for Q8_0 values
+
+`upload_entry()` creates `val_t = [32, n_blocks]` of type Q8_0. `ggml_nbytes()` for a Q8_0 tensor considers each "element" as a 34-byte Q8_0 block, so the total is `32 * n_blocks * 34` bytes. But the actual data uploaded is only `n_blocks * 34` bytes (one Q8_0 block per outlier block). The GPU buffer is 32x larger than the data.
+
+For BF16 values, there is no waste: `[32, n_blocks]` of BF16 = `64 * n_blocks` bytes, which exactly matches the data.
+
+**Fix candidate:** Use shape `[1, n_blocks]` for Q8_0 values, or use a raw buffer allocation instead of tensor shapes.

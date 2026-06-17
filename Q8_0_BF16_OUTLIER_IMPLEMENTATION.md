@@ -249,6 +249,12 @@ Graph nodes reference GPU tensor pointers from the cache. If eviction frees thos
 - `release_all_latches()` called at `build_graph()` start to clear latches from previous pass
 - When all loaded entries are latched, the while loop breaks (temporary window overflow)
 
-### 6. `ggml_backend_buffer` is forward-declared
+**Tradeoff:** Latching prevents use-after-free but the window grows monotonically during a forward pass — every weight tensor touched stays in VRAM until the pass completes. Peak VRAM equals non-streaming. Savings only materialize *between* passes when `release_all_latches()` enables compaction back to window_size.
+
+### 6. Allocated buffer can be 32x larger than data for Q8_0 values
+
+`upload_entry()` creates `val_t = [32, n_blocks]` of type Q8_0. `ggml_nbytes()` treats each "element" as a 34-byte Q8_0 block → `32 * n_blocks * 34` bytes allocated vs `n_blocks * 34` bytes of actual data. For BF16 values there's no waste (`64 * n_blocks` = data size). Fix candidate: use `[1, n_blocks]` shape or raw buffer.
+
+### 7. `ggml_backend_buffer` is forward-declared
 
 In `ggml.h`, `ggml_backend_buffer` is only forward-declared. Use `ggml_backend_buffer_get_base()` instead of `buffer->addr`. Use `const void*` casts for const-correctness in format strings.
