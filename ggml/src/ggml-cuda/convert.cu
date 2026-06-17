@@ -1053,6 +1053,11 @@ __global__ void dequantize_df11_kernel(
     int output_idx = (int)counters[tid] + write_offset;
     int end_idx = (tid < DF11_THREADS_PER_BLOCK - 1) ? ((int)counters[tid + 1] + write_offset) : (int)position_offsets[block_id + 1];
 
+    if (tid == 0 && block_id < 3) {
+        printf("[DF11-kern] blk%d after_prefix: total_elems=%d pos_range=[%d,%d]\n",
+               block_id, end_idx - write_offset, write_offset, end_idx);
+    }
+
     // Phase 7: Re-decode and reconstruct BF16 values (data threads only)
     // Uses identical bit-tracking logic as the counting phase above and the CPU decoder
     if (thread_has_data && output_idx < end_idx) {
@@ -1118,8 +1123,15 @@ __global__ void dequantize_df11_kernel(
     // Phase 8: Scatter from shared memory to global
     int n_elem_this_block = (int)position_offsets[block_id + 1] - write_offset;
     int n_left = n_elements - write_offset;
+    if (tid == 0 && (block_id == 0 || block_id == gridDim.x - 1)) {
+        printf("[DF11-kern] blk%d phase8: n_this=%d n_left=%d pos=%d\n",
+               block_id, n_elem_this_block, n_left, write_offset);
+    }
     for (int i = tid; i < n_elem_this_block && i < n_left; i += DF11_THREADS_PER_BLOCK) {
         outputs[i + write_offset] = *(nv_bfloat16 *)&write_buf[i];
+    }
+    if (tid == 0 && (block_id == 0 || block_id == gridDim.x - 1)) {
+        printf("[DF11-kern] blk%d phase8 done\n", block_id);
     }
 }
 
