@@ -114,7 +114,12 @@ bool llama_outlier_stream_cache::ensure_gpu(ggml_backend_t backend, const std::s
     }
 
     while (loaded_count >= window_size) {
+        int prev = loaded_count;
         evict_lru(backend);
+        if (loaded_count == prev) {
+            // Could not evict (all loaded entries are latched)
+            break;
+        }
     }
 
     if (!upload_entry(backend, entry)) {
@@ -128,6 +133,9 @@ bool llama_outlier_stream_cache::ensure_gpu(ggml_backend_t backend, const std::s
     touch(name);
     loaded_count++;
 
+    // Latch: prevent eviction until release_all_latches() is called
+    entry.latched = true;
+
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[outlier-stream-ensure] '%s': loaded OK (now %d/%d), prefetching ahead...\n",
                 name.c_str(), loaded_count, window_size);
@@ -138,6 +146,17 @@ bool llama_outlier_stream_cache::ensure_gpu(ggml_backend_t backend, const std::s
     prefetch_ahead(backend, name);
 
     return true;
+}
+
+void llama_outlier_stream_cache::release_all_latches() {
+    for (auto & [name, entry] : entries) {
+        entry.latched = false;
+    }
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[outlier-stream-latch] released all latches (%zu entries, %d/%d loaded)\n",
+                entries.size(), loaded_count, window_size);
+        fflush(stderr);
+    }
 }
 
 ggml_tensor * llama_outlier_stream_cache::get_gpu_idx(const std::string & name) const {
@@ -177,13 +196,22 @@ void llama_outlier_stream_cache::evict_lru(ggml_backend_t backend) {
     GGML_UNUSED(backend);
     for (auto it = lru.rbegin(); it != lru.rend(); ++it) {
         auto eit = entries.find(*it);
-        if (eit != entries.end() && eit->second.loaded) {
+        if (eit != entries.end() && eit->second.loaded && !eit->second.latched) {
             LLAMA_LOG_DEBUG("[outlier-stream] evicting '%s' from GPU\n", it->c_str());
             free_entry_gpu(eit->second);
             eit->second.loaded = false;
             loaded_count--;
             return;
         }
+    }
+    // If all loaded entries are latched (in-use by current graph), we cannot
+    // evict — the window temporarily exceeds the limit. This is safe because
+    // the entries were already allocated on GPU and will be freed after
+    // release_all_latches() + next eviction.
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[outlier-stream] evict_lru: all %d loaded entries are latched, window overflow\n",
+                loaded_count);
+        fflush(stderr);
     }
 }
 

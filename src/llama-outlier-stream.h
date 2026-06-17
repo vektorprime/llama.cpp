@@ -38,6 +38,11 @@ struct llama_outlier_cache_entry {
     ggml_tensor    * idx_gpu    = nullptr;
     ggml_tensor    * values_gpu = nullptr;
 
+    // Latched: entry was used in the current graph build and must NOT be
+    // evicted until after compute completes. Call release_all_latches()
+    // between forward passes.
+    bool             latched   = false;
+
     // Total byte size on GPU (idx + values)
     size_t gpu_bytes() const {
         size_t elem = (values_type == GGML_TYPE_Q8_0)
@@ -50,10 +55,11 @@ struct llama_outlier_cache_entry {
 
 struct llama_outlier_stream_cache {
     // Maximum number of tensors kept in VRAM simultaneously.
-    // Default 6 = current + 5 lookahead (one transformer layer typically
-    // has 6-7 weight tensors: attn_q, attn_k, attn_v, attn_output,
-    // ffn_gate, ffn_up, ffn_down).
-    static constexpr int DEFAULT_WINDOW_SIZE = 6;
+    // Must cover one full transformer layer + lookahead for next layer.
+    // A typical dense layer has up to 8 weight tensors (attn_q, attn_k, attn_v,
+    // attn_output, ffn_gate, ffn_up, ffn_down, plus optional extra like nextn.eh_proj).
+    // Window=12 gives room for one full layer + prefetch headroom.
+    static constexpr int DEFAULT_WINDOW_SIZE = 12;
 
     // All known entries (CPU data always resident)
     std::unordered_map<std::string, llama_outlier_cache_entry> entries;
@@ -94,7 +100,12 @@ struct llama_outlier_stream_cache {
 
     // Ensure the entry for `name` is loaded on GPU. Also prefetches
     // the next N tensors (up to window_size) in sorted order.
+    // Latches the entry so it cannot be evicted until release_all_latches().
     bool ensure_gpu(ggml_backend_t backend, const std::string & name);
+
+    // Release all latched entries — call between forward passes so
+    // entries from the previous pass can be evicted.
+    void release_all_latches();
 
     // Get GPU tensor pointers. Call ensure_gpu() first.
     ggml_tensor * get_gpu_idx(const std::string & name) const;

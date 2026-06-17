@@ -3026,6 +3026,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
 ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
     // provide model reference to graph context for outlier block correction
     const_cast<llm_graph_params &>(params).model = this;
+
+    // Release latch from previous forward pass so cached outlier sidecar
+    // tensors can be evicted during this graph build.
+    outlier_cache.release_all_latches();
+
     std::unique_ptr<llm_graph_context> llm = build_arch_graph(params);
 
     // add on pooling layer
