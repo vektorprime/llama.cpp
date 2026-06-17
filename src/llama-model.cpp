@@ -1190,6 +1190,26 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     fprintf(stderr, "[delta-load]   total_delta_L2=%.6e\n", sqrt(total_l2));
                     fflush(stderr);
                 }
+            } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
+                // Q4_0 delta debug logging
+                std::vector<uint8_t> values_buf;
+                const block_q4_0 * values_ptr = nullptr;
+
+                if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
+                    values_ptr = (const block_q4_0 *) values_tensor->data;
+                } else if (values_tensor->buffer && values_tensor->data) {
+                    values_buf.resize(ggml_nbytes(values_tensor));
+                    ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, ggml_nbytes(values_tensor));
+                    values_ptr = (const block_q4_0 *) values_buf.data();
+                } else if (values_tensor->data) {
+                    values_ptr = (const block_q4_0 *) values_tensor->data;
+                }
+
+                if (values_ptr && ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-load] %s: n_blocks=%lld (Q4_0)\n",
+                            name.c_str(), (long long)n_blocks);
+                    fflush(stderr);
+                }
             } else {
                 std::vector<ggml_bf16_t> values_buf;
                 const ggml_bf16_t * values_ptr = nullptr;
@@ -1197,8 +1217,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                 if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
                     values_ptr = (const ggml_bf16_t *) values_tensor->data;
                 } else if (values_tensor->buffer && values_tensor->data) {
-                    values_buf.resize(n_blocks * 32);
-                    ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, n_blocks * 32 * sizeof(ggml_bf16_t));
+                    values_buf.resize(ggml_nbytes(values_tensor) / sizeof(ggml_bf16_t));
+                    ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, ggml_nbytes(values_tensor));
                     values_ptr = values_buf.data();
                 } else if (values_tensor->data) {
                     values_ptr = (const ggml_bf16_t *) values_tensor->data;
