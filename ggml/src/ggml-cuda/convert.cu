@@ -981,8 +981,8 @@ __global__ void dequantize_df11_kernel(
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
-        int32_t code_bytes_start = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD);
-        int32_t code_bytes_end   = code_bytes_start + 8;
+        // With MAX_HUFFMAN_BITS=8, at most 1 extra byte needed to complete a code crossing the boundary.
+        int32_t code_bytes_end = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD) + 8;
         if (code_bytes_end > (int32_t)n_bytes) code_bytes_end = (int32_t)n_bytes;
         int32_t valid_extra = (int32_t)n_bytes - code_bytes_end;
         if (valid_extra < 0) valid_extra = 0;
@@ -1201,7 +1201,8 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
             free(pos_host);
         }
         int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
-        int smem_write = max_elem * sizeof(uint16_t);
+        // +1 slack: edge threads with valid_extra=1 may decode one extra element
+        int smem_write = (max_elem + 1) * sizeof(uint16_t);
         smem_size = smem_counters + smem_write;
 
         // Cache for graph capture
