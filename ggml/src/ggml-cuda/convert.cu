@@ -931,20 +931,16 @@ __global__ void dequantize_df11_kernel(
 
     const bool thread_has_data = (global_thread_id * DF11_BYTES_PER_THREAD < n_bytes);
 
-    // Phase 1: Load codes into registers
+    // Phase 1: Load codes into registers, track how many bytes are valid
+    int32_t n_my_bytes = 0;
     if (thread_has_data) {
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 0  < n_bytes) register_buffer[0]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 0];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 1  < n_bytes) register_buffer[1]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 1];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 2  < n_bytes) register_buffer[2]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 2];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 3  < n_bytes) register_buffer[3]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 3];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 4  < n_bytes) register_buffer[4]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 4];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 5  < n_bytes) register_buffer[5]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 5];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 6  < n_bytes) register_buffer[6]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 6];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 7  < n_bytes) register_buffer[7]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 7];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 8  < n_bytes) register_buffer[8]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 8];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 9  < n_bytes) register_buffer[9]  = codes[global_thread_id * DF11_BYTES_PER_THREAD + 9];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 10 < n_bytes) register_buffer[10] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 10];
-        if (global_thread_id * DF11_BYTES_PER_THREAD + 11 < n_bytes) register_buffer[11] = codes[global_thread_id * DF11_BYTES_PER_THREAD + 11];
+        int32_t ts = global_thread_id * DF11_BYTES_PER_THREAD;
+        for (int32_t b = 0; b < 12; b++) {
+            if (ts + b < n_bytes) {
+                register_buffer[b] = codes[ts + b];
+                if (b < 8) n_my_bytes++;
+            }
+        }
     }
     int thread_counter = 0;
     int gap = 0;
@@ -965,20 +961,16 @@ __global__ void dequantize_df11_kernel(
             }
         }
 
-        // Build 64-bit buffer from bytes 0..7 (MSB first, matching CPU: buf = (buf << 8) | byte)
+        // Build buffer from only the valid primary bytes (avoids phantom decode from zero-fill)
         uint64_t long_buffer = 0;
-        long_buffer = (long_buffer << 8) | register_buffer[0];
-        long_buffer = (long_buffer << 8) | register_buffer[1];
-        long_buffer = (long_buffer << 8) | register_buffer[2];
-        long_buffer = (long_buffer << 8) | register_buffer[3];
-        long_buffer = (long_buffer << 8) | register_buffer[4];
-        long_buffer = (long_buffer << 8) | register_buffer[5];
-        long_buffer = (long_buffer << 8) | register_buffer[6];
-        long_buffer = (long_buffer << 8) | register_buffer[7];
-        int buf_bits = 64;
+        for (int32_t b = 0; b < n_my_bytes; b++) {
+            long_buffer = (long_buffer << 8) | register_buffer[b];
+        }
+        int buf_bits = n_my_bytes * 8;
 
         // Consume gap bits (matching CPU: buf_bits -= gap; buf &= mask)
         buf_bits -= gap;
+        if (buf_bits > 0) {
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
@@ -1025,6 +1017,7 @@ __global__ void dequantize_df11_kernel(
             long_buffer &= (1ULL << buf_bits) - 1;
             thread_counter++;
         }
+        } // buf_bits > 0
     }
 
     // Phase 6: Parallel prefix sum for output positions (ALL threads)
@@ -1062,17 +1055,13 @@ __global__ void dequantize_df11_kernel(
     // Uses identical bit-tracking logic as the counting phase above and the CPU decoder
     if (thread_has_data && output_idx < end_idx) {
         uint64_t long_buffer = 0;
-        long_buffer = (long_buffer << 8) | register_buffer[0];
-        long_buffer = (long_buffer << 8) | register_buffer[1];
-        long_buffer = (long_buffer << 8) | register_buffer[2];
-        long_buffer = (long_buffer << 8) | register_buffer[3];
-        long_buffer = (long_buffer << 8) | register_buffer[4];
-        long_buffer = (long_buffer << 8) | register_buffer[5];
-        long_buffer = (long_buffer << 8) | register_buffer[6];
-        long_buffer = (long_buffer << 8) | register_buffer[7];
-        int buf_bits = 64;
+        for (int32_t b = 0; b < n_my_bytes; b++) {
+            long_buffer = (long_buffer << 8) | register_buffer[b];
+        }
+        int buf_bits = n_my_bytes * 8;
 
         buf_bits -= gap;
+        if (buf_bits > 0) {
         long_buffer &= (1ULL << buf_bits) - 1;
 
         int32_t vstart = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD);
@@ -1120,6 +1109,7 @@ __global__ void dequantize_df11_kernel(
             write_buf[output_idx - write_offset] = bf16_val;
             output_idx++;
         }
+        } // buf_bits > 0
     }
     __syncthreads();
 
