@@ -1462,8 +1462,6 @@ void llama_model::patch_embedding_outliers() {
 
         const bool weight_on_gpu = weight_tensor->buffer &&
             !ggml_backend_buffer_is_host(weight_tensor->buffer);
-        const bool values_on_gpu = info.values->buffer &&
-            !ggml_backend_buffer_is_host(info.values->buffer);
 
         LLAMA_LOG_INFO("%s: pre-patching embedding '%s' with %lld outlier blocks (nrows=%lld, ncols=%lld)\n",
                        __func__, name.c_str(), (long long)info.n_blocks,
@@ -1481,12 +1479,22 @@ void llama_model::patch_embedding_outliers() {
         }
 
         const size_t values_total_bytes = (size_t)info.n_blocks * values_element_size;
-        if (values_on_gpu) {
-            values_cpu_buf.resize(values_total_bytes);
-            ggml_backend_tensor_get(info.values, values_cpu_buf.data(), 0, values_total_bytes);
-            values_cpu = values_cpu_buf.data();
-        } else if (info.values->data) {
-            values_cpu = (const uint8_t *) info.values->data;
+        if (info.values) {
+            const bool values_on_gpu = info.values->buffer &&
+                !ggml_backend_buffer_is_host(info.values->buffer);
+            if (values_on_gpu) {
+                values_cpu_buf.resize(values_total_bytes);
+                ggml_backend_tensor_get(info.values, values_cpu_buf.data(), 0, values_total_bytes);
+                values_cpu = values_cpu_buf.data();
+            } else if (info.values->data) {
+                values_cpu = (const uint8_t *) info.values->data;
+            }
+        } else {
+            // Streaming mode: sidecar values are in the outlier cache (CPU)
+            auto cache_it = outlier_cache.entries.find(info.name);
+            if (cache_it != outlier_cache.entries.end()) {
+                values_cpu = cache_it->second.values_data.data();
+            }
         }
 
         if (!values_cpu) {
