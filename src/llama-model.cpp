@@ -1496,6 +1496,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                 size_t idx_nbytes = (size_t)info.n_blocks * 2 * sizeof(int32_t);
                 size_t val_nbytes = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
                     ? (size_t)info.n_blocks * 34
+                    : (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0)
+                    ? (size_t)info.n_blocks * 18
                     : (size_t)info.n_blocks * 32 * sizeof(ggml_bf16_t);
 
                 idx_buf.resize(info.n_blocks * 2);
