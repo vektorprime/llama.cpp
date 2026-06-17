@@ -1033,7 +1033,9 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         info.n_blocks   = n_blocks;
         info.n_rows_out = tensor->ne[1];
         info.n_cols     = tensor->ne[0];
-        info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 : LLAMA_OUTLIER_VALUE_TYPE_BF16;
+        info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0
+                        : values_tensor->type == GGML_TYPE_Q4_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q4_0
+                        : LLAMA_OUTLIER_VALUE_TYPE_BF16;
 
         // Build CSR layout
         // Read idx data: [2, n_blocks] -> (row, block_col) per block

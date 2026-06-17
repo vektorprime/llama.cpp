@@ -412,6 +412,7 @@ extern "C" {
     enum llama_outlier_value_type {
         LLAMA_OUTLIER_VALUE_TYPE_BF16 = 0,
         LLAMA_OUTLIER_VALUE_TYPE_Q8_0 = 1,
+        LLAMA_OUTLIER_VALUE_TYPE_Q4_0 = 2,
     };
 
     // model quantization parameters

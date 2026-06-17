@@ -51,6 +51,8 @@ struct llama_outlier_cache_entry {
     size_t gpu_bytes() const {
         size_t elem = (values_type == GGML_TYPE_Q8_0)
             ? 34                                 // sizeof(block_q8_0) = 34 bytes
+            : (values_type == GGML_TYPE_Q4_0)
+            ? 18                                 // sizeof(block_q4_0) = 18 bytes
             : 32 * sizeof(ggml_bf16_t);           // 64 bytes per block
         return (size_t)(n_blocks * 2 * sizeof(int32_t))  // idx [2, n_blocks]
              + (size_t)(n_blocks * elem);                  // values [32, n_blocks]

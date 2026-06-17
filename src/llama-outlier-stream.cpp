@@ -35,7 +35,10 @@ void llama_outlier_stream_cache::add_entry(
     entry.idx_data.assign(idx_data, idx_data + n_blocks * 2);
 
     size_t elem_bytes = (values_type == GGML_TYPE_Q8_0)
-        ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
+        ? (size_t)34
+        : (values_type == GGML_TYPE_Q4_0)
+        ? (size_t)18
+        : (size_t)(32 * sizeof(ggml_bf16_t));
     size_t total = (size_t)n_blocks * elem_bytes;
     entry.values_data.assign(values_data, values_data + total);
 
@@ -309,6 +312,8 @@ bool llama_outlier_stream_cache::upload_entry(
         size_t idx_bytes = n_blocks * 2 * sizeof(int32_t);
         size_t val_bytes = (entry.values_type == GGML_TYPE_Q8_0)
             ? (size_t)n_blocks * 34
+            : (entry.values_type == GGML_TYPE_Q4_0)
+            ? (size_t)n_blocks * 18
             : (size_t)n_blocks * 32 * sizeof(ggml_bf16_t);
         struct ggml_tensor * temp_t = ggml_new_tensor_2d(ctx, entry.values_type, 32, n_blocks);
         size_t alloc_size = ggml_nbytes(temp_t) + ggml_nbytes(idx_t);

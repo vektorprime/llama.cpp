@@ -4469,7 +4469,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const ggml_tensor * x      = dst->src[2];
 
     GGML_ASSERT(idx->type    == GGML_TYPE_I32);
-    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_Q4_0);
     GGML_ASSERT(x->type      == GGML_TYPE_F32);
     GGML_ASSERT(dst->type    == GGML_TYPE_F32);
 
@@ -4507,8 +4507,10 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const int64_t x_stride      = x->nb[1] / sizeof(float);
 
     const bool is_q8_0 = (values->type == GGML_TYPE_Q8_0);
+    const bool is_q4_0 = (values->type == GGML_TYPE_Q4_0);
     const ggml_bf16_t * values_bf16 = (const ggml_bf16_t *) values->data;
     const block_q8_0 * values_q8 = (const block_q8_0 *) values->data;
+    const block_q4_0 * values_q4 = (const block_q4_0 *) values->data;
 
     // Partition OUTPUT rows per thread — each thread only writes to its own rows,
     // eliminating the need for atomics or barriers on the merge step
@@ -4542,6 +4544,10 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
             for (int64_t j = 0; j < 32; j++) {
                 const float w = is_q8_0
                     ? GGML_FP16_TO_FP32(values_q8[ib].d) * values_q8[ib].qs[j]
+                    : is_q4_0
+                    ? GGML_FP16_TO_FP32(values_q4[ib].d) * ((float)((j & 1)
+                        ? (values_q4[ib].qs[j/2] >> 4)
+                        : (values_q4[ib].qs[j/2] & 0x0F)) - 8.0f)
                     : GGML_BF16_TO_FP32(values_bf16[ib * 32 + j]);
                 const float a = x_data[(col0 + j) + it * x_stride];
                 sum += w * a;

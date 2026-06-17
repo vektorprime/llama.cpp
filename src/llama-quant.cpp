@@ -1479,6 +1479,9 @@ static void q4_outlier_compute_deltas(
     if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
         // Store deltas as Q8_0 blocks: each 32-element delta -> one Q8_0 block (34 bytes)
         outliers.values_q8.resize(n_blocks * sizeof(block_q8_0));
+    } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
+        // Store deltas as Q4_0 blocks: each 32-element delta -> one Q4_0 block (18 bytes)
+        outliers.values_q8.resize(n_blocks * sizeof(block_q4_0));
     } else {
         outliers.values.resize(n_blocks * LLAMA_Q8_OUTLIER_BLOCK_SIZE);
     }
@@ -1505,6 +1508,10 @@ static void q4_outlier_compute_deltas(
             // Quantize deltas to Q8_0 block
             block_q8_0 * q8block = reinterpret_cast<block_q8_0 *>(outliers.values_q8.data() + k * sizeof(block_q8_0));
             quantize_row_q8_0_ref(deltas, q8block, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
+        } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
+            // Quantize deltas to Q4_0 block
+            block_q4_0 * q4block = reinterpret_cast<block_q4_0 *>(outliers.values_q8.data() + k * sizeof(block_q4_0));
+            quantize_row_q4_0_ref(deltas, q4block, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
         } else {
             for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
                 outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(deltas[j]);
@@ -1515,7 +1522,8 @@ static void q4_outlier_compute_deltas(
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q4_dequant), value_type=%s\n",
                 outliers.name.c_str(), n_blocks,
-                value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" : "BF16");
+                value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" :
+                value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0 ? "Q4_0" : "BF16");
         const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
         for (size_t k = 0; k < log_blocks; k++) {
             double l2 = 0.0;
@@ -1526,6 +1534,11 @@ static void q4_outlier_compute_deltas(
                 if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
                     const block_q8_0 * q8block = reinterpret_cast<const block_q8_0 *>(outliers.values_q8.data() + k * sizeof(block_q8_0));
                     d = ggml_fp16_to_fp32(q8block->d) * q8block->qs[j];
+                } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
+                    const block_q4_0 * q4block = reinterpret_cast<const block_q4_0 *>(outliers.values_q8.data() + k * sizeof(block_q4_0));
+                    const float q4_d = ggml_fp16_to_fp32(q4block->d);
+                    const int8_t q = (int8_t)((j & 1) ? (q4block->qs[j/2] >> 4) : (q4block->qs[j/2] & 0x0F));
+                    d = q4_d * ((float)q - 8.0f);
                 } else {
                     d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
                 }
@@ -1659,7 +1672,9 @@ static void q4_outlier_write_metadata(
     gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_VERSION_KEY, 1);
     gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_BLOCK_SIZE_KEY, LLAMA_Q4_OUTLIER_BLOCK_SIZE);
     gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_BASE_TYPE_KEY, "q4_0");
-    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_VALUE_TYPE_KEY, value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "q8_0" : "bf16");
+    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_VALUE_TYPE_KEY,
+        value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "q8_0" :
+        value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0 ? "q4_0" : "bf16");
     gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
     gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_STORE_KEY, "delta");
     gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_TENSOR_COUNT_KEY, (uint32_t) tensors.size());
@@ -1708,7 +1723,7 @@ static void q4_outlier_write_report(
 
 static size_t q4_outlier_sidecar_size(const q8_outlier_tensor_data & t, enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16) {
     const size_t idx_size = t.idx.size() * sizeof(int32_t);
-    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 || value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
         return idx_size + t.values_q8.size();
     }
     return idx_size + t.values.size() * sizeof(ggml_bf16_t);
@@ -2345,7 +2360,9 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         for (const q8_outlier_tensor_data & outliers : q4_outlier_tensors) {
             q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.idx_name, GGML_TYPE_I32, 2, outliers.n_blocks());
-            const ggml_type values_type = params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? GGML_TYPE_Q8_0 : GGML_TYPE_BF16;
+            const ggml_type values_type = params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? GGML_TYPE_Q8_0
+                                        : params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0 ? GGML_TYPE_Q4_0
+                                        : GGML_TYPE_BF16;
             q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, values_type, LLAMA_Q4_OUTLIER_BLOCK_SIZE, outliers.n_blocks());
         }
         if (!params->only_copy) {
@@ -2659,7 +2676,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 zeros(fout, GGML_PAD(idx_size, align) - idx_size);
             }
             {
-                if (params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+                if (params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ||
+                    params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
                     const size_t values_size = outliers.values_q8.size();
                     gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values_q8.data());
                     fout.write((const char *) outliers.values_q8.data(), values_size);
