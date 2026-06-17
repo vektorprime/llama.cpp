@@ -572,6 +572,9 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--keep-split") == 0) {
             params.keep_split = true;
+        } else if (strcmp(argv[arg_idx], "--custom-logs") == 0) {
+            llama_set_custom_logs(true);
+            ggml_set_custom_logs(true);
         } else {
             usage(argv[0]);
         }

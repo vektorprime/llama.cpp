@@ -455,6 +455,9 @@ extern "C" {
     //optional:
     LLAMA_API void llama_numa_init(enum ggml_numa_strategy numa);
 
+    // Enable/disable custom debug logging
+    LLAMA_API void llama_set_custom_logs(bool enable);
+
     // Optional: an auto threadpool gets created in ggml if not passed explicitly
     LLAMA_API void llama_attach_threadpool(
             struct llama_context * ctx,

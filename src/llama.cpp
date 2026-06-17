@@ -113,6 +113,10 @@ void llama_numa_init(enum ggml_numa_strategy numa) {
     }
 }
 
+void llama_set_custom_logs(bool enable) {
+    ggml_set_custom_logs(enable);
+}
+
 void llama_backend_free(void) {
     ggml_quantize_free();
 }
