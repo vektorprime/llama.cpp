@@ -454,7 +454,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q5_K;
             }
-            else if (new_type != GGML_TYPE_Q8_0) {
+            else if (new_type != GGML_TYPE_Q8_0 && ftype != LLAMA_FTYPE_MOSTLY_DF11) {
                 new_type = GGML_TYPE_Q6_K;
             }
         }
@@ -800,6 +800,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_BF16: return GGML_TYPE_BF16;
         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
         case LLAMA_FTYPE_MOSTLY_Q1_0: return GGML_TYPE_Q1_0;
+        case LLAMA_FTYPE_MOSTLY_DF11: return GGML_TYPE_DF11;
 
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return GGML_TYPE_MXFP4;
 
@@ -1153,7 +1154,13 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         if (params->dry_run) {
             // the --dry-run option calculates the final quantization size without quantizing
             if (quantize) {
-                new_size = ggml_nrows(tensor) * ggml_row_size(new_type, tensor->ne[0]);
+                if (new_type == GGML_TYPE_DF11) {
+                    // DF11 is whole-tensor variable-length compression (~12-14 bpw typical)
+                    // Use 2 bytes/element as a conservative dry-run upper bound
+                    new_size = (size_t)ggml_nelements(tensor) * 2;
+                } else {
+                    new_size = ggml_nrows(tensor) * ggml_row_size(new_type, tensor->ne[0]);
+                }
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB (%s)\n",
                                tensor_size/1024.0/1024.0,
                                new_size/1024.0/1024.0,
@@ -1237,6 +1244,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 const int64_t nchunk = (nelements_matrix + chunk_size - 1)/chunk_size;
                 const int64_t nthread_use = nthread > 1 ? std::max((int64_t)1, std::min((int64_t)nthread, nchunk)) : 1;
 
+                if (new_type == GGML_TYPE_DF11) {
+                    // DF11 compresses the whole tensor as a single block (one LUT, one bitstream)
+                    // 3D tensors not yet supported for DF11
+                    if (tensor->ne[2] > 1) {
+                        throw std::runtime_error("DF11 quantization does not yet support 3D expert tensors");
+                    }
+
+                    new_size = quantize_df11(f32_data, new_data, nrows, n_per_row, nullptr);
+                } else {
                 // quantize each expert separately since they have different importance matrices
                 new_size = 0;
                 for (int64_t i03 = 0; i03 < tensor->ne[2]; ++i03) {
@@ -1246,6 +1262,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
                     new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
                 }
+                }
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
             }
             total_size_org += tensor_size;
@@ -1253,7 +1270,12 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
             // update the gguf meta data as we go
             gguf_set_tensor_type(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_type);
-            GGML_ASSERT(gguf_get_tensor_size(ctx_outs[cur_split].get(), gguf_find_tensor(ctx_outs[cur_split].get(), metadata[i].name.c_str())) == new_size);
+            if (new_type == GGML_TYPE_DF11) {
+                // DF11 is variable-length; override GGUF's computed data size
+                gguf_set_tensor_data_size(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_size);
+            } else {
+                GGML_ASSERT(gguf_get_tensor_size(ctx_outs[cur_split].get(), gguf_find_tensor(ctx_outs[cur_split].get(), metadata[i].name.c_str())) == new_size);
+            }
             gguf_set_tensor_data(ctx_outs[cur_split].get(), metadata[i].name.c_str(), new_data);
 
             // write tensor data + padding

@@ -42,6 +42,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_0:     return "Q5_0";
         case LLAMA_FTYPE_MOSTLY_Q5_1:     return "Q5_1";
         case LLAMA_FTYPE_MOSTLY_Q8_0:     return "Q8_0";
+        case LLAMA_FTYPE_MOSTLY_DF11:             return "DF11";
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return "MXFP4 MoE";
         case LLAMA_FTYPE_MOSTLY_NVFP4:    return "NVFP4";
         case LLAMA_FTYPE_MOSTLY_Q2_K:     return "Q2_K - Medium";
@@ -760,6 +761,7 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
             case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;
             case GGML_TYPE_Q1_0:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0;    break;
+            case GGML_TYPE_DF11:   ftype = LLAMA_FTYPE_MOSTLY_DF11;   break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -1383,22 +1385,26 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
 void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     const auto & w = require_weight(ggml_get_name(cur));
 
+    // Use the actual on-disk data size, which respects variable-length types (e.g. DF11)
+    // where ggml_nbytes returns a conservative upper bound, not the actual compressed size.
+    const size_t nbytes = w.size;
+
     if (use_mmap) {
         const auto & mapping = mappings.at(w.idx);
         if (cur->data == nullptr) {
             cur->data = (uint8_t *)mapping->addr() + w.offs;
         } else {
-            memcpy(cur->data, (uint8_t *)mapping->addr() + w.offs, ggml_nbytes(cur));
+            memcpy(cur->data, (uint8_t *)mapping->addr() + w.offs, nbytes);
         }
     } else {
         GGML_ASSERT(cur->data != nullptr);
         GGML_ASSERT(w.idx < files.size());
         const auto & file = files.at(w.idx);
         file->seek(w.offs, SEEK_SET);
-        file->read_raw(cur->data, ggml_nbytes(cur));
+        file->read_raw(cur->data, nbytes);
     }
 
-    if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, ggml_nbytes(cur))) {
+    if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, nbytes)) {
         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
     }
 }
@@ -1531,7 +1537,17 @@ bool llama_model_loader::load_all_data(
             }
         }
 
-        size_t n_size = ggml_nbytes(cur);
+        // Use the actual on-disk data size, which is correct for variable-length types
+        // (e.g. DF11) where ggml_nbytes() returns a conservative upper bound.
+        size_t n_size = weight->size;
+
+        if (ggml_custom_logs_enabled() && cur->type == GGML_TYPE_DF11) {
+            fprintf(stderr, "[DF11-debug] load_all_data: %s n_size=%zu ggml_nbytes=%zu offs=%zu data=%p buf_is_host=%d\n",
+                    ggml_get_name(cur), n_size, ggml_nbytes(cur),
+                    weight->offs, (void*)cur->data,
+                    cur->buffer ? ggml_backend_buffer_is_host(cur->buffer) : -1);
+            fflush(stderr);
+        }
 
         if (use_mmap) {
             const auto & mapping = mappings.at(weight->idx);

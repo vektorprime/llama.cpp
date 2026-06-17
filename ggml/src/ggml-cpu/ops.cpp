@@ -7,10 +7,12 @@
 #include "ggml.h"
 #include "unary-ops.h"
 #include "vec.h"
+#include "ggml-quants.h"
 
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <vector>
 
 // ggml_compute_forward_dup
 
@@ -4832,6 +4834,81 @@ static void ggml_compute_forward_get_rows_bf16(
     }
 }
 
+// DF11 get_rows: whole-tensor compressed, decompress to BF16 scratch, then extract
+static void ggml_compute_forward_get_rows_df11(
+        const ggml_compute_params * params,
+              ggml_tensor * dst) {
+
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int64_t nc = ne00;
+    const int64_t nr = ggml_nelements(src1);
+
+    assert(ne0  == nc);
+    assert(ggml_nrows(dst) == nr);
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t n_total = ne01 * ne00;
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] get_rows_df11: src0=%s ne00=%lld ne01=%lld n_total=%lld data=%p\n",
+                ggml_get_name(src0), (long long)ne00, (long long)ne01, (long long)n_total, (void*)src0->data);
+        fflush(stderr);
+    }
+
+    // Decompress entire DF11 tensor to a BF16 scratch buffer
+    ggml_bf16_t * bf16_buf = (ggml_bf16_t *)malloc(n_total * sizeof(ggml_bf16_t));
+    if (!bf16_buf) {
+        GGML_ABORT("out of memory");
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] get_rows_df11: bf16_buf=%p, starting decompress\n", (void*)bf16_buf);
+        fflush(stderr);
+    }
+    const block_df11 * block = (const block_df11 *)src0->data;
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[DF11-debug] get_rows_df11: block=%p n_luts=%u n_bytes=%u n_elements=%u n_blocks=%u\n",
+                (void*)block, (unsigned)block->n_luts, (unsigned)block->n_bytes,
+                (unsigned)block->n_elements, (unsigned)block->n_blocks);
+        fflush(stderr);
+    }
+    dequantize_row_df11_to_bf16(block, bf16_buf, n_total);
+
+    if (ggml_custom_logs_enabled()) {
+        // Print first 5 decoded BF16 values for comparison with GPU
+        fprintf(stderr, "[DF11-debug] get_rows_df11: first 5 BF16 values: 0x%04x 0x%04x 0x%04x 0x%04x 0x%04x\n",
+                (unsigned)bf16_buf[0].bits, (unsigned)bf16_buf[1].bits, (unsigned)bf16_buf[2].bits,
+                (unsigned)bf16_buf[3].bits, (unsigned)bf16_buf[4].bits);
+        fflush(stderr);
+    }
+
+    // rows per thread
+    const int64_t dr = (nr + nth - 1)/nth;
+    const int64_t ir0 = dr*ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
+
+    for (int64_t i = ir0; i < ir1; ++i) {
+        const int64_t i12 = i/(ne11*ne10);
+        const int64_t i11 = (i - i12*ne11*ne10)/ne10;
+        const int64_t i10 = (i - i12*ne11*ne10 - i11*ne10);
+        const int64_t i01 = *(int32_t *)((char *)src1->data + i10*nb10 + i11*nb11 + i12*nb12);
+
+        GGML_ASSERT(i01 >= 0 && i01 < ne01);
+
+        ggml_cpu_bf16_to_fp32(
+            bf16_buf + i01 * nc,
+            (float *)((char *)dst->data + i10*nb1 + i11*nb2 + i12*nb3), nc);
+    }
+
+    free(bf16_buf);
+}
+
 static void ggml_compute_forward_get_rows_f32(
         const ggml_compute_params * params,
               ggml_tensor * dst) {
@@ -4915,6 +4992,10 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_BF16:
             {
                 ggml_compute_forward_get_rows_bf16(params, dst);
+            } break;
+        case GGML_TYPE_DF11:
+            {
+                ggml_compute_forward_get_rows_df11(params, dst);
             } break;
         case GGML_TYPE_F32:
         case GGML_TYPE_I32:

@@ -165,6 +165,10 @@ extern "C" {
     //   in such a way that the tensor data remains as one contiguous block (except for padding)
     GGML_API void gguf_set_tensor_type(struct gguf_context * ctx, const char * name, enum ggml_type type);
 
+    // override the data size computed from ggml_nbytes for variable-length types (e.g. DF11)
+    // must be called after gguf_set_tensor_type
+    GGML_API void gguf_set_tensor_data_size(struct gguf_context * ctx, const char * name, size_t nbytes);
+
     // assumes that at least gguf_get_tensor_size bytes can be read from data
     GGML_API void gguf_set_tensor_data(struct gguf_context * ctx, const char * name, const void * data);
 

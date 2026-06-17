@@ -1451,6 +1451,22 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             continue;
         }
 
+        // Shrink DF11 tensor nb stride so ggml_nbytes reflects actual compressed size
+        // Default: ggml_nbytes = 24 * nelements. Actual: ~1.5 * nelements.
+        // Without this fix, GPU backends allocate 24*n_elements bytes per DF11 tensor.
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->type == GGML_TYPE_DF11 && t->ne[1] > 1) {
+                auto wit = ml.weights_map.find(ggml_get_name(t));
+                if (wit != ml.weights_map.end()) {
+                    const size_t actual = wit->second.size;
+                    const int64_t row0 = t->ne[0] * t->nb[0]; // nb[0] = sizeof(block_df11) = 24
+                    if (actual > (size_t)row0) {
+                        t->nb[1] = (int64_t)((actual - row0 + t->ne[1] - 2) / (t->ne[1] - 1));
+                    }
+                }
+            }
+        }
+
         llama_buf_map buf_map;
         buf_map.reserve(n_max_backend_buffer);
 

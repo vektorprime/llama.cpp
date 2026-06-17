@@ -240,6 +240,17 @@ void ggml_print_backtrace(void) {
 }
 #endif
 
+// Custom debug logging
+static bool g_custom_logs_enabled = false;
+
+GGML_API void ggml_set_custom_logs(bool enable) {
+    g_custom_logs_enabled = enable;
+}
+
+GGML_API bool ggml_custom_logs_enabled(void) {
+    return g_custom_logs_enabled;
+}
+
 static ggml_abort_callback_t g_abort_callback = NULL;
 
 // Set the abort callback (passing null will restore original abort functionality: printing a message to stdout)
@@ -926,6 +937,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .blck_size                = 0,
         .type_size                = 0,
         .is_quantized             = false,
+    },
+    [GGML_TYPE_DF11] = {
+        .type_name                = "df11",
+        .blck_size                = QK_DF11,
+        .type_size                = sizeof(block_df11),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_df11,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_df11_ref,
     },
 };
 
@@ -7698,6 +7717,8 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q8_0:    result = quantize_q8_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_MXFP4:   result = quantize_mxfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_NVFP4:   result = quantize_nvfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q1_0:    result = quantize_q1_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_DF11:    result = quantize_df11   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q2_K:    result = quantize_q2_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q3_K:    result = quantize_q3_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q4_K:    result = quantize_q4_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -7736,7 +7757,7 @@ size_t ggml_quantize_chunk(
             assert(false);
     }
 
-    GGML_ASSERT(result == nrows * row_size);
+    GGML_ASSERT(result == nrows * row_size || type == GGML_TYPE_DF11);
 
     return result;
 }

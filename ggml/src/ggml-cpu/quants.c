@@ -112,6 +112,11 @@ void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, 
     quantize_row_tq2_0_ref(x, y, k);
 }
 
+void quantize_row_df11(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    block_df11 * GGML_RESTRICT y = vy;
+    quantize_row_df11_ref(x, y, k);
+}
+
 //===================================== Q8_K ==============================================
 
 void quantize_row_q8_K_generic(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {

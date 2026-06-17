@@ -277,6 +277,17 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
+#define QK_DF11 1
+typedef struct {
+    uint32_t n_luts;
+    uint32_t n_bytes;
+    uint32_t n_elements;
+    uint32_t n_blocks;
+    uint32_t reserved_0;
+    uint32_t reserved_1;
+} block_df11;
+static_assert(sizeof(block_df11) == 24, "wrong df11 block size/padding");
+
 //
 // Super-block quantization structures
 //

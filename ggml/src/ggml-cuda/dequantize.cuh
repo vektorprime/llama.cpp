@@ -97,3 +97,6 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
     v.x *= d;
     v.y *= d;
 }
+
+// Dfloat11 full-tensor decode kernel host launcher
+void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t stream);

@@ -21,6 +21,7 @@
 #include "ggml-cuda/cpy.cuh"
 #include "ggml-cuda/cross-entropy-loss.cuh"
 #include "ggml-cuda/cumsum.cuh"
+#include "ggml-cuda/dequantize.cuh"
 #include "ggml-cuda/diagmask.cuh"
 #include "ggml-cuda/diag.cuh"
 #include "ggml-cuda/fattn.cuh"
@@ -2600,6 +2601,29 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         return;
     }
 
+    if (src0->type == GGML_TYPE_DF11) {
+        const int64_t n_elements = ggml_nelements(src0);
+        ggml_cuda_pool_alloc<ggml_bf16_t> scratch_bf16(ctx.pool(), n_elements);
+        dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
+
+        struct ggml_tensor src0_bf16 = *src0;
+        src0_bf16.type = GGML_TYPE_BF16;
+        src0_bf16.data = scratch_bf16.ptr;
+        src0_bf16.nb[0] = sizeof(ggml_bf16_t);
+        src0_bf16.nb[1] = src0->ne[0] * sizeof(ggml_bf16_t);
+        src0_bf16.nb[2] = src0_bf16.nb[1] * src0->ne[1];
+        src0_bf16.nb[3] = src0_bf16.nb[2] * src0->ne[2];
+
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
+        if (ggml_cuda_should_use_mmf(GGML_TYPE_BF16, cc, warp_size, src0_bf16.ne, src0_bf16.nb, src1->ne[1], false)) {
+            ggml_cuda_mul_mat_f(ctx, &src0_bf16, src1, dst);
+        } else {
+            ggml_cuda_op_mul_mat(ctx, &src0_bf16, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
+        }
+        return;
+    }
+
     if (!split && use_mul_mat_vec_f) {
         // the custom F16 vector kernel can be used over batched cuBLAS GEMM
         // but this is only faster for GPUs without tensor cores or with a thin src0 matrix (particularly KQV in attention)
@@ -5166,6 +5190,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_IQ4_XS:
                     case GGML_TYPE_BF16:
+                    case GGML_TYPE_DF11:
                         return true;
                     default:
                         return false;
