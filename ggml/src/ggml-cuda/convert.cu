@@ -974,11 +974,8 @@ __global__ void dequantize_df11_kernel(
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
-        int32_t code_bytes_end = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD) + 8;
-        if (code_bytes_end > (int32_t)n_bytes) code_bytes_end = (int32_t)n_bytes;
-        int32_t valid_extra = (int32_t)n_bytes - code_bytes_end;
-        if (valid_extra < 0) valid_extra = 0;
-        if (valid_extra > 1) valid_extra = 1;
+        // Only refill when initial bits insufficient for max code (gap-based, not n_bytes-based).
+        int32_t valid_extra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
         int extra_byte = 0;
 
         // Decode loop — matching CPU decoder exactly
@@ -1064,12 +1061,7 @@ __global__ void dequantize_df11_kernel(
         if (buf_bits > 0) {
         long_buffer &= (1ULL << buf_bits) - 1;
 
-        int32_t vstart = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD);
-        int32_t vend   = vstart + 8;
-        if (vend > (int32_t)n_bytes) vend = (int32_t)n_bytes;
-        int32_t vextra = (int32_t)n_bytes - vend;
-        if (vextra < 0) vextra = 0;
-        if (vextra > 1) vextra = 1;
+        int32_t vextra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
         int extra_byte = 0;
 
         while (output_idx < end_idx) {
