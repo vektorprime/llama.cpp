@@ -1574,7 +1574,8 @@ void llama_model::patch_embedding_outliers() {
                     buf_loc,
                     (void*)weight_tensor->data,
                     (long long)info.n_blocks,
-                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" : "BF16",
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" :
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0 ? "Q4_0" : "BF16",
                     (void*)info.idx, (void*)info.values);
             fflush(stderr);
         }
@@ -1626,6 +1627,8 @@ void llama_model::patch_embedding_outliers() {
 
         if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
             values_element_size = sizeof(block_q8_0);
+        } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
+            values_element_size = sizeof(block_q4_0);
         } else {
             values_element_size = 32 * sizeof(ggml_bf16_t); // 32 * 2 = 64
         }
@@ -1734,6 +1737,15 @@ void llama_model::patch_embedding_outliers() {
                         values_cpu + (size_t)bi * sizeof(block_q8_0));
                     float delta_f32[32];
                     dequantize_row_q8_0(q8_blk, delta_f32, 32);
+                    for (int j = 0; j < 32; j++) {
+                        f32_row[col + j] += delta_f32[j];
+                    }
+                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0) {
+                    // Q4_0 delta: dequantize block and add
+                    const block_q4_0 * q4_blk = reinterpret_cast<const block_q4_0 *>(
+                        values_cpu + (size_t)bi * sizeof(block_q4_0));
+                    float delta_f32[32];
+                    dequantize_row_q4_0(q4_blk, delta_f32, 32);
                     for (int j = 0; j < 32; j++) {
                         f32_row[col + j] += delta_f32[j];
                     }
