@@ -1238,6 +1238,16 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
     // Phase 1b: When streaming is enabled, find sidecar pairs from GGUF metadata
     // (sidecar tensors were not loaded into GPU memory)
     if (params.stream_outliers && ml) {
+        int n_sidecar_found = 0;
+        int n_sidecar_skipped = 0;
+        int n_parent_missing = 0;
+        int n_val_missing = 0;
+        int n_type_mismatch = 0;
+        int n_shape_mismatch = 0;
+        int n_block_mismatch = 0;
+        int n_csr_oom = 0;
+        int n_registered = 0;
+
         for (const auto & [w_name, weight] : ml->weights_map) {
             // Look for idx sidecar: name.outlier_idx
             const size_t idx_suffix_len = 12; // ".outlier_idx"
@@ -1245,31 +1255,86 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                 w_name.rfind(".outlier_idx") != w_name.size() - idx_suffix_len) {
                 continue;
             }
+            n_sidecar_found++;
             const std::string parent_name = w_name.substr(0, w_name.size() - idx_suffix_len);
             const std::string values_name = parent_name + ".outlier_bf16";
 
             // Find parent weight tensor in loaded tensors
             auto it_parent = tensors_map.find(parent_name);
-            if (it_parent == tensors_map.end()) continue;
+            if (it_parent == tensors_map.end()) {
+                n_parent_missing++;
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': parent '%s' NOT in tensors_map (%zu entries)\n",
+                            w_name.c_str(), parent_name.c_str(), tensors_map.size());
+                    fflush(stderr);
+                }
+                continue;
+            }
 
             // Skip if already registered via loaded sidecar tensors
-            if (outlier_info.count(it_parent->second)) continue;
+            if (outlier_info.count(it_parent->second)) {
+                n_sidecar_skipped++;
+                continue;
+            }
 
             // Find values sidecar in weights_map
             auto it_val = ml->weights_map.find(values_name);
-            if (it_val == ml->weights_map.end()) continue;
+            if (it_val == ml->weights_map.end()) {
+                n_val_missing++;
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': values '%s' NOT in weights_map\n",
+                            w_name.c_str(), values_name.c_str());
+                    fflush(stderr);
+                }
+                continue;
+            }
 
             const ggml_tensor * idx_meta = weight.tensor;
             const ggml_tensor * val_meta = it_val->second.tensor;
-            if (!idx_meta || !val_meta) continue;
+            if (!idx_meta || !val_meta) {
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': null meta tensor\n", w_name.c_str());
+                    fflush(stderr);
+                }
+                continue;
+            }
 
             // Validate types
-            if (idx_meta->type != GGML_TYPE_I32) continue;
-            if (val_meta->type != GGML_TYPE_BF16 && val_meta->type != GGML_TYPE_Q8_0) continue;
-            if (idx_meta->ne[0] != 2 || val_meta->ne[0] != 32) continue;
+            if (idx_meta->type != GGML_TYPE_I32) {
+                n_type_mismatch++;
+                continue;
+            }
+            if (val_meta->type != GGML_TYPE_BF16 && val_meta->type != GGML_TYPE_Q8_0) {
+                n_type_mismatch++;
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': val type=%s (expect BF16 or Q8_0)\n",
+                            w_name.c_str(), ggml_type_name(val_meta->type));
+                    fflush(stderr);
+                }
+                continue;
+            }
+            if (idx_meta->ne[0] != 2 || val_meta->ne[0] != 32) {
+                n_shape_mismatch++;
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': idx ne=[%lld,%lld] val ne=[%lld,%lld] (expect 2,32)\n",
+                            w_name.c_str(),
+                            (long long)idx_meta->ne[0], (long long)idx_meta->ne[1],
+                            (long long)val_meta->ne[0], (long long)val_meta->ne[1]);
+                    fflush(stderr);
+                }
+                continue;
+            }
 
             const int64_t n_blocks = idx_meta->ne[1];
-            if (n_blocks != val_meta->ne[1]) continue;
+            if (n_blocks != val_meta->ne[1]) {
+                n_block_mismatch++;
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': idx n_blocks=%lld val n_blocks=%lld\n",
+                            w_name.c_str(), (long long)n_blocks, (long long)val_meta->ne[1]);
+                    fflush(stderr);
+                }
+                continue;
+            }
 
             ggml_tensor * parent_t = it_parent->second;
 
@@ -1306,7 +1371,15 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                 }
                 info.row_ptr[row + 1]++;
             }
-            if (info.row_ptr.empty()) continue;
+            if (info.row_ptr.empty()) {
+                n_csr_oom++;
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': CSR row out of range (n_rows_out=%lld)\n",
+                            w_name.c_str(), (long long)info.n_rows_out);
+                    fflush(stderr);
+                }
+                continue;
+            }
 
             for (int64_t r = 0; r < info.n_rows_out; r++) {
                 info.row_ptr[r + 1] += info.row_ptr[r];
@@ -1323,17 +1396,31 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
             outlier_info[parent_t] = std::move(info);
 
+            n_registered++;
             LLAMA_LOG_INFO("[outlier-stream] %s: registered from GGUF (%lld blocks, %.1f%%)\n",
                 parent_name.c_str(), (long long)n_blocks,
                 (info.n_rows_out * info.n_cols / 32) > 0
                     ? 100.0 * n_blocks / (info.n_rows_out * info.n_cols / 32) : 0.0);
         }
+
+        LLAMA_LOG_INFO("[outlier-stream-phase1b] summary: sidecars=%d registered=%d parent_missing=%d val_missing=%d type_mismatch=%d shape_mismatch=%d block_mismatch=%d csr_oom=%d skipped=%d\n",
+                n_sidecar_found, n_registered, n_parent_missing, n_val_missing, n_type_mismatch, n_shape_mismatch, n_block_mismatch, n_csr_oom, n_sidecar_skipped);
     }
 
     // Populate outlier streaming cache with CPU copies of sidecar data.
     // This enables predictive streaming from CPU→GPU during inference.
     // When streaming is enabled and sidecar tensors aren't loaded in GPU memory,
     // reads the data directly from the GGUF file via the model loader.
+    int n_cache_from_tensor = 0;
+    int n_cache_from_gguf = 0;
+    int n_cache_skip = 0;
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-cache-pop] populating cache from %zu outlier_info entries, stream_outliers=%d ml=%p\n",
+                outlier_info.size(), (int)params.stream_outliers, (void*)ml);
+        fflush(stderr);
+    }
+
     for (auto & [tensor, info] : outlier_info) {
         const int32_t * idx_data = nullptr;
         std::vector<int32_t> idx_buf;
@@ -1371,6 +1458,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     val_data = (const uint8_t *) val_t->data;
                 }
             }
+            if (idx_data && val_data) n_cache_from_tensor++;
         } else if (ml && params.stream_outliers) {
             // Streaming path: read from GGUF file directly
             const std::string idx_name    = info.name + ".outlier_idx";
@@ -1404,10 +1492,31 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
                 idx_data = idx_buf.data();
                 val_data = val_buf.data();
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-cache-pop] '%s': read from GGUF (%smapped) idx=%zuB val=%zuB n_blocks=%lld\n",
+                            info.name.c_str(),
+                            ml->use_mmap ? "mmapped" : "file ",
+                            idx_nbytes, val_nbytes, (long long)info.n_blocks);
+                    fflush(stderr);
+                }
+                n_cache_from_gguf++;
+            } else if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-cache-pop] '%s': get_weight failed (idx=%s=%p val=%s=%p)\n",
+                        info.name.c_str(),
+                        idx_name.c_str(), (void*)w_idx,
+                        values_name.c_str(), (void*)w_val);
+                fflush(stderr);
             }
         }
 
-        if (!idx_data || !val_data) continue;
+        if (!idx_data || !val_data) {
+            n_cache_skip++;
+            if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-cache-pop] '%s': SKIP (no data)\n", info.name.c_str());
+                fflush(stderr);
+            }
+            continue;
+        }
 
         ggml_type vt = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
             ? GGML_TYPE_Q8_0 : GGML_TYPE_BF16;
@@ -1418,10 +1527,11 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
     outlier_cache.finalize();
 
-    LLAMA_LOG_INFO("[outlier-stream] cache initialized: %d entries, %zu KB CPU, window=%d\n",
+    LLAMA_LOG_INFO("[outlier-stream] cache initialized: %d entries, %zu KB CPU, window=%d (from tensor=%d from gguf=%d skipped=%d)\n",
             outlier_cache.total_entries(),
             outlier_cache.total_cpu_bytes() / 1024,
-            outlier_cache.window_size);
+            outlier_cache.window_size,
+            n_cache_from_tensor, n_cache_from_gguf, n_cache_skip);
 
     // Summary
     int64_t total_blocks = 0;
@@ -1443,16 +1553,46 @@ void llama_model::patch_embedding_outliers() {
     // This makes ggml_get_rows (embedding lookup) see corrected values
     // without needing a new GGML op for sparse correction.
 
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-patch] outlier_info has %zu entries\n", outlier_info.size());
+        fflush(stderr);
+    }
+
     for (auto & [weight_tensor, info] : outlier_info) {
         const std::string name = ggml_get_name(weight_tensor);
 
+        if (ggml_custom_logs_enabled()) {
+            const char * buf_loc = "none";
+            if (weight_tensor->buffer) {
+                buf_loc = ggml_backend_buffer_is_host(weight_tensor->buffer) ? "host" : "device";
+            }
+            fprintf(stderr, "[delta-patch] checking tensor '%s': type=%s buf=%s data=%p n_blocks=%lld value_type=%s idx=%p values=%p\n",
+                    name.c_str(),
+                    ggml_type_name(weight_tensor->type),
+                    buf_loc,
+                    (void*)weight_tensor->data,
+                    (long long)info.n_blocks,
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" : "BF16",
+                    (void*)info.idx, (void*)info.values);
+            fflush(stderr);
+        }
+
         // Only patch token_embd tensors
         if (name != "token_embd.weight" && name != "per_layer_token_embd.weight") {
+            if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-patch]   skip: not token_embd\n");
+                fflush(stderr);
+            }
             continue;
         }
 
         // Only Q4_0 base type is supported for pre-patching
         if (weight_tensor->type != GGML_TYPE_Q4_0) {
+            if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-patch]   skip: type=%s (not Q4_0)\n",
+                        ggml_type_name(weight_tensor->type));
+                fflush(stderr);
+            }
             continue;
         }
 
@@ -1466,6 +1606,16 @@ void llama_model::patch_embedding_outliers() {
         LLAMA_LOG_INFO("%s: pre-patching embedding '%s' with %lld outlier blocks (nrows=%lld, ncols=%lld)\n",
                        __func__, name.c_str(), (long long)info.n_blocks,
                        (long long)nrows, (long long)ncols);
+
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[delta-patch]   nrows=%lld ncols=%lld q4_row_size=%zu weight_on_gpu=%d has_data=%d row_ptr.size=%zu block_col.size=%zu buf_addr_ok=%d\n",
+                    (long long)nrows, (long long)ncols, q4_row_size,
+                    (int)weight_on_gpu,
+                    (int)(weight_tensor->data != NULL),
+                    info.row_ptr.size(), info.block_col.size(),
+                    (int)(weight_tensor->buffer && weight_tensor->buffer->addr != NULL));
+            fflush(stderr);
+        }
 
         // Read the whole sidecar values tensor to CPU once
         std::vector<uint8_t> values_cpu_buf;
@@ -1482,6 +1632,13 @@ void llama_model::patch_embedding_outliers() {
         if (info.values) {
             const bool values_on_gpu = info.values->buffer &&
                 !ggml_backend_buffer_is_host(info.values->buffer);
+            if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-patch]   reading values from tensor: values_on_gpu=%d values_data=%p values_buf=%p\n",
+                        (int)values_on_gpu,
+                        (void*)info.values->data,
+                        (void*)info.values->buffer);
+                fflush(stderr);
+            }
             if (values_on_gpu) {
                 values_cpu_buf.resize(values_total_bytes);
                 ggml_backend_tensor_get(info.values, values_cpu_buf.data(), 0, values_total_bytes);
@@ -1491,9 +1648,23 @@ void llama_model::patch_embedding_outliers() {
             }
         } else {
             // Streaming mode: sidecar values are in the outlier cache (CPU)
+            if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-patch]   streaming mode: looking up '%s' in cache (%zu entries)\n",
+                        info.name.c_str(), outlier_cache.entries.size());
+                fflush(stderr);
+            }
             auto cache_it = outlier_cache.entries.find(info.name);
             if (cache_it != outlier_cache.entries.end()) {
                 values_cpu = cache_it->second.values_data.data();
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-patch]   cache hit: values_data.size=%zu n_blocks=%lld\n",
+                            cache_it->second.values_data.size(),
+                            (long long)cache_it->second.n_blocks);
+                    fflush(stderr);
+                }
+            } else if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[delta-patch]   cache MISS for '%s'\n", info.name.c_str());
+                fflush(stderr);
             }
         }
 
@@ -1508,6 +1679,7 @@ void llama_model::patch_embedding_outliers() {
         std::vector<float>   f32_row(ncols);
 
         int64_t patched_rows = 0;
+        int64_t first_patched_row = -1;
         for (int64_t row = 0; row < nrows; row++) {
             // Check if this row has any outlier blocks
             int32_t row_start = info.row_ptr[row];
@@ -1516,16 +1688,32 @@ void llama_model::patch_embedding_outliers() {
                 continue;
             }
 
+            if (ggml_custom_logs_enabled() && first_patched_row < 0) {
+                first_patched_row = row;
+                int32_t first_block_col = (row_start < row_end) ? info.block_col[row_start] : -1;
+                int32_t num_blocks = row_end - row_start;
+                fprintf(stderr, "[delta-patch]   row %lld: blocks %d..%d (n=%d), first block_col=%d, offset=%zu\n",
+                        (long long)row, row_start, row_end,
+                        num_blocks, first_block_col,
+                        (size_t)row * q4_row_size);
+                fflush(stderr);
+            }
+
             // Read Q4_0 row data from GPU or CPU
             const uint8_t * q4_src = nullptr;
             const size_t row_offset = (size_t)row * q4_row_size;
-            if (weight_on_gpu) {
+            if (weight_on_gpu && weight_tensor->data) {
                 ggml_backend_tensor_get(weight_tensor, q4_row_buf.data(), row_offset, q4_row_size);
                 q4_src = q4_row_buf.data();
             } else if (weight_tensor->data) {
                 q4_src = (const uint8_t *) weight_tensor->data + row_offset;
             }
             if (!q4_src) {
+                if (ggml_custom_logs_enabled() && row == first_patched_row) {
+                    fprintf(stderr, "[delta-patch]   WARNING: q4_src is NULL for row %lld (weight_on_gpu=%d, data=%p)\n",
+                            (long long)row, (int)weight_on_gpu, (void*)weight_tensor->data);
+                    fflush(stderr);
+                }
                 continue;
             }
 
@@ -1562,8 +1750,12 @@ void llama_model::patch_embedding_outliers() {
             quantize_row_q4_0_ref(f32_row.data(), q4_out, ncols);
 
             // Write back to GPU or CPU
-            if (weight_on_gpu) {
+            if (weight_on_gpu && weight_tensor->data) {
                 ggml_backend_tensor_set(weight_tensor, q4_row_buf.data(), row_offset, q4_row_size);
+            } else if (ggml_custom_logs_enabled() && row == first_patched_row) {
+                fprintf(stderr, "[delta-patch]   WARNING: skip write-back for row %lld (weight_on_gpu=%d, data=%p)\n",
+                        (long long)row, (int)weight_on_gpu, (void*)weight_tensor->data);
+                fflush(stderr);
             }
 
             patched_rows++;

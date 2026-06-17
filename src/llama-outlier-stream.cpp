@@ -85,22 +85,54 @@ bool llama_outlier_stream_cache::has_entry(const std::string & name) const {
 
 bool llama_outlier_stream_cache::ensure_gpu(ggml_backend_t backend, const std::string & name) {
     auto it = entries.find(name);
-    if (it == entries.end()) return false;
+    if (it == entries.end()) {
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[outlier-stream-ensure] '%s': NOT in cache (%zu entries)\n",
+                    name.c_str(), entries.size());
+            fflush(stderr);
+        }
+        return false;
+    }
 
     auto & entry = it->second;
     if (entry.loaded) {
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[outlier-stream-ensure] '%s': already loaded (loaded_count=%d/%d)\n",
+                    name.c_str(), loaded_count, window_size);
+        }
         touch(name);
         return true;
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[outlier-stream-ensure] '%s': loading to GPU (loaded=%d/%d, window=%d) n_blocks=%lld type=%s idx_data_sz=%zu val_data_sz=%zu\n",
+                name.c_str(), loaded_count, window_size, window_size,
+                (long long)entry.n_blocks,
+                ggml_type_name(entry.values_type),
+                entry.idx_data.size(), entry.values_data.size());
+        fflush(stderr);
     }
 
     while (loaded_count >= window_size) {
         evict_lru(backend);
     }
 
-    if (!upload_entry(backend, entry)) return false;
+    if (!upload_entry(backend, entry)) {
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[outlier-stream-ensure] '%s': UPLOAD FAILED\n", name.c_str());
+            fflush(stderr);
+        }
+        return false;
+    }
 
     touch(name);
     loaded_count++;
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[outlier-stream-ensure] '%s': loaded OK (now %d/%d), prefetching ahead...\n",
+                name.c_str(), loaded_count, window_size);
+        fflush(stderr);
+    }
 
     // Prefetch the next tensors in sorted order
     prefetch_ahead(backend, name);
@@ -197,12 +229,37 @@ bool llama_outlier_stream_cache::upload_entry(
     ggml_tensor * idx_t = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, n_blocks);
     ggml_tensor * val_t = ggml_new_tensor_2d(ctx, entry.values_type, 32, n_blocks);
 
+    if (ggml_custom_logs_enabled()) {
+        size_t idx_bytes = n_blocks * 2 * sizeof(int32_t);
+        size_t val_bytes = (entry.values_type == GGML_TYPE_Q8_0)
+            ? (size_t)n_blocks * 34
+            : (size_t)n_blocks * 32 * sizeof(ggml_bf16_t);
+        struct ggml_tensor * temp_t = ggml_new_tensor_2d(ctx, entry.values_type, 32, n_blocks);
+        size_t alloc_size = ggml_nbytes(temp_t) + ggml_nbytes(idx_t);
+        fprintf(stderr, "[outlier-stream-upload] '%s': n_blocks=%lld idx=%zuB val=%zuB alloc_req=%zuB val_type=%s idx_buf_sz=%zu val_buf_sz=%zu\n",
+                entry.name.c_str(), (long long)n_blocks, idx_bytes, val_bytes, alloc_size,
+                ggml_type_name(entry.values_type),
+                entry.idx_data.size(), entry.values_data.size());
+        fflush(stderr);
+    }
+
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
     if (!buf) {
         ggml_free(ctx);
         LLAMA_LOG_WARN("[outlier-stream] failed to alloc GPU buffer for '%s'\n",
                 entry.name.c_str());
         return false;
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[outlier-stream-upload] '%s': buffer allocated OK, addr=%p size=%zu, setting tensors...\n",
+                entry.name.c_str(),
+                ggml_backend_buffer_get_base(buf),
+                ggml_backend_buffer_get_size(buf));
+        fprintf(stderr, "[outlier-stream-upload] '%s': idx_t->data=%p val_t->data=%p\n",
+                entry.name.c_str(),
+                (void*)idx_t->data, (void*)val_t->data);
+        fflush(stderr);
     }
 
     ggml_backend_tensor_set(idx_t, entry.idx_data.data(), 0,
