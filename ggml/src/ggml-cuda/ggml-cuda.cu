@@ -2603,8 +2603,31 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
 
     if (src0->type == GGML_TYPE_DF11) {
         const int64_t n_elements = ggml_nelements(src0);
+
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: src0=%s ne[0]=%lld ne[1]=%lld n_elements=%lld data=%p nb[0]=%zu nb[1]=%zu\n",
+                    ggml_get_name(src0), (long long)src0->ne[0], (long long)src0->ne[1],
+                    (long long)n_elements, (void*)src0->data,
+                    src0->nb[0], src0->nb[1]);
+            if (src0->buffer) {
+                fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: tensor buffer size=%zu ggml_nbytes=%zu\n",
+                        ggml_backend_buffer_get_size(src0->buffer), ggml_nbytes(src0));
+            }
+            fflush(stderr);
+        }
+
         ggml_cuda_pool_alloc<ggml_bf16_t> scratch_bf16(ctx.pool(), n_elements);
         dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
+
+        if (ggml_custom_logs_enabled()) {
+            cudaStreamCaptureStatus cap_status;
+            cudaError_t err = cudaSuccess;
+            if (cudaStreamIsCapturing(ctx.stream(), &cap_status) == cudaSuccess && cap_status == cudaStreamCaptureStatusNone) {
+                err = cudaStreamSynchronize(ctx.stream());
+            }
+            fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: dequantize done, sync_err=%d, dispatching matmul\n", (int)err);
+            fflush(stderr);
+        }
 
         struct ggml_tensor src0_bf16 = *src0;
         src0_bf16.type = GGML_TYPE_BF16;
