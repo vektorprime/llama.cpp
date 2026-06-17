@@ -1007,8 +1007,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx must be I32\n", __func__, name.c_str());
             continue;
         }
-        if (values_tensor->type != GGML_TYPE_BF16 && values_tensor->type != GGML_TYPE_Q8_0) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values must be BF16 or Q8_0\n", __func__, name.c_str());
+        if (values_tensor->type != GGML_TYPE_BF16 && values_tensor->type != GGML_TYPE_Q8_0 && values_tensor->type != GGML_TYPE_Q4_0) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values must be BF16, Q8_0, or Q4_0\n", __func__, name.c_str());
             continue;
         }
         if (idx_tensor->ne[0] != 2) {
