@@ -6207,6 +6207,14 @@ void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRI
             decoded  = (int32_t)luts[lut_row * 256 + top_byte];
         }
 
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            if (buf_bits > 0) {
+                buf_bits--;
+                buf &= (1ULL << buf_bits) - 1;
+            }
+            continue;
+        }
+
         int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
         if (code_len <= 0) {
             // LUT gap: consume 1 bit to realign and retry
@@ -6310,6 +6318,14 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
             top_byte = (int32_t)((buf >> (buf_bits - 8)) & 0xFF);
             lut_row  = 256 - decoded;
             decoded  = (int32_t)luts[lut_row * 256 + top_byte];
+        }
+
+        if (decoded >= DF11_LUT_THRESHOLD) {
+            if (buf_bits > 0) {
+                buf_bits--;
+                buf &= (1ULL << buf_bits) - 1;
+            }
+            continue;
         }
 
         int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];

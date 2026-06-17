@@ -1003,6 +1003,11 @@ __global__ void dequantize_df11_kernel(
                 decoded = (int)luts[lut_row * 256 + top_byte];
             }
 
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                if (buf_bits > 0) { buf_bits--; long_buffer &= (1ULL << buf_bits) - 1; }
+                continue;
+            }
+
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
             if (code_len <= 0) {
                 if (buf_bits > 0) { buf_bits--; long_buffer &= (1ULL << buf_bits) - 1; }
@@ -1083,6 +1088,11 @@ __global__ void dequantize_df11_kernel(
                 top_byte = (int)((long_buffer >> (buf_bits - 8)) & 0xFF);
                 int lut_row = 256 - decoded;
                 decoded = (int)luts[lut_row * 256 + top_byte];
+            }
+
+            if (decoded >= DF11_LUT_THRESHOLD) {
+                if (buf_bits > 0) { buf_bits--; long_buffer &= (1ULL << buf_bits) - 1; }
+                continue;
             }
 
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
