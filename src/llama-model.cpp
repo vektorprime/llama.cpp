@@ -1417,7 +1417,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cache-pop] populating cache from %zu outlier_info entries, stream_outliers=%d ml=%p\n",
-                outlier_info.size(), (int)params.stream_outliers, (void*)ml);
+                outlier_info.size(), (int)params.stream_outliers, (const void*)ml);
         fflush(stderr);
     }
 
@@ -1503,8 +1503,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             } else if (ggml_custom_logs_enabled()) {
                 fprintf(stderr, "[delta-cache-pop] '%s': get_weight failed (idx=%s=%p val=%s=%p)\n",
                         info.name.c_str(),
-                        idx_name.c_str(), (void*)w_idx,
-                        values_name.c_str(), (void*)w_val);
+                        idx_name.c_str(), (const void*)w_idx,
+                        values_name.c_str(), (const void*)w_val);
                 fflush(stderr);
             }
         }
@@ -1613,7 +1613,7 @@ void llama_model::patch_embedding_outliers() {
                     (int)weight_on_gpu,
                     (int)(weight_tensor->data != NULL),
                     info.row_ptr.size(), info.block_col.size(),
-                    (int)(weight_tensor->buffer && weight_tensor->buffer->addr != NULL));
+                    (int)(weight_tensor->buffer && ggml_backend_buffer_get_base(weight_tensor->buffer) != NULL));
             fflush(stderr);
         }
 
