@@ -1240,7 +1240,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
     if (params.stream_outliers && ml) {
         for (const auto & [w_name, weight] : ml->weights_map) {
             // Look for idx sidecar: name.outlier_idx
-            const size_t idx_suffix_len = 13; // ".outlier_idx"
+            const size_t idx_suffix_len = 12; // ".outlier_idx"
             if (w_name.size() <= idx_suffix_len ||
                 w_name.rfind(".outlier_idx") != w_name.size() - idx_suffix_len) {
                 continue;
