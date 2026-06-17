@@ -1605,7 +1605,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--custom-logs"},
         "enable custom debug logging (for DF11 quantized models, etc.)",
-        [](common_params &, bool) {
+        [](common_params &) {
             llama_set_custom_logs(true);
             ggml_set_custom_logs(true);
         }
