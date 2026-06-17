@@ -991,8 +991,8 @@ __global__ void dequantize_df11_kernel(
 
         // Decode loop — matching CPU decoder exactly
         while (1) {
-            // Refill buffer to >= 32 bits if possible (matching CPU inner while loop)
-            while (buf_bits < 32 && extra_byte < valid_extra) {
+            // Refill buffer to >= 8 bits (one code max) if possible (matching CPU inner while loop)
+            while (buf_bits < 8 && extra_byte < valid_extra) {
                 long_buffer = (long_buffer << 8) | register_buffer[8 + extra_byte];
                 extra_byte++;
                 buf_bits += 8;
@@ -1084,7 +1084,7 @@ __global__ void dequantize_df11_kernel(
         int extra_byte = 0;
 
         while (output_idx < end_idx) {
-            while (buf_bits < 32 && extra_byte < vextra) {
+            while (buf_bits < 8 && extra_byte < vextra) {
                 long_buffer = (long_buffer << 8) | register_buffer[8 + extra_byte];
                 extra_byte++;
                 buf_bits += 8;
