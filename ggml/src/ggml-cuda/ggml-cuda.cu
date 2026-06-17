@@ -2617,7 +2617,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
         const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
         if (ggml_cuda_should_use_mmf(GGML_TYPE_BF16, cc, warp_size, src0_bf16.ne, src0_bf16.nb, src1->ne[1], false)) {
-            ggml_cuda_mul_mat_f(ctx, &src0_bf16, src1, dst);
+            ggml_cuda_mul_mat_f(ctx, &src0_bf16, src1, /*ids=*/nullptr, dst);
         } else {
             ggml_cuda_op_mul_mat(ctx, &src0_bf16, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
         }
