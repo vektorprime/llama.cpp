@@ -2630,6 +2630,12 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         }
 
         // Decode DF11 -> BF16
+        if (ggml_custom_logs_enabled()) {
+            cudaError_t pre_err = cudaGetLastError();
+            if (pre_err != cudaSuccess) {
+                fprintf(stderr, "[DF11-debug] cuda_mul_mat DF11: PRE-DEQUANTIZE stale err=%d\n", (int)pre_err);
+            }
+        }
         dequantize_df11_cuda(src0->data, scratch_bf16.ptr, n_elements, ctx.stream());
 
         if (ggml_custom_logs_enabled()) {

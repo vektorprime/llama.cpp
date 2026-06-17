@@ -1228,6 +1228,14 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
     dim3 grid((unsigned int)n_blocks, 1, 1);
     dim3 block(DF11_THREADS_PER_BLOCK, 1, 1);
 
+    if (ggml_custom_logs_enabled()) {
+        // Clear any stale error before launch
+        cudaError_t pre_err = cudaGetLastError();
+        if (pre_err != cudaSuccess) {
+            fprintf(stderr, "[DF11-debug] PRE-LAUNCH stale err=%d on stream\n", (int)pre_err);
+        }
+    }
+
     dequantize_df11_kernel<<<grid, block, smem_size, stream>>>(
         luts, codes, sm, pos, gaps,
         (nv_bfloat16 *)vy,
@@ -1236,8 +1244,8 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
 
     if (ggml_custom_logs_enabled()) {
         cudaError_t kern_err = cudaGetLastError();
-        fprintf(stderr, "[DF11-debug] kernel launch: err=%d n_blocks=%u n_luts=%u n_bytes=%u n_elements=%u\n",
-                (int)kern_err, n_blocks, n_luts, n_bytes, n_elements);
+        fprintf(stderr, "[DF11-debug] kernel launch: err=%d n_blocks=%u n_luts=%u n_bytes=%u n_elements=%u smem=%d\n",
+                (int)kern_err, n_blocks, n_luts, n_bytes, n_elements, smem_size);
         fflush(stderr);
         cudaStreamCaptureStatus cap_status;
         if (cudaStreamIsCapturing(stream, &cap_status) != cudaSuccess) cap_status = cudaStreamCaptureStatusNone;
