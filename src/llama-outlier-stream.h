@@ -113,6 +113,10 @@ struct llama_outlier_stream_cache {
     // for eviction during subsequent ensure_gpu() calls.
     void release_layer_latches(int layer);
 
+    // Evict GPU entries belonging to a specific layer (only unlatched entries).
+    // Call after release_layer_latches() to actually free GPU memory.
+    void evict_lru_for_layer(int layer, ggml_backend_t backend);
+
     // Release all latched entries — call between forward passes so
     // entries from the previous pass can be evicted.
     void release_all_latches();

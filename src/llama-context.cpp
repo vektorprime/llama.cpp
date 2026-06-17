@@ -2348,12 +2348,105 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
-    auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
-    if (status != GGML_STATUS_SUCCESS) {
-        LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+    // Per-layer streaming outlier compute: when --stream-outliers is active,
+    // split graph compute by layer to release sidecar GPU memory between layers.
+    // Uses ggml_graph_view() to create per-layer sub-graph views without copying.
+    const bool use_per_layer = model.stream_outliers() && backends.size() == 1;
+
+    if (!use_per_layer) {
+        auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+        if (status != GGML_STATUS_SUCCESS) {
+            LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+        }
+        return status;
     }
 
-    // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
+    // Allocate the full graph through the scheduler
+    ggml_backend_sched_reset(sched.get());
+    if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+        LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
+        return GGML_STATUS_ALLOC_FAILED;
+    }
+
+    ggml_backend_t gpu_backend = backends[0].get();
+
+    // Walk graph nodes and find layer boundaries
+    int n_nodes = ggml_graph_n_nodes(gf);
+    struct ggml_tensor ** nodes = ggml_graph_nodes(gf);
+
+    struct layer_range_t {
+        int layer;
+        int start_idx;
+        int end_idx;  // exclusive
+    };
+    std::vector<layer_range_t> ranges;
+
+    int current_layer = -1;
+    int range_start   = 0;
+
+    for (int i = 0; i < n_nodes; i++) {
+        const char * name = nodes[i]->name;
+        int node_layer = -1;
+        const char * blk = strstr(name, "blk.");
+        if (blk) {
+            blk += 4;
+            node_layer = atoi(blk);
+        }
+        if (node_layer != current_layer) {
+            if (i > range_start) {
+                ranges.push_back({current_layer, range_start, i});
+            }
+            current_layer = node_layer;
+            range_start   = i;
+        }
+    }
+    if (n_nodes > range_start) {
+        ranges.push_back({current_layer, range_start, n_nodes});
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[outlier-stream-compute] %d nodes, %zu layer ranges\n",
+                n_nodes, ranges.size());
+        fflush(stderr);
+    }
+
+    // Compute each layer range, releasing latches for the previous layer
+    ggml_status status = GGML_STATUS_SUCCESS;
+    int prev_layer = -2;
+
+    for (const auto & r : ranges) {
+        // Create a view into the graph for this layer's nodes only
+        struct ggml_cgraph layer_view = ggml_graph_view(gf, r.start_idx, r.end_idx);
+
+        status = ggml_backend_graph_compute(gpu_backend, &layer_view);
+        if (status != GGML_STATUS_SUCCESS) {
+            LLAMA_LOG_ERROR("%s: layer %d compute failed (error %d)\n",
+                    __func__, r.layer, status);
+            break;
+        }
+
+        // Release latches for the PREVIOUS layer so its sidecar GPU
+        // memory can be evicted by subsequent ensure_gpu() calls.
+        if (prev_layer >= 0) {
+            model.outlier_cache.release_layer_latches(prev_layer);
+            // Trigger eviction of unlatched entries from the previous layer
+            // by briefly setting the loaded_count check to evict LRU entries
+            int saved_count = model.outlier_cache.gpu_loaded_count();
+            for (int evict_tries = 0; evict_tries < 10; evict_tries++) {
+                int before = model.outlier_cache.gpu_loaded_count();
+                model.outlier_cache.evict_lru_for_layer(prev_layer, gpu_backend);
+                if (model.outlier_cache.gpu_loaded_count() == before) break;
+            }
+        }
+        prev_layer = r.layer;
+    }
+
+    // Release last layer's latches
+    if (prev_layer >= 0 && status == GGML_STATUS_SUCCESS) {
+        model.outlier_cache.release_layer_latches(prev_layer);
+    }
+
+    ggml_backend_synchronize(gpu_backend);
 
     return status;
 }

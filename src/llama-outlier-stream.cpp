@@ -179,6 +179,23 @@ void llama_outlier_stream_cache::release_layer_latches(int layer) {
     }
 }
 
+void llama_outlier_stream_cache::evict_lru_for_layer(int layer, ggml_backend_t backend) {
+    // Find LRU entries belonging to the given layer that are loaded but not latched
+    for (auto it = lru.rbegin(); it != lru.rend(); ++it) {
+        auto eit = entries.find(*it);
+        if (eit == entries.end()) continue;
+        auto & entry = eit->second;
+        if (entry.layer == layer && entry.loaded && !entry.latched) {
+            LLAMA_LOG_DEBUG("[outlier-stream] evicting layer %d '%s' from GPU\n",
+                    layer, it->c_str());
+            free_entry_gpu(entry);
+            entry.loaded = false;
+            loaded_count--;
+            return; // evict one per call; called in a loop
+        }
+    }
+}
+
 void llama_outlier_stream_cache::release_all_latches() {
     for (auto & [name, entry] : entries) {
         entry.latched = false;
