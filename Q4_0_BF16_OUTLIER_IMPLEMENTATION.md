@@ -2,7 +2,7 @@
 
 ## Overview
 
-Q4_0_BF16_OUTLIER extends the Q8_0_BF16_OUTLIER pattern to Q4_0 base quantization: base Q4_0 matmul + sparse BF16 residual correction for high-error blocks.
+Q4_0_BF16_OUTLIER extends the Q8_0_BF16_OUTLIER pattern to Q4_0 base quantization: base Q4_0 matmul + sparse residual correction for high-error blocks. The residual delta values can be stored as BF16, Q8_0, or Q4_0 (selectable via `--outlier-value-type`).
 
 **Architecture:** Separate `q4_outlier_*` functions mirror `q8_outlier_*` — no parameterization of existing Q8 code.
 
@@ -80,30 +80,57 @@ Y_corr[r,t] = ggml_mul_mat_outlier_blocks(I, V, X)      // Sparse BF16 correctio
 Y[r,t] = Y_base + Y_corr                                   // ggml_add
 ```
 
-**Kernels unchanged:** `ggml_compute_forward_mul_mat_outlier_blocks()` (CPU) and `outlier_blocks_kernel()` (CUDA) operate purely on BF16 values + I32 indices — base type agnostic.
+**Kernels:** `ggml_compute_forward_mul_mat_outlier_blocks()` (CPU) and `outlier_blocks_kernel()` (CUDA) handle BF16, Q8_0, and Q4_0 delta values. The kernel dispatch selects the correct dequant function based on `values->type`.
 
 **Graph builder unchanged:** `build_lora_mm()` wraps `ggml_mul_mat` with correction + `ggml_add` for any tensor with outlier info.
+
+## Token Embedding Correction
+
+Token embeddings (`token_embd.weight`) use `ggml_get_rows` for lookup, which has no outlier correction op. Instead, `patch_embedding_outliers()` pre-patches the embedding tensor at load time:
+
+1. **Dequantize** each row from Q4_0 → FP32
+2. **Add** outlier block delta values to the corresponding 32-element slots
+3. **Re-quantize** the patched row back to Q4_0
+4. **Write** the patched row back to GPU/CPU memory — the embedding tensor is permanently corrected
+
+This works for all delta types (BF16, Q8_0, Q4_0). In streaming mode, delta values are read from the `outlier_cache` CPU-side copy rather than the (null) GPU tensor pointers.
+
+| Delta type | values_element_size | Dequant function |
+|-----------|---------------------|------------------|
+| BF16 | 64 (32×bf16) | `ggml_bf16_to_fp32` |
+| Q8_0 | 34 (sizeof block_q8_0) | `dequantize_row_q8_0` |
+| Q4_0 | 18 (sizeof block_q4_0) | `dequantize_row_q4_0` |
 
 ## Storage Cost
 
 | Component | Size per block |
 |-----------|---------------|
 | Q4_0 base | 4.5 bpw (18 bytes / 32 values) |
-| BF16 delta sidecar | 18 bpw (64 bytes / 32 values) |
 | I32 index sidecar | 2 bpw (8 bytes / 32 values) |
+| BF16 delta sidecar | 18 bpw (64 bytes / 32 values) |
+| Q8_0 delta sidecar | 8.5 bpw (34 bytes / 32 values) |
+| **Q4_0 delta sidecar** | **4.5 bpw (18 bytes / 32 values)** |
 
-Effective bpw with fraction `f` protected:
+Effective bpw with fraction `f` protected and delta type:
 ```
-bpw ≈ 4.5 + 18f
+bpw ≈ 4.5 + (delta_bpw × f)
 ```
 
-| f | bpw |
-|---|-----|
-| 1% | 4.68 |
-| 5% | 5.40 |
-| 10% | 6.30 |
+| f | BF16 (18 bpw) | Q8_0 (8.5 bpw) | **Q4_0 (4.5 bpw)** |
+|---|--------------|----------------|---------------------|
+| 1% | 4.68 | 4.59 | **4.55** |
+| 5% | 5.40 | 4.93 | **4.73** |
+| 10% | 6.30 | 5.35 | **4.95** |
 
-**Recommendation:** Keep `f` small (1-5%). Beyond ~10%, sidecar cost pushes into Q5/Q6 territory with a slower sparse correction path.
+### Measured (Qwen3.5-2B, f≈67% via max-abs-error=0.002)
+
+| Delta type | Sidecar size | Total model | Same top P |
+|-----------|-------------|-------------|------------|
+| BF16 | ~1500 MB | ~2.6 GB | ~89-91% |
+| Q8_0 | ~800 MB (est.) | ~1.9 GB (est.) | TBD |
+| **Q4_0** | **572 MB** | **1.6 GB** | **~84%** |
+
+**Recommendation:** BF16 for maximum quality, Q4_0 for maximum compression. Q8_0 offers a middle ground (not yet benchmarked).
 
 ## Metadata
 
@@ -111,24 +138,29 @@ bpw ≈ 4.5 + 18f
 - `llama.q4_outlier.version` = 1
 - `llama.q4_outlier.block_size` = 32
 - `llama.q4_outlier.base_type` = "q4_0"
-- `llama.q4_outlier.value_type` = "bf16"
+- `llama.q4_outlier.value_type` = "bf16", "q8_0", or "q4_0" (delta storage format)
 - `llama.q4_outlier.index_encoding` = "row_block_col"
 - `llama.q4_outlier.store` = "delta"
 - `llama.q4_outlier.tensor_count`
 - Per-tensor: `llama.q4_outlier.tensor.{i}.name`, `.index`, `.values`, `.n_blocks`
 
-**Sidecar tensor names:** `{base_name}.outlier_idx` (I32, [2, n_blocks]), `{base_name}.outlier_bf16` (BF16, [32, n_blocks])
+**Sidecar tensor names:** `{base_name}.outlier_idx` (I32, [2, n_blocks]), `{base_name}.outlier_bf16` (type varies: BF16/Q8_0/Q4_0, [32, n_blocks])
 
 ## CLI Usage
 
 ```bash
-# Basic: use ftype string (thresholds from --outlier-* flags)
-llama-quantize --outlier-blocks bf16 --outlier-max-frac 0.05 \
-  model.gguf model-q4-outlier.gguf Q4_0_BF16_OUTLIER
+# Basic: use ftype string
+llama-quantize --outlier-max-frac 0.05 model.gguf out.gguf Q4_0_BF16_OUTLIER
 
-# Alternative: explicit base selection
-llama-quantize --outlier-base q4_0 --outlier-max-frac 0.05 \
-  model.gguf model-q4-outlier.gguf
+# With Q8_0 delta sidecar (34 bytes/block, 47% smaller than BF16)
+llama-quantize --outlier-base q4_0 --outlier-value-type q8_0 \
+  --outlier-max-abs-error 0.002 --outlier-max-frac 0.99 \
+  model-bf16.gguf model-q8d.gguf Q4_0_BF16_OUTLIER
+
+# With Q4_0 delta sidecar (18 bytes/block, 72% smaller than BF16)
+llama-quantize --outlier-base q4_0 --outlier-value-type q4_0 \
+  --outlier-max-abs-error 0.002 --outlier-max-frac 0.99 \
+  model-bf16.gguf model-q4d.gguf Q4_0_BF16_OUTLIER
 
 # With imatrix for weighted scoring
 llama-quantize --outlier-base q4_0 --outlier-max-frac 0.03 \
@@ -136,6 +168,7 @@ llama-quantize --outlier-base q4_0 --outlier-max-frac 0.03 \
 ```
 
 Shared `--outlier-*` flags set both Q8 and Q4 params; `--outlier-base q4_0` sets ftype and enables Q4 mode.
+`--outlier-value-type` selects delta storage: `bf16` (default), `q8_0`, or `q4_0`.
 
 ## Bugs Fixed
 
@@ -151,11 +184,17 @@ Shared `--outlier-*` flags set both Q8 and Q4 params; `--outlier-base q4_0` sets
 
 | File | Role |
 |------|------|
-| `include/llama.h` | `LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER`, `q4_outlier_*` params |
+| `include/llama.h` | `LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER`, `q4_outlier_*` params, `LLAMA_OUTLIER_VALUE_TYPE_{BF16,Q8_0,Q4_0}` enum |
 | `src/llama-q8-outlier.h` | Q4 metadata keys (`LLAMA_Q4_OUTLIER_*`) |
-| `src/llama-quant.cpp` | `q4_outlier_*` functions: candidate detection, analysis, deltas, reconstruction, metadata |
-| `src/llama-model-loader.{h,cpp}` | `has_q4_outlier_metadata()`, `read_q4_outlier_metadata()`, Q4 sidecar validation |
-| `tools/quantize/quantize.cpp` | `--outlier-base q4_0` CLI, ftype string, param propagation |
+| `src/llama-quant.cpp` | `q4_outlier_*` functions: candidate detection, analysis, deltas (BF16/Q8_0/Q4_0), reconstruction, metadata |
+| `src/llama-model-loader.{h,cpp}` | `has_q4_outlier_metadata()`, `read_q4_outlier_metadata()`, Q4 sidecar validation (accepts BF16, Q8_0, Q4_0) |
+| `src/llama-model.cpp` | `build_outlier_info` (non-streaming + streaming cache registration), `patch_embedding_outliers` (token_embd pre-patch with Q4_0 delta support) |
+| `src/llama-outlier-stream.{h,cpp}` | Streaming outlier cache: `upload_entry`, `add_entry`, Q4_0 element size (18 bytes) |
+| `src/llama-context.cpp` | `graph_compute` dispatches to outlier correction via `build_lora_mm` |
+| `src/llama-graph.cpp` | `build_lora_mm` — wraps matmul with outlier correction |
+| `ggml/src/ggml-cuda/outlier.cu` | CUDA kernels: `outlier_blocks_kernel_{bf16,q8_0,q4_0}`, dispatch on values_type |
+| `ggml/src/ggml-cpu/ops.cpp` | CPU kernel: `ggml_compute_forward_mul_mat_outlier_blocks` with Q4_0 dequant |
+| `tools/quantize/quantize.cpp` | `--outlier-base q4_0`, `--outlier-value-type bf16|q8_0|q4_0` CLI, ftype string, param propagation |
 
 ## Bugs Fixed (continued)
 
@@ -170,8 +209,18 @@ Shared `--outlier-*` flags set both Q8 and Q4 params; `--outlier-base q4_0` sets
 | Scoring FP16 round-trip mismatch | Simulate FP16 scale round-trip in scoring | `db3c7f804` |
 | Zero-L2 tensors | GPU idx sampling diagnostic, bounds checks | `c43ca78a3` |
 | Sidecar size not reported | Show sidecar size and total size in quantize output | `b4007e788` |
-| token_embd protected but not corrected | Skip token_embd from outlier protection | `874a6033a` |
 | Ratio pre-filter too aggressive (max-abs-error) | Remove ratio gate from max-abs-error path | `948e01a06` |
+
+### Q4_0 Delta Sidecar Bugs (2026-06-17)
+
+| Bug | Fix | Commit |
+|-----|-----|--------|
+| `build_outlier_info` rejected Q4_0 values tensor | Added `GGML_TYPE_Q4_0` to type check | `23e1ccf59` |
+| Model loader rejected Q4_0 values tensor | Added `GGML_TYPE_Q4_0` to validation | `5a9c72552` |
+| `patch_embedding_outliers` missing Q4_0 branch | Added Q4_0 values_element_size and dequant branch | `63937f399` |
+| Debug logging OOB read for Q4_0 values | Added Q4_0 branch, fixed BF16 hardcoded sizes → `ggml_nbytes` | `b45675791` |
+| Phase 1b `val_elem` defaulted to 64 bytes for Q4_0 | Added Q4_0 branch (18 bytes) | `16a45e84e` |
+| Streaming GGUF read `val_nbytes` defaulted to 64 bytes | Added Q4_0 branch (18 bytes) in Phase 1b streaming path | `03ab5fe5c` |
 
 ## Selection Modes
 
@@ -197,15 +246,18 @@ Protects any block where `|W[j] - W_q4[j]| > threshold` for any element. No rati
 
 - **Layer-split mode:** Works without `--sm tensor` on single GPU
 - **Tensor-split mode:** Works with `--sm tensor`
-- **Same top P:** ~86% (Q4_0 base error in 98% unprotected blocks limits improvement vs Q8_0's ~97%)
-- **KL divergence:** Improves with correction (verified: perplexity tool applies correction correctly)
-- **BF16 delta precision:** 0.05% relative error, negligible impact on same top P
+- **`--stream-outliers`:** Works correctly with all delta types (BF16, Q8_0, Q4_0). Sidecars streamed from CPU to GPU on-demand.
+- **Non-streaming:** Works with BF16 and Q8_0 deltas. **Q4_0 deltas currently crash** in non-streaming mode (ggml backend interaction with Q4_0 tensors in permanent GPU buffers). Use `--stream-outliers` with Q4_0 deltas.
+- **Q4_0 delta quality (Qwen3.5-2B):** Same top P ~84% (vs ~89% BF16 baseline), KLD ~0.093 (vs ~0.04-0.06)
+- **Q4_0 delta compression:** 62% smaller sidecar vs BF16, 38% smaller total model
 
 ## Known Limitations
 
 - **MoE multi-expert delta computation:** Only first expert handled (same as Q8)
-- **`ggml_get_rows` (embedding lookup):** No correction applied — graceful degradation to plain Q4_0; token_embd skipped from protection
+- **Token embedding correction:** `patch_embedding_outliers()` pre-patches token embeddings at load time by dequantizing Q4_0 rows, adding delta values, and re-quantizing. Only supports Q4_0 base type. Works with BF16, Q8_0, and Q4_0 delta types.
+- **Non-streaming Q4_0 deltas crash:** Loading Q4_0 sidecar tensors as permanent GPU tensors causes a segfault during inference. Root cause likely in ggml backend buffer allocation for Q4_0 tensors with shape [32, n_blocks]. Workaround: use `--stream-outliers`.
 - **Block size hardcoded to 32** in kernels (matches QK4_0 = 32, but not parametric)
+- **Double-quantization quality cost:** Q4_0 deltas on Q4_0 base means deltas are quantized twice. Each 4-bit quantization step adds ~5-6% same-top-P loss.
 
 ## Streaming Outlier Cache Lessons Learned
 
