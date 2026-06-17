@@ -206,3 +206,50 @@ Protects any block where `|W[j] - W_q4[j]| > threshold` for any element. No rati
 - **MoE multi-expert delta computation:** Only first expert handled (same as Q8)
 - **`ggml_get_rows` (embedding lookup):** No correction applied — graceful degradation to plain Q4_0; token_embd skipped from protection
 - **Block size hardcoded to 32** in kernels (matches QK4_0 = 32, but not parametric)
+
+## Streaming Outlier Cache Lessons Learned
+
+The `--stream-outliers` feature streams outlier sidecar data from RAM to VRAM with a sliding window. Here are the bugs we hit and what would have been nice to know:
+
+### 1. Off-by-one in suffix length (subtle, catastrophic)
+
+The streaming registration code in `build_outlier_info` Phase 1b uses `rfind(".outlier_idx")` with `idx_suffix_len`. The original code had `idx_suffix_len = 13` (copy-pasted from `.outlier_bf16` which IS 13 chars). But `.outlier_idx` is only 12 chars. This made the rfind check ALWAYS fail, so NO entries were registered. Result: streaming mode was silently equivalent to base model with no outliers (83% top-p agreement, same as baseline).
+
+**Moral:** When using rfind-based suffix matching, verify the string lengths. Test with one known-good entry to confirm the pipeline works end-to-end.
+
+### 2. Null `info.values` in `patch_embedding_outliers`
+
+In streaming mode, Phase 1b sets `info.values = nullptr` and `info.idx = nullptr` (since sidecar tensors aren't loaded in GPU memory). But `patch_embedding_outliers()` unconditionally dereferenced `info.values->buffer`. Any model with a Q4_0 token_embd tensor and outlier blocks would segfault.
+
+**Fix:** Guard with `if (info.values)` and fall back to reading from `outlier_cache.entries[name].values_data` (CPU-side copy populated during model load).
+
+**Moral:** When adding a mode that changes pointer semantics, audit ALL consumers of those pointers.
+
+### 3. `weight_tensor->data` can be NULL even when buffer exists
+
+With `--no-mmap`, backend buffer allocation sets up the buffer (`tensor->buffer`) but `tensor->data` can be NULL for some reasons (GPU allocation nuances). The original code called `ggml_backend_tensor_get()` unconditionally when `weight_on_gpu` was true, which asserts `tensor->data != NULL`.
+
+**Fix:** Add `&& weight_tensor->data` guard to both the read and write-back paths in `patch_embedding_outliers`.
+
+**Moral:** GPU tensor data pointers are not guaranteed after allocation — always check `.data != NULL` before calling `ggml_backend_tensor_get/set`.
+
+### 4. `--custom-logs` is indispensable
+
+The codebase uses `ggml_custom_logs_enabled()` to gate verbose debug output. Without it, silent failures like the off-by-one bug go undetected. Always add `--custom-logs` instrumentation at key decision points: entry registration, cache population source, value data source, upload sizes, etc.
+
+### 5. Two-phase loading must be consistent
+
+Phase 1a (non-streaming) looks for sidecar tensors in `tensors_by_name`. Phase 1b (streaming) looks for them in `ml->weights_map`. When streaming is enabled, sidecar tensors are NOT created in GPU contexts, so Phase 1a finds nothing and Phase 1b must handle everything. Phase 1b then uses `tensors_map.find(parent_name)` to get the tensor pointer — this is different from Phase 1a's iteration over `tensors_by_name`. Ensure the tensor pointers match between phases.
+
+### 6. Use-after-free from sliding window eviction during graph build
+
+The CUDA kernel failed with `cudaMemcpy: invalid argument` because the graph builder's `build_lora_mm()` creates graph nodes referencing cached GPU tensor pointers, but eviction can free those tensors before graph compute runs.
+
+**Root cause:** A single transformer layer has ~7-8 weight tensors. With `window=6`, the 7th `ensure_gpu()` evicts the 1st tensor (now LRU). But graph nodes built from the 1st tensor still hold dangling pointers to that freed GPU buffer. When the CUDA kernel executes, `idx->data` is freed memory → `cudaMemcpy` fails.
+
+**Fix:** Two-part solution:
+1. **Latched entries:** `llama_outlier_cache_entry.latched` flag. Set to `true` after `ensure_gpu()` uploads data. `evict_lru()` skips entries with `latched=true`.
+2. **Release between passes:** `release_all_latches()` clears all latches. Called at the start of `build_graph()` (before each graph build). This ensures entries from the *previous* forward pass can be evicted, but entries used in the *current* graph build cannot.
+3. **Window overflow guard:** When all loaded entries are latched and a new upload is needed, `evict_lru()` returns without evicting anything. The `while (loaded_count >= window_size)` loop breaks when `loaded_count` doesn't decrease — the window temporarily exceeds the limit. The excess entries are cleaned up on the next `release_all_latches()` + eviction cycle.
+
+**Moral:** Any cache that evicts entries during graph building must track which entries have graph nodes referencing them. A simple "latch" mechanism (mark in-use) prevents use-after-free without complex reference counting.

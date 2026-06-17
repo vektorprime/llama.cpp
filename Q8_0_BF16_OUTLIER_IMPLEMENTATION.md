@@ -210,3 +210,45 @@ For each 32-weight block:
 - **`int32` op_params** — `n_rows_out`/`n_cols` limited to INT32_MAX
 - **CPU backend required** — MIRRORED ops run on all backends; CPU kernel zeros output
 - **Accuracy issue** — 53% top-p vs 98% for plain Q8_0 (under investigation)
+
+## Streaming Outlier Cache Lessons Learned
+
+The `--stream-outliers` feature streams outlier sidecar data from RAM to VRAM with a sliding window. These were all discovered during Q4_0 testing but apply equally to Q8_0.
+
+### 1. Off-by-one in suffix length
+
+`build_outlier_info` Phase 1b uses `rfind(".outlier_idx")` with a length constant. The original value was 13 (copy-pasted from `.outlier_bf16` which is 13 chars), but `.outlier_idx` is 12 chars. This made the rfind check always fail, so zero entries were registered. Streaming mode was silently identical to base model.
+
+**Fix:** Use exact suffix length. `.outlier_idx` = 12, `.outlier_bf16` = 13.
+
+### 2. Null `info.values` in `patch_embedding_outliers`
+
+Streaming mode sets `info.values = null` (sidecar not in GPU). But `patch_embedding_outliers()` unconditionally dereferenced `info.values->buffer`. Segfault on any model with Q4_0 token_embd + outliers.
+
+**Fix:** Guard with `if (info.values)` and fall back to `outlier_cache.entries[name].values_data`.
+
+### 3. GPU tensor `data` can be NULL even with valid buffer
+
+With `--no-mmap`, the buffer pointer can be valid while `tensor->data` is NULL. Calling `ggml_backend_tensor_get/set` asserts on NULL data.
+
+**Fix:** Add `&& weight_tensor->data` guards before backend tensor I/O calls.
+
+### 4. `--custom-logs` is essential debugging tool
+
+`ggml_custom_logs_enabled()` gates debug output. Without it, silent failures go undetected. Add instrumentation at every decision point: entry registration, cache population source, upload sizes, tensor data addresses.
+
+### 5. Use-after-free from eviction during graph build
+
+Graph nodes reference GPU tensor pointers from the cache. If eviction frees those buffers before compute runs, the CUDA kernel reads freed memory → `cudaMemcpy: invalid argument`.
+
+**Root cause:** A single layer has ~7-8 weight tensors. Window=6 means the 7th tensor evicts the 1st, but graph nodes built from the 1st tensor still reference the freed buffer.
+
+**Fix:** Latching mechanism:
+- `entry.latched = true` after upload
+- `evict_lru()` skips latched entries
+- `release_all_latches()` called at `build_graph()` start to clear latches from previous pass
+- When all loaded entries are latched, the while loop breaks (temporary window overflow)
+
+### 6. `ggml_backend_buffer` is forward-declared
+
+In `ggml.h`, `ggml_backend_buffer` is only forward-declared. Use `ggml_backend_buffer_get_base()` instead of `buffer->addr`. Use `const void*` casts for const-correctness in format strings.
