@@ -629,6 +629,129 @@ CPU dequantize unaffected (doesn't use pos array).
 
 **Fix** (`ggml-cuda/ggml-cuda.cu`): Explicitly set `nb[2]` and `nb[3]` based on the BF16 element stride after overwriting `nb[0]` and `nb[1]`.
 
+### 6.20 Compression Fix: Remove Frequency Augmentation
+
+**Problem**: Section 6.14's `freqs[sym] = max(freqs[sym], 1)` for all 256 symbols forced a balanced Huffman tree where every code was exactly 8 bits. This gave zero compression: 16.64 BPW (worse than BF16's 16.00 BPW due to LUT/pos/gaps overhead). `n_bytes == n_elements` everywhere.
+
+**Fix** (`ggml-quants.c`): Removed the frequency augmentation block from both `quantize_df11()` and `quantize_row_df11_ref()`. Huffman tree now built from real frequencies only. Codes for frequent exponents drop to 1-6 bits, average ~7 bits → 15.56 BPW (working compression).
+
+**Side effect**: Removing augmentation means `luts[0x00]` maps to a valid symbol (e.g. 106) for short Huffman codes whose prefix is all-zero. This is correct for the bitstream, but creates a new problem in the GPU kernel when threads have zero-filled register_buffer slots (see 6.23).
+
+### 6.21 GPU Refill Threshold: 32 → 8
+
+**Problem**: The GPU kernel's refill loop used `while (buf_bits < 32)` matching the original multi-level LUT design (codes up to 32 bits). With MAX_HUFFMAN_BITS=8, every byte in the codes array is a complete code. Refilling prematurely (at 32 bits remaining) caused threads to load bytes from the next thread's data segment when they could still decode 4-24 more codes from their own buffer. The extra bytes produced phantom symbols, overflowing `write_buf`.
+
+**Fix** (`ggml-cuda/convert.cu`): Changed refill condition from `buf_bits < 32` to `buf_bits < 8` in both Phase 3-5 (counting) and Phase 7 (decode). A refill only when absolutely necessary — fewer than 8 bits remain, which is insufficient for a LUT byte lookup.
+
+### 6.22 Phantom Element Root Cause Analysis
+
+**Problem**: After the threshold fix, the GPU still crashed with `err=700`. Simulated data-flow trace revealed that `valid_extra = min(1, n_bytes - vend)` gave `1` for **all 512 threads per block** (not just the last), because `n_bytes` (~12M) vastly exceeds any single thread's `vend` (max ~4096 bytes from start). Every thread decoded 1 phantom element from its refill byte → 512 phantom elements per block → `write_buf` overflow beyond the +512 slack when combined with the largest block (max_elem=5086).
+
+**Root cause trace** (block 0 of `attn_qkv.weight`):
+- `pos[1] - pos[0] = 4819` real elements
+- 512 threads × 1 phantom = 512 phantoms
+- Block total = 4819 + 512 = 5331
+- `smem_write = (5086 + 512) × 2 = 11196 bytes = 5598` slots
+- 5331 < 5598 → barely within limit
+- But blocks with `max_elem=5086`: 5086 + 512 = 5598 = exact limit; any 1-bit code pushes it over
+- The gap mechanism can't compensate: the encoder computes gaps from a linear bitstream with no per-thread refill concept
+
+### 6.23 Zero-Fill Phantom Elements (Partial Threads)
+
+**Problem**: Threads near the end of `codes[]` have only a few valid bytes loaded; the remaining `register_buffer[8..11]` slots stay at zero (initialized). After removing augmentation (6.20), `luts[0x00]` = a valid symbol (e.g. 106 with code_len > 0). The decoder processed zero bytes as valid Huffman codes, producing massive phantom counts — thread 1332655 with 2 valid bytes + 6 zero bytes would decode ~20 phantom codes. Cumulative effect across dozens of partial threads in the last block exceeded the +512 slack.
+
+**Fix** (`ggml-cuda/convert.cu`):
+1. Track `n_my_bytes` (count of valid primary bytes loaded from `codes[]`).
+2. Build `long_buffer` only from `n_my_bytes` bytes, set `buf_bits = n_my_bytes × 8`.
+3. Add `if (buf_bits > 0)` guard after gap skip — threads with gap consuming all available bits skip the decode loop entirely.
+
+### 6.24 Gap-Based Valid Extra (Final Fix)
+
+**Problem**: The `n_bytes`-based `valid_extra` formula (`n_bytes - vend`, capped at 1) gave refill permission to every thread regardless of whether it actually had a cross-boundary code. With gap=0 (byte-aligned codes, the common case), threads have 64 complete bits and need 0 refill. The gap value indicates whether a thread's 64-bit segment starts at a code boundary (gap=0) or mid-code (gap>0). Only threads with `buf_bits = 64 - gap < DF11_MAX_HUFFMAN_BITS` (= 8) need refill — about 11% of threads (those with gap ≥ 57).
+
+**Fix** (`ggml-cuda/convert.cu`): Changed valid_extra/vextra from n_bytes-based to gap-based:
+```c
+int32_t valid_extra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
+```
+Applied to both Phase 3-5 and Phase 7. Phantom count drops from 512 to ~56 per block (11% × 512 threads), well within the +512 slack.
+
+### 6.25 Shared Memory Slack Expansion
+
+**Problem**: The original smem_write slack of +1 element was insufficient for any phantom count. Increased to +16, then to +DF11_THREADS_PER_BLOCK (512). The final +512 slack covers the worst-case phantom count from gap-based valid_extra: ~56 threads × 1-8 phantoms (depending on code lengths) = up to 448 phantoms.
+
+**Fix** (`ggml-cuda/convert.cu`):
+```c
+int smem_write = (max_elem + DF11_THREADS_PER_BLOCK) * sizeof(uint16_t);
+```
+
+### 6.26 DF11_MAX_HUFFMAN_BITS Added to CUDA File
+
+The constant `DF11_MAX_HUFFMAN_BITS = 8` was defined in `ggml-quants.c` but was also needed in `ggml-cuda/convert.cu` for the gap-based valid_extra check. Added as a `#define` alongside the other DF11 constants.
+
+### 6.27 Diagnostic Debug Prints
+
+Added host-side debug to print pos array boundaries and shared memory sizes:
+```
+pos[0]=0 pos[1]=4819 pos[2602]=12578858 pos[2603]=12582912
+max_elem=5086 smem_counters=2048 smem_write=11196 smem_size=13244
+```
+This confirmed that `max_elem=5086` and that the slack was reachable at 5331-5598 total elements.
+
+### 6.28 Files Modified Summary (Sections 6.20-6.27)
+
+| # | File | Change |
+|---|------|--------|
+| 6.20 | `ggml/src/ggml-quants.c` | Remove frequency augmentation from `quantize_df11()` and `quantize_row_df11_ref()` |
+| 6.20 | `ggml/src/ggml-quants.c` | Use real `freqs` directly for `total_bits_exact` (was `freqs_saved`) |
+| 6.21 | `ggml/src/ggml-cuda/convert.cu` | Refill threshold `buf_bits < 32` → `buf_bits < 8` |
+| 6.22-6.24 | `ggml/src/ggml-cuda/convert.cu` | `valid_extra`/`vextra`: n_bytes-based → gap-based (`buf_bits < 8 ? 1 : 0`) |
+| 6.23 | `ggml/src/ggml-cuda/convert.cu` | Track `n_my_bytes`, build `long_buffer` from valid bytes only |
+| 6.23 | `ggml/src/ggml-cuda/convert.cu` | `buf_bits > 0` guard after gap skip in Phase 3-5 and Phase 7 |
+| 6.25 | `ggml/src/ggml-cuda/convert.cu` | `smem_write` slack: +1 → +16 → +DF11_THREADS_PER_BLOCK (512) |
+| 6.26 | `ggml/src/ggml-cuda/convert.cu` | Added `#define DF11_MAX_HUFFMAN_BITS 8` |
+| 6.27 | `ggml/src/ggml-cuda/convert.cu` | Debug prints for `max_elem`, `smem_size`, `pos[]` values |
+
+### 6.29 Key Constants (Current State)
+
+| Constant | Value | File |
+|---|---|---|
+| `DF11_MAX_HUFFMAN_BITS` | 8 | `ggml-quants.c`, `convert.cu` |
+| `DF11_LUT_THRESHOLD` | 192 | `ggml-quants.c`, `convert.cu` |
+| `DF11_BYTES_PER_THREAD` | 8 | `convert.cu` |
+| `DF11_THREADS_PER_BLOCK` | 512 | `convert.cu` |
+| `refill threshold` | `buf_bits < 8` | `convert.cu` (GPU kernel, both phases) |
+| `valid_extra` | `(buf_bits < 8) ? 1 : 0` | `convert.cu` (gap-based, both phases) |
+| `smem_write` slack | `+DF11_THREADS_PER_BLOCK` (512) | `convert.cu` |
+| `max Huffman depth` | 8 (enforced by `df11_build_huffman` retry loop) | `ggml-quants.c` |
+
+### 6.30 Architecture Summary (GPU Decode Flow)
+
+```
+Kernel: dequantize_df11_kernel (512 threads/block, n_blocks blocks)
+┌────────┬──────────────────────────────────────────────────────────┐
+│ Phase  │ Operation                                                │
+├────────┼──────────────────────────────────────────────────────────┤
+│ 1      │ Load codes[ts..ts+11] → register_buffer[12]             │
+│        │ Track n_my_bytes = valid primary bytes (0..7)           │
+│ 2      │ Read 5-bit gap from packed MSB-first gaps[] array       │
+│ 3-5    │ Build long_buffer from n_my_bytes valid bytes           │
+│        │ buf_bits = n_my_bytes*8 - gap                           │
+│        │ valid_extra = (buf_bits < 8) ? 1 : 0   ← gap-based     │
+│        │ Decode Huffman: LUT[top_byte] → symbol → code_len       │
+│        │ Refill (when buf_bits<8 and extra_byte<valid_extra)     │
+│        │ Fallback: code_len≤0 → consume 1 bit → continue         │
+│ 6      │ Parallel prefix sum (exclusive scan) on thread_counter  │
+│ 7      │ Re-decode with same logic, write BF16 → write_buf[]     │
+│ 8      │ Scatter from write_buf → global output buffer           │
+└────────┴──────────────────────────────────────────────────────────┘
+
+Key invariants:
+- n_my_bytes ensures zero-fill register slots never decoded as symbols
+- Gap-based valid_extra minimizes phantom elements (0 for most threads)
+- smem_write slack of +512 absorbs residual phantom elements
+- buf_bits>0 guard skips decode when gap consumes all available bits
+```
+
 ---
 
 *End of implementation document.*
