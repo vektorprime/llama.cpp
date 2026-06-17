@@ -38,9 +38,13 @@ struct llama_outlier_cache_entry {
     ggml_tensor    * idx_gpu    = nullptr;
     ggml_tensor    * values_gpu = nullptr;
 
-    // Latched: entry was used in the current graph build and must NOT be
-    // evicted until after compute completes. Call release_all_latches()
-    // between forward passes.
+    // Layer index extracted from tensor name (e.g. blk.0.attn_q → layer 0).
+    // -1 for non-layer tensors (token_embd, output).
+    int              layer     = -1;
+
+    // Latched: entry was used in the current graph compute pass and must NOT
+    // be evicted until its layer's compute is done. Call release_layer_latches()
+    // after computing each layer.
     bool             latched   = false;
 
     // Total byte size on GPU (idx + values)
@@ -80,6 +84,7 @@ struct llama_outlier_stream_cache {
     // --- Lifecycle ---
 
     // Register a new entry with CPU-side data (called at model load).
+    // Extracts layer index from tensor name.
     void add_entry(
         const std::string & name,
         const int32_t     * idx_data,
@@ -100,8 +105,13 @@ struct llama_outlier_stream_cache {
 
     // Ensure the entry for `name` is loaded on GPU. Also prefetches
     // the next N tensors (up to window_size) in sorted order.
-    // Latches the entry so it cannot be evicted until release_all_latches().
+    // Latches the entry so it cannot be evicted until release_layer_latches().
     bool ensure_gpu(ggml_backend_t backend, const std::string & name);
+
+    // Release latched entries for a specific layer — call after computing
+    // that layer's graph nodes. Entries from released layers become eligible
+    // for eviction during subsequent ensure_gpu() calls.
+    void release_layer_latches(int layer);
 
     // Release all latched entries — call between forward passes so
     // entries from the previous pass can be evicted.

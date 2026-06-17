@@ -39,6 +39,18 @@ void llama_outlier_stream_cache::add_entry(
     size_t total = (size_t)n_blocks * elem_bytes;
     entry.values_data.assign(values_data, values_data + total);
 
+    // Extract layer index from tensor name (e.g. "blk.3.attn_q.weight" → 3)
+    entry.layer = -1;
+    const char * blk_prefix = "blk.";
+    size_t blk_pos = name.find(blk_prefix);
+    if (blk_pos != std::string::npos) {
+        size_t dot_after = name.find('.', blk_pos + 4);
+        if (dot_after != std::string::npos) {
+            std::string layer_str = name.substr(blk_pos + 4, dot_after - blk_pos - 4);
+            entry.layer = std::stoi(layer_str);
+        }
+    }
+
     entries[name] = std::move(entry);
 }
 
@@ -146,6 +158,25 @@ bool llama_outlier_stream_cache::ensure_gpu(ggml_backend_t backend, const std::s
     prefetch_ahead(backend, name);
 
     return true;
+}
+
+void llama_outlier_stream_cache::release_layer_latches(int layer) {
+    for (auto & [name, entry] : entries) {
+        if (entry.layer == layer && entry.latched) {
+            entry.latched = false;
+        }
+    }
+    if (ggml_custom_logs_enabled()) {
+        int count = 0;
+        for (const auto & [n, e] : entries) {
+            if (e.layer == layer && e.loaded) count++;
+        }
+        if (count > 0) {
+            fprintf(stderr, "[outlier-stream-latch] released layer %d latches (%d entries, %d/%d loaded)\n",
+                    layer, count, loaded_count, window_size);
+            fflush(stderr);
+        }
+    }
 }
 
 void llama_outlier_stream_cache::release_all_latches() {
