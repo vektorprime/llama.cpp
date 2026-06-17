@@ -2348,107 +2348,12 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
-    // Per-layer streaming outlier compute: split graph by layer to release
-    // sidecar GPU memory between layers. Only active when --stream-outliers is set
-    // and there's a single GPU backend (multi-GPU uses the standard path).
-    const bool use_per_layer = model.stream_outliers() && backends.size() == 1 && gf->n_nodes > 0;
-
-    if (!use_per_layer) {
-        auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
-        if (status != GGML_STATUS_SUCCESS) {
-            LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
-        }
-        return status;
+    auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+    if (status != GGML_STATUS_SUCCESS) {
+        LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
 
-    // Allocate the full graph through the scheduler (handles all tensor allocations)
-    ggml_backend_sched_reset(sched.get());
-    if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
-        LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-        return GGML_STATUS_ALLOC_FAILED;
-    }
-
-    ggml_backend_t gpu_backend = backends[0].get();
-
-    // Walk graph nodes and find layer boundaries.
-    // Nodes are in topological order; layer N nodes come before layer N+1 nodes.
-    // A layer boundary is detected when the blk.<N>. prefix changes.
-    struct layer_range {
-        int layer;
-        int start_idx;  // inclusive
-        int end_idx;    // exclusive
-    };
-    std::vector<layer_range> ranges;
-
-    int current_layer = -1;
-    int range_start   = 0;
-
-    for (int i = 0; i < gf->n_nodes; i++) {
-        const char * node_name = gf->nodes[i]->name;
-        int node_layer = -1;
-
-        // Extract layer number from node name (pattern: "blk.N." or "...blk.N.")
-        const char * blk = strstr(node_name, "blk.");
-        if (blk) {
-            blk += 4; // skip "blk."
-            node_layer = atoi(blk);
-        }
-
-        if (node_layer != current_layer) {
-            if (i > range_start) {
-                ranges.push_back({current_layer, range_start, i});
-            }
-            current_layer = node_layer;
-            range_start   = i;
-        }
-    }
-    // Final range
-    if (gf->n_nodes > range_start) {
-        ranges.push_back({current_layer, range_start, gf->n_nodes});
-    }
-
-    if (ggml_custom_logs_enabled()) {
-        fprintf(stderr, "[outlier-stream-compute] %d nodes split into %zu layer ranges\n",
-                gf->n_nodes, ranges.size());
-        for (const auto & r : ranges) {
-            fprintf(stderr, "[outlier-stream-compute]   layer %d: nodes [%d, %d) (%d nodes)\n",
-                    r.layer, r.start_idx, r.end_idx, r.end_idx - r.start_idx);
-        }
-        fflush(stderr);
-    }
-
-    // Compute each layer range separately, releasing latches between layers
-    ggml_status status = GGML_STATUS_SUCCESS;
-    int prev_layer = -2;
-
-    for (const auto & range : ranges) {
-        // Build a sub-cgraph for this layer range
-        struct ggml_cgraph layer_gf = *gf;
-        layer_gf.nodes    = gf->nodes + range.start_idx;
-        layer_gf.n_nodes  = range.end_idx - range.start_idx;
-
-        status = ggml_backend_graph_compute(gpu_backend, &layer_gf);
-        if (status != GGML_STATUS_SUCCESS) {
-            LLAMA_LOG_ERROR("%s: layer %d compute failed with error %d\n",
-                    __func__, range.layer, status);
-            break;
-        }
-
-        // Release latches for the PREVIOUS layer (not the one we just computed,
-        // in case of non-layer node groups at the start)
-        if (prev_layer >= 0) {
-            model.outlier_cache.release_layer_latches(prev_layer);
-        }
-        prev_layer = range.layer;
-    }
-
-    // Release latches for the last layer
-    if (prev_layer >= 0 && status == GGML_STATUS_SUCCESS) {
-        model.outlier_cache.release_layer_latches(prev_layer);
-    }
-
-    // Synchronize to ensure all GPU work is done
-    ggml_backend_synchronize(gpu_backend);
+    // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
 
     return status;
 }
