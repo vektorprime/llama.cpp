@@ -1011,7 +1011,10 @@ __global__ void dequantize_df11_kernel(
             }
 
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-            if (code_len <= 0) break;
+            if (code_len <= 0) {
+                if (buf_bits > 0) { buf_bits--; long_buffer &= (1ULL << buf_bits) - 1; }
+                continue;
+            }
 
             // Consume code_len bits (matching CPU: buf_bits -= (code_len - levels*8); buf &= mask)
             buf_bits -= (code_len - levels * 8);
@@ -1092,7 +1095,10 @@ __global__ void dequantize_df11_kernel(
             }
 
             int code_len = (int)luts[(n_luts - 1) * 256 + decoded];
-            if (code_len <= 0) break;
+            if (code_len <= 0) {
+                if (buf_bits > 0) { buf_bits--; long_buffer &= (1ULL << buf_bits) - 1; }
+                continue;
+            }
 
             buf_bits -= (code_len - levels * 8);
             long_buffer &= (1ULL << buf_bits) - 1;

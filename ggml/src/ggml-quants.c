@@ -5598,7 +5598,7 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
 
 #define DF11_BYTES_PER_THREAD    8
 #define DF11_THREADS_PER_BLOCK   512
-#define DF11_MAX_HUFFMAN_BITS    32
+#define DF11_MAX_HUFFMAN_BITS    8
 #define DF11_LUT_THRESHOLD       192
 
 // ---- Huffman tree node for code building ----
@@ -5940,29 +5940,6 @@ static int32_t df11_build_lut(
             }
         }
 
-        // Fill remaining zero entries at this LUT level with best-match fallback
-        {
-            // For each of the 2 top-bit branches (0, 1), find the shortest code
-            int32_t fallback_sym[2] = { -1, -1 };
-            int32_t fallback_cbits[2] = { 999, 999 };
-            for (int32_t sym = 0; sym < nsym; sym++) {
-                if (code_bits[sym] == 0) continue;
-                int32_t msb = (code_vals[sym] >> (code_bits[sym] - 1)) & 1;
-                if (code_bits[sym] < fallback_cbits[msb]) {
-                    fallback_cbits[msb] = code_bits[sym];
-                    fallback_sym[msb] = sym;
-                }
-            }
-            for (int32_t bi = 0; bi < 256; bi++) {
-                if (lut[pi * 256 + bi] != 0) continue;
-                int32_t msb = (bi >> 7) & 1;
-                int32_t fsym = fallback_sym[msb];
-                if (fsym >= 0) {
-                    lut[pi * 256 + bi] = (uint8_t)(fsym & 0xFF);
-                }
-            }
-        }
-
         if (pi == 0) {
             fprintf(stderr, "[DF11-debug] LUT row0 END: code_matches=%d prefix_matches=%d\n",
                     (int)code_match_count, (int)prefix_match_count);
@@ -6051,6 +6028,13 @@ void quantize_row_df11_ref(const float * GGML_RESTRICT x, block_df11 * GGML_REST
     int32_t freqs[256] = {0};
     for (int64_t i = 0; i < k; i++) {
         freqs[exponents[i]]++;
+    }
+
+    // Ensure all 256 symbols for complete LUT coverage (max depth 8 bits)
+    int32_t freqs_saved[256];
+    memcpy(freqs_saved, freqs, sizeof(freqs));
+    for (int32_t sym = 0; sym < 256; sym++) {
+        freqs[sym] = freqs[sym] > 0 ? freqs[sym] : 1;
     }
 
     // 4. Build Huffman codes
@@ -6231,7 +6215,14 @@ void dequantize_row_df11(const block_df11 * GGML_RESTRICT x, float * GGML_RESTRI
         }
 
         int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
-        if (code_len <= 0) break;
+        if (code_len <= 0) {
+            // LUT gap: consume 1 bit to realign and retry
+            if (buf_bits > 0) {
+                buf_bits--;
+                buf &= (1ULL << buf_bits) - 1;
+            }
+            continue;
+        }
 
         buf_bits -= (code_len - levels * 8);
         buf &= (1ULL << buf_bits) - 1;
@@ -6329,7 +6320,14 @@ void dequantize_row_df11_to_bf16(const block_df11 * GGML_RESTRICT x, ggml_bf16_t
         }
 
         int32_t code_len = (int32_t)luts[(n_lut_rows - 1) * 256 + decoded];
-        if (code_len <= 0) break;
+        if (code_len <= 0) {
+            // LUT gap: consume 1 bit to realign and retry
+            if (buf_bits > 0) {
+                buf_bits--;
+                buf &= (1ULL << buf_bits) - 1;
+            }
+            continue;
+        }
 
         buf_bits -= (code_len - levels * 8);
         buf &= (1ULL << buf_bits) - 1;
@@ -6377,6 +6375,13 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
         freqs[exp]++;
     }
 
+    // Ensure all 256 symbols for complete LUT coverage (max depth 8 bits)
+    int32_t freqs_saved[256];
+    memcpy(freqs_saved, freqs, sizeof(freqs));
+    for (int32_t sym = 0; sym < 256; sym++) {
+        freqs[sym] = freqs[sym] > 0 ? freqs[sym] : 1;
+    }
+
     // Phase 2: Build shared Huffman codes
     int32_t code_bits[256] = {0};
     int32_t code_vals[256] = {0};
@@ -6390,7 +6395,7 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     // Phase 4: Compute exact output layout sizes
     uint64_t total_bits_exact = 0;
     for (int32_t sym = 0; sym < 256; sym++) {
-        total_bits_exact += (uint64_t)freqs[sym] * (uint64_t)code_bits[sym];
+        total_bits_exact += (uint64_t)freqs_saved[sym] * (uint64_t)code_bits[sym];
     }
     uint32_t n_bytes  = (uint32_t)((total_bits_exact + 7) / 8);
     uint32_t n_blocks = df11_blocks_for_bytes(n_bytes);
