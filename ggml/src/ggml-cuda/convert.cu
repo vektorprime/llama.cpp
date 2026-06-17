@@ -1184,6 +1184,10 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
         if (n_blocks > 0) {
             uint32_t * pos_host = (uint32_t *)malloc((n_blocks + 1) * sizeof(uint32_t));
             CUDA_CHECK(cudaMemcpy(pos_host, pos, (n_blocks + 1) * sizeof(uint32_t), cudaMemcpyDeviceToHost));
+            if (ggml_custom_logs_enabled()) {
+                fprintf(stderr, "[DF11-debug] pos[0]=%u pos[1]=%u pos[%u]=%u pos[%u]=%u\n",
+                    pos_host[0], pos_host[1], n_blocks-1, pos_host[n_blocks-1], n_blocks, pos_host[n_blocks]);
+            }
             for (uint32_t b = 0; b < n_blocks; b++) {
                 int blk_elems = (int)(pos_host[b + 1] - pos_host[b]);
                 if (blk_elems > max_elem) max_elem = blk_elems;
@@ -1193,6 +1197,10 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
         int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
         int smem_write = (max_elem + DF11_THREADS_PER_BLOCK) * sizeof(uint16_t);
         smem_size = smem_counters + smem_write;
+        if (ggml_custom_logs_enabled()) {
+            fprintf(stderr, "[DF11-debug] max_elem=%d smem_counters=%d smem_write=%d smem_size=%d\n",
+                max_elem, smem_counters, smem_write, smem_size);
+        }
 
         // Cache for graph capture
         df11_header_cache_entry entry;
