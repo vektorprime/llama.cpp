@@ -981,14 +981,18 @@ __global__ void dequantize_df11_kernel(
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
-        // Byte refill index: byte_idx tracks which of the extra bytes (register_buffer[8..11])
-        // have already been shifted into the buffer.
+        int32_t code_bytes_start = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD);
+        int32_t code_bytes_end   = code_bytes_start + 8;
+        if (code_bytes_end > (int32_t)n_bytes) code_bytes_end = (int32_t)n_bytes;
+        int32_t valid_extra = (int32_t)n_bytes - code_bytes_end;
+        if (valid_extra < 0) valid_extra = 0;
+        if (valid_extra > 4) valid_extra = 4;
         int extra_byte = 0;
 
         // Decode loop — matching CPU decoder exactly
         while (1) {
             // Refill buffer to >= 32 bits if possible (matching CPU inner while loop)
-            while (buf_bits < 32 && extra_byte < 4) {
+            while (buf_bits < 32 && extra_byte < valid_extra) {
                 long_buffer = (long_buffer << 8) | register_buffer[8 + extra_byte];
                 extra_byte++;
                 buf_bits += 8;
@@ -1071,10 +1075,16 @@ __global__ void dequantize_df11_kernel(
         buf_bits -= gap;
         long_buffer &= (1ULL << buf_bits) - 1;
 
+        int32_t vstart = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD);
+        int32_t vend   = vstart + 8;
+        if (vend > (int32_t)n_bytes) vend = (int32_t)n_bytes;
+        int32_t vextra = (int32_t)n_bytes - vend;
+        if (vextra < 0) vextra = 0;
+        if (vextra > 4) vextra = 4;
         int extra_byte = 0;
 
         while (output_idx < end_idx) {
-            while (buf_bits < 32 && extra_byte < 4) {
+            while (buf_bits < 32 && extra_byte < vextra) {
                 long_buffer = (long_buffer << 8) | register_buffer[8 + extra_byte];
                 extra_byte++;
                 buf_bits += 8;
