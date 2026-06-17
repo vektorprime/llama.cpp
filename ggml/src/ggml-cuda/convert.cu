@@ -908,7 +908,6 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
 
 #define DF11_BYTES_PER_THREAD 8
 #define DF11_THREADS_PER_BLOCK 512
-#define DF11_MAX_HUFFMAN_BITS 8
 #define DF11_LUT_THRESHOLD 192
 
 __global__ void dequantize_df11_kernel(
@@ -974,8 +973,9 @@ __global__ void dequantize_df11_kernel(
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
-        // Only refill when initial bits insufficient for max code (gap-based, not n_bytes-based).
-        int32_t valid_extra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
+        // No cross-thread refill: each thread processes only its own primary bytes.
+        // The gap mechanism positions each thread at its start bit within the buffer.
+        int32_t valid_extra = 0;
         int extra_byte = 0;
 
         // Decode loop — matching CPU decoder exactly
@@ -1061,7 +1061,7 @@ __global__ void dequantize_df11_kernel(
         if (buf_bits > 0) {
         long_buffer &= (1ULL << buf_bits) - 1;
 
-        int32_t vextra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
+        int32_t vextra = 0;
         int extra_byte = 0;
 
         while (output_idx < end_idx) {
