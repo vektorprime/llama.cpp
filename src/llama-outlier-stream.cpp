@@ -182,7 +182,7 @@ void llama_outlier_stream_cache::release_layer_latches(int layer) {
     }
 }
 
-void llama_outlier_stream_cache::evict_lru_for_layer(int layer, ggml_backend_t backend) {
+void llama_outlier_stream_cache::evict_lru_for_layer(int layer, ggml_backend_t /*backend*/) {
     // Find LRU entries belonging to the given layer that are loaded but not latched
     for (auto it = lru.rbegin(); it != lru.rend(); ++it) {
         auto eit = entries.find(*it);
