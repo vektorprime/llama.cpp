@@ -981,12 +981,9 @@ __global__ void dequantize_df11_kernel(
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
-        // With MAX_HUFFMAN_BITS=8, at most 1 extra byte needed to complete a code crossing the boundary.
-        int32_t code_bytes_end = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD) + 8;
-        if (code_bytes_end > (int32_t)n_bytes) code_bytes_end = (int32_t)n_bytes;
-        int32_t valid_extra = (int32_t)n_bytes - code_bytes_end;
-        if (valid_extra < 0) valid_extra = 0;
-        if (valid_extra > 1) valid_extra = 1;
+        // MAX_HUFFMAN_BITS=8 → all codes are byte-aligned, gap=0, no cross-boundary codes.
+        // Disabling refill prevents phantom elements from next thread's data.
+        int32_t valid_extra = 0;
         int extra_byte = 0;
 
         // Decode loop — matching CPU decoder exactly
@@ -1075,12 +1072,7 @@ __global__ void dequantize_df11_kernel(
         buf_bits -= gap;
         long_buffer &= (1ULL << buf_bits) - 1;
 
-        int32_t vstart = (int32_t)(global_thread_id * DF11_BYTES_PER_THREAD);
-        int32_t vend   = vstart + 8;
-        if (vend > (int32_t)n_bytes) vend = (int32_t)n_bytes;
-        int32_t vextra = (int32_t)n_bytes - vend;
-        if (vextra < 0) vextra = 0;
-        if (vextra > 1) vextra = 1;
+        int32_t vextra = 0;
         int extra_byte = 0;
 
         while (output_idx < end_idx) {
@@ -1201,8 +1193,7 @@ void dequantize_df11_cuda(const void * vx, void * vy, int64_t k, cudaStream_t st
             free(pos_host);
         }
         int smem_counters = DF11_THREADS_PER_BLOCK * sizeof(int);
-        // +1 slack: edge threads with valid_extra=1 may decode one extra element
-        int smem_write = (max_elem + 1) * sizeof(uint16_t);
+        int smem_write = (max_elem + 16) * sizeof(uint16_t);
         smem_size = smem_counters + smem_write;
 
         // Cache for graph capture
