@@ -908,6 +908,7 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
 
 #define DF11_BYTES_PER_THREAD 8
 #define DF11_THREADS_PER_BLOCK 512
+#define DF11_MAX_HUFFMAN_BITS 8
 #define DF11_LUT_THRESHOLD 192
 
 __global__ void dequantize_df11_kernel(
@@ -981,9 +982,8 @@ __global__ void dequantize_df11_kernel(
         long_buffer &= (1ULL << buf_bits) - 1;
 
         // Phase 3-5 combined: decode Huffman symbols from the bitstream, counting thread_counter.
-        // MAX_HUFFMAN_BITS=8 → all codes are byte-aligned, gap=0, no cross-boundary codes.
-        // Disabling refill prevents phantom elements from next thread's data.
-        int32_t valid_extra = 0;
+        // Refill only needed when initial bits < 8 (partial code crosses thread boundary).
+        int32_t valid_extra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
         int extra_byte = 0;
 
         // Decode loop — matching CPU decoder exactly
@@ -1072,7 +1072,7 @@ __global__ void dequantize_df11_kernel(
         buf_bits -= gap;
         long_buffer &= (1ULL << buf_bits) - 1;
 
-        int32_t vextra = 0;
+        int32_t vextra = (buf_bits < DF11_MAX_HUFFMAN_BITS) ? 1 : 0;
         int extra_byte = 0;
 
         while (output_idx < end_idx) {

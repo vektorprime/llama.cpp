@@ -6030,13 +6030,6 @@ void quantize_row_df11_ref(const float * GGML_RESTRICT x, block_df11 * GGML_REST
         freqs[exponents[i]]++;
     }
 
-    // Ensure all 256 symbols for complete LUT coverage (max depth 8 bits)
-    int32_t freqs_saved[256];
-    memcpy(freqs_saved, freqs, sizeof(freqs));
-    for (int32_t sym = 0; sym < 256; sym++) {
-        freqs[sym] = freqs[sym] > 0 ? freqs[sym] : 1;
-    }
-
     // 4. Build Huffman codes
     int32_t code_bits[256] = {0};
     int32_t code_vals[256] = {0};
@@ -6375,14 +6368,7 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
         freqs[exp]++;
     }
 
-    // Ensure all 256 symbols for complete LUT coverage (max depth 8 bits)
-    int32_t freqs_saved[256];
-    memcpy(freqs_saved, freqs, sizeof(freqs));
-    for (int32_t sym = 0; sym < 256; sym++) {
-        freqs[sym] = freqs[sym] > 0 ? freqs[sym] : 1;
-    }
-
-    // Phase 2: Build shared Huffman codes
+    // Phase 2: Build shared Huffman codes from real frequencies
     int32_t code_bits[256] = {0};
     int32_t code_vals[256] = {0};
     int32_t node_count = 0;
@@ -6395,7 +6381,7 @@ size_t quantize_df11(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     // Phase 4: Compute exact output layout sizes
     uint64_t total_bits_exact = 0;
     for (int32_t sym = 0; sym < 256; sym++) {
-        total_bits_exact += (uint64_t)freqs_saved[sym] * (uint64_t)code_bits[sym];
+        total_bits_exact += (uint64_t)freqs[sym] * (uint64_t)code_bits[sym];
     }
     uint32_t n_bytes  = (uint32_t)((total_bits_exact + 7) / 8);
     uint32_t n_blocks = df11_blocks_for_bytes(n_bytes);
