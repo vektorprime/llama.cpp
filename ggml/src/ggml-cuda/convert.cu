@@ -986,7 +986,7 @@ __global__ void dequantize_df11_kernel(
         if (code_bytes_end > (int32_t)n_bytes) code_bytes_end = (int32_t)n_bytes;
         int32_t valid_extra = (int32_t)n_bytes - code_bytes_end;
         if (valid_extra < 0) valid_extra = 0;
-        if (valid_extra > 4) valid_extra = 4;
+        if (valid_extra > 1) valid_extra = 1;
         int extra_byte = 0;
 
         // Decode loop — matching CPU decoder exactly
@@ -1080,7 +1080,7 @@ __global__ void dequantize_df11_kernel(
         if (vend > (int32_t)n_bytes) vend = (int32_t)n_bytes;
         int32_t vextra = (int32_t)n_bytes - vend;
         if (vextra < 0) vextra = 0;
-        if (vextra > 4) vextra = 4;
+        if (vextra > 1) vextra = 1;
         int extra_byte = 0;
 
         while (output_idx < end_idx) {
