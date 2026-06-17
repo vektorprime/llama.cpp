@@ -1467,7 +1467,10 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
             if (idx_data) {
                 size_t val_elem = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
-                    ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
+                    ? (size_t)34
+                    : (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q4_0)
+                    ? (size_t)18
+                    : (size_t)(32 * sizeof(ggml_bf16_t));
                 size_t val_total = (size_t)info.n_blocks * val_elem;
 
                 if (val_t->buffer && ggml_backend_buffer_is_host(val_t->buffer) && val_t->data) {
