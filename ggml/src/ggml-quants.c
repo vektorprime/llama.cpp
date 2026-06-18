@@ -2733,6 +2733,14 @@ void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K * GGML_REST
             y[i].qs[j] = (int8_t)roundf(MAX(-127.0f, MIN(127.0f, x0)));
         }
 
+        for (int j = 0; j < QK_K/16; ++j) {
+            int sum = 0;
+            for (int ii = 0; ii < 16; ++ii) {
+                sum += y[i].qs[j*16 + ii];
+            }
+            y[i].bsums[j] = sum;
+        }
+
         x += QK_K;
     }
 }
