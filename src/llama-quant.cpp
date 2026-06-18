@@ -3505,7 +3505,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q4_outlier_include_weights  =*/ nullptr,
         /*.q4_outlier_exclude_weights  =*/ nullptr,
         /*.q4_outlier_max_abs_error    =*/ 0.0f,
-        /*.q4_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF
+        /*.q4_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF,
         /*.q2k_outlier_enable           =*/ false,
         /*.q2k_outlier_max_abs_error    =*/ 0.002f,
         /*.q2k_outlier_max_frac         =*/ 0.2f,
