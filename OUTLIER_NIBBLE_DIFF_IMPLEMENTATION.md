@@ -311,6 +311,11 @@ Latching means entries loaded during a forward pass stay in VRAM until the pass 
 | Null `info.values` in patch_embedding | Segfault in streaming mode | Guard + fallback to `outlier_cache.entries` |
 | GPU tensor `data` can be NULL | Assertion failure with `--no-mmap` | Add `&& tensor->data` guards |
 | Allocated buffer 32x larger for Q8_0 | Wasteful VRAM on streaming upload | Fixed: `ne[0]=16` for nibble, `ne[0]=32` for BF16 |
+| Missing `llama_set_custom_logs()` in llama-cli | `--custom-logs` flag had no effect in CLI | Added call after `llama_numa_init()` in `tools/cli/cli.cpp` |
+| `q8_outlier_reconstruct_tensor_nibble` nested in wrong function | Compile error: function-definition not allowed | Moved to file scope after Q4 version in `llama-quant.cpp` |
+| [delta-load] logging assumes BF16 values for nibble-diff | Crash: `ggml_backend_tensor_get` out of bounds on I8 tensor | Added `NIBBLE_DIFF` branch with `ggml_nbytes()` and nibble decode |
+| CUDA `values->ne[0] == 32` assertion fails for nibble-diff | Crash at inference when nibble-diff values have ne[0]=16 | Changed to accept 16 for GGML_TYPE_I8 |
+| Missing `#include \"llama-q8-outlier.h\"` in llama-model.cpp | Compile error: nibble functions not declared | Added include directive |
 
 ---
 
