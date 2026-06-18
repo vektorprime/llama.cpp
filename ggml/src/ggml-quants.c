@@ -2704,36 +2704,35 @@ void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K * GGML_REST
     const int64_t nb = k / QK_K;
 
     for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK_K; ++j) {
+            amax = MAX(amax, fabsf(x[j]));
+        }
 
-        float max = 0;
-        float amax = 0;
-        for (int j = 0; j < QK_K; ++j) {
-            float ax = fabsf(x[j]);
-            if (ax > amax) {
-                amax = ax; max = x[j];
+        const float d = amax / ((1 << 7) - 1);
+        const float id = d ? 1.0f/d : 0.0f;
+
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        for (int is = 0; is < 8; ++is) {
+            // compute sub-block scale to minimize quantization error
+            const float * xs = x + is*32;
+            float sub_amax = 0.0f;
+            for (int j = 0; j < 32; ++j) {
+                sub_amax = MAX(sub_amax, fabsf(xs[j]));
             }
+            // sub-block scale as fraction of super-block scale
+            const float sub_d = (d > 0 && sub_amax > 0) ? (sub_amax / amax) : 1.0f;
+            y[i].ds[is] = GGML_FP32_TO_FP16(sub_d);
         }
-        if (!amax) {
-            y[i].d = 0;
-            memset(y[i].qs, 0, QK_K);
-            x += QK_K;
-            continue;
-        }
-        //const float iscale = -128.f/max;
-        // We need this change for IQ2_XXS, else the AVX implementation becomes very awkward
-        const float iscale = -127.f/max;
+
         for (int j = 0; j < QK_K; ++j) {
-            int v = nearest_int(iscale*x[j]);
-            y[i].qs[j] = MIN(127, v);
+            const int is = j / 32;
+            const float sub_id = id / MAX(GGML_FP16_TO_FP32(y[i].ds[is]), 1e-8f);
+            const float x0 = x[j] * sub_id;
+            y[i].qs[j] = (int8_t)roundf(MAX(-127.0f, MIN(127.0f, x0)));
         }
-        for (int j = 0; j < QK_K/16; ++j) {
-            int sum = 0;
-            for (int ii = 0; ii < 16; ++ii) {
-                sum += y[i].qs[j*16 + ii];
-            }
-            y[i].bsums[j] = sum;
-        }
-        y[i].d = 1/iscale;
+
         x += QK_K;
     }
 }
@@ -2743,9 +2742,15 @@ void dequantize_row_q8_K(const block_q8_K * GGML_RESTRICT x, float * GGML_RESTRI
     const int64_t nb = k / QK_K;
 
     for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+
         for (int j = 0; j < QK_K; ++j) {
-            *y++ = x[i].d * x[i].qs[j];
+            const int is = j / 32;
+            const float ds = GGML_FP16_TO_FP32(x[i].ds[is]);
+            y[j] = d * ds * x[i].qs[j];
         }
+
+        y += QK_K;
     }
 }
 

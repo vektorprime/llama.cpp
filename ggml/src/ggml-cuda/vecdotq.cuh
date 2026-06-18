@@ -982,25 +982,25 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
 #define VDR_Q8_K_Q8_1_MMVQ 1
 #define VDR_Q8_K_Q8_1_MMQ  8
 
-// Q8_K is the simplest K-quant: single scale, int8 quants
+// Q8_K with 256-element blocks and 8 sub-block scales — same layout as Q4_K etc.
 static __device__ __forceinline__ float vec_dot_q8_K_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
     const block_q8_K * bq8_K = (const block_q8_K *) vbq + kbx;
 
-    // Q8_K has 256 values (64 ints), Q8_1 has 32 values (8 ints) per sub-block
     const int iq8_1 = iqs / QI8_1;  // which Q8_1 sub-block (0..7)
     const int ii    = iqs % QI8_1;  // index within Q8_1 sub-block (0..7)
 
     const int v = get_int_b4(bq8_K->qs, iqs);
     const int u = get_int_b4(bq8_1[iq8_1].qs, ii);
 
-    const float d8_K = bq8_K->d;
-    const float d8_1 = __low2float(bq8_1[iq8_1].ds);
+    const float d8_K  = __half2float(bq8_K->d);
+    const float ds_K  = __half2float(bq8_K->ds[iq8_1]);
+    const float d8_1  = __low2float(bq8_1[iq8_1].ds);
 
     int sumi = ggml_cuda_dp4a(v, u, 0);
 
-    return d8_K * d8_1 * (float) sumi;
+    return d8_K * ds_K * d8_1 * (float) sumi;
 }
 
 #define VDR_IQ2_XXS_Q8_1_MMVQ 2
