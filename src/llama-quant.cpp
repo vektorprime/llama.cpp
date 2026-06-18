@@ -2028,7 +2028,8 @@ static void q2k_outlier_compute_deltas(
     // Q2_K superblock covers 256 elements
     constexpr int64_t Q2K_SUPERBLOCK_SIZE = 256;
 
-    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ||
+        value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K) {
         outliers.values_nibble.resize(n_blocks * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES);
     } else {
         outliers.values.resize(n_blocks * LLAMA_Q2K_OUTLIER_BLOCK_SIZE);
@@ -2054,10 +2055,13 @@ static void q2k_outlier_compute_deltas(
             deltas[j] = orig[j] - row_q2k_base[col + j];
         }
 
-        if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+        if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ||
+            value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K) {
             uint8_t nibbles[32];
             for (int j = 0; j < LLAMA_Q2K_OUTLIER_BLOCK_SIZE; j++) {
-                nibbles[j] = llama_outlier_nibble_diff_encode(deltas[j]);
+                nibbles[j] = value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K
+                    ? llama_outlier_nibble_diff_encode_q2k(deltas[j])
+                    : llama_outlier_nibble_diff_encode(deltas[j]);
             }
             llama_outlier_nibble_diff_pack_block(nibbles, outliers.values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES);
         } else {
@@ -2070,6 +2074,7 @@ static void q2k_outlier_compute_deltas(
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q2_K_dequant), value_type=%s\n",
                 outliers.name.c_str(), n_blocks,
+                value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K ? "nibble_diff_q2k" :
                 value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" : "BF16");
         const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
         for (size_t k = 0; k < log_blocks; k++) {
@@ -2078,10 +2083,13 @@ static void q2k_outlier_compute_deltas(
             double max_abs = 0.0;
             for (int j = 0; j < LLAMA_Q2K_OUTLIER_BLOCK_SIZE; j++) {
                 float d;
-                if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ||
+                    value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K) {
                     uint8_t nibbles[32];
                     llama_outlier_nibble_diff_unpack_block(outliers.values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
-                    d = llama_outlier_nibble_diff_decode(nibbles[j]);
+                    d = value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K
+                        ? llama_outlier_nibble_diff_decode_q2k(nibbles[j])
+                        : llama_outlier_nibble_diff_decode(nibbles[j]);
                 } else {
                     d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q2K_OUTLIER_BLOCK_SIZE + j]);
                 }
@@ -2203,6 +2211,7 @@ static void q2k_outlier_write_metadata(
     gguf_set_val_u32(ctx, LLAMA_Q2K_OUTLIER_BLOCK_SIZE_KEY, LLAMA_Q2K_OUTLIER_BLOCK_SIZE);
     gguf_set_val_str(ctx, LLAMA_Q2K_OUTLIER_BASE_TYPE_KEY, "q2_k");
     gguf_set_val_str(ctx, LLAMA_Q2K_OUTLIER_VALUE_TYPE_KEY,
+            value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K ? "nibble_diff_q2k" :
             value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" :
             value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "q8_0" : "bf16");
     gguf_set_val_str(ctx, LLAMA_Q2K_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
@@ -2219,9 +2228,10 @@ static void q2k_outlier_write_metadata(
     }
 }
 
-static size_t q2k_outlier_sidecar_size(const q8_outlier_tensor_data & t, enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+static size_t q2k_outlier_sidecar_size(const q8_outlier_tensor_data & t, enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K) {
     const size_t idx_size = t.idx.size() * sizeof(int32_t);
-    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ||
+        value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K) {
         return idx_size + t.values_nibble.size();
     }
     return idx_size + t.values.size() * sizeof(ggml_bf16_t);
@@ -3421,7 +3431,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             {
                 size_t values_size;
                 const void * values_ptr;
-                if (params->q2k_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                if (params->q2k_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ||
+                    params->q2k_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K) {
                     values_size = outliers.values_nibble.size();
                     values_ptr = outliers.values_nibble.data();
                 } else {
@@ -3515,7 +3526,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q2k_outlier_report_path      =*/ nullptr,
         /*.q2k_outlier_include_weights  =*/ nullptr,
         /*.q2k_outlier_exclude_weights  =*/ nullptr,
-        /*.q2k_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF
+        /*.q2k_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K
     };
 
     return result;

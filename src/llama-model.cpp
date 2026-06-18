@@ -979,6 +979,161 @@ llama_model::~llama_model() {
     }
 }
 
+// Column reordering for CSR layout (Proposal 4.4)
+// Uses greedy clustering to find a column permutation that groups
+// outlier-heavy columns together, maximizing contiguous merge runs.
+// Returns the permutation vector: perm[i] = new position of original block column i.
+// Returns empty vector if reordering would not improve merge ratio.
+static std::vector<int32_t> reorder_columns(
+        const llama_model::llama_outlier_block_info & info,
+        int64_t n_blocks,
+        int64_t n_block_cols) {
+
+    if (n_block_cols < 2 || n_blocks < 4) return {};
+
+    // Count outlier blocks per column
+    std::vector<int32_t> col_count(n_block_cols, 0);
+    for (int64_t k = 0; k < n_blocks; k++) {
+        int32_t bcol = info.block_col[k];
+        if (bcol >= 0 && bcol < n_block_cols) {
+            col_count[bcol]++;
+        }
+    }
+
+    // Build co-occurrence matrix: cooc[c1][c2] = number of rows with outliers in both cols
+    // Use a sparse representation since n_block_cols can be large
+    std::vector<std::unordered_map<int32_t, int32_t>> cooc(n_block_cols);
+    for (int64_t r = 0; r < info.n_rows_out; r++) {
+        const int64_t row_start = info.row_ptr[r];
+        const int64_t row_end   = info.row_ptr[r + 1];
+        if (row_end - row_start < 2) continue;
+
+        // Get all block_cols in this row
+        for (int64_t i = row_start; i < row_end; i++) {
+            int32_t c1 = info.block_col[i];
+            if (c1 < 0 || c1 >= n_block_cols) continue;
+            for (int64_t j = i + 1; j < row_end; j++) {
+                int32_t c2 = info.block_col[j];
+                if (c2 < 0 || c2 >= n_block_cols) continue;
+                cooc[c1][c2]++;
+                cooc[c2][c1]++;
+            }
+        }
+    }
+
+    // Greedy clustering: start with highest-count column, then repeatedly
+    // add the unvisited column with strongest co-occurrence to the last placed column.
+    std::vector<bool> visited(n_block_cols, false);
+    std::vector<int32_t> perm;
+    perm.reserve(n_block_cols);
+
+    // Find first column (highest outlier count)
+    int32_t first_col = 0;
+    int32_t first_max = -1;
+    for (int32_t c = 0; c < (int32_t)n_block_cols; c++) {
+        if (col_count[c] > first_max) {
+            first_max = col_count[c];
+            first_col = c;
+        }
+    }
+
+    int32_t current = first_col;
+    visited[current] = true;
+    perm.push_back(current);
+
+    // Greedy traversal
+    while ((int64_t)perm.size() < n_block_cols) {
+        int32_t best_next = -1;
+        int32_t best_score = -1;
+
+        // Prefer columns with high co-occurrence to current
+        auto it = cooc[current].begin();
+        for (; it != cooc[current].end(); ++it) {
+            int32_t c = it->first;
+            if (!visited[c] && it->second > best_score) {
+                best_score = it->second;
+                best_next = c;
+            }
+        }
+
+        if (best_next < 0) {
+            // No co-occurrence — pick the highest-count unvisited column
+            for (int32_t c = 0; c < (int32_t)n_block_cols; c++) {
+                if (!visited[c] && col_count[c] > best_score) {
+                    best_score = col_count[c];
+                    best_next = c;
+                }
+            }
+        }
+
+        if (best_next < 0) break; // shouldn't happen
+
+        visited[best_next] = true;
+        perm.push_back(best_next);
+        current = best_next;
+    }
+
+    // Build inverse permutation for quick lookup
+    // inv_perm[old_col] = new position in permuted order
+    // perm[new_pos] = old column index
+    std::vector<int32_t> inv_perm(n_block_cols, 0);
+    for (int32_t i = 0; i < (int32_t)perm.size(); i++) {
+        inv_perm[perm[i]] = i;
+    }
+
+    // Compute what the merged runs would look like after reordering.
+    // Walk each row's blocks, remap block_col through inv_perm, sort by new position.
+    // Then count merge runs.
+    int64_t old_merged = (int64_t)info.merged_runs.size();
+    int64_t new_merged = 0;
+    std::vector<std::pair<int32_t, int32_t>> row_blocks; // (new_col, values_idx)
+
+    for (int64_t r = 0; r < info.n_rows_out; r++) {
+        const int64_t row_start = info.row_ptr[r];
+        const int64_t row_end   = info.row_ptr[r + 1];
+        if (row_end <= row_start) continue;
+
+        row_blocks.clear();
+        for (int64_t k = row_start; k < row_end; k++) {
+            int32_t old_col = info.block_col[k];
+            if (old_col >= 0 && old_col < n_block_cols) {
+                row_blocks.emplace_back(inv_perm[old_col], (int32_t)k);
+            }
+        }
+        if (row_blocks.empty()) continue;
+
+        // Sort by new column position
+        std::sort(row_blocks.begin(), row_blocks.end());
+
+        // Count merge runs
+        new_merged++; // first block starts a run
+        for (size_t i = 1; i < row_blocks.size(); i++) {
+            if (row_blocks[i].first != row_blocks[i - 1].first + 1) {
+                new_merged++; // gap -> new run
+            }
+        }
+    }
+
+    double old_ratio = old_merged > 0 ? (double)n_blocks / (double)old_merged : 1.0;
+    double new_ratio = new_merged > 0 ? (double)n_blocks / (double)new_merged : 1.0;
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[reorder] %s: n_blocks=%lld n_block_cols=%lld old_merged=%lld new_merged=%lld old_ratio=%.1fx new_ratio=%.1fx improvement=%.1fx\n",
+                info.name.c_str(), (long long)n_blocks, (long long)n_block_cols,
+                (long long)old_merged, (long long)new_merged,
+                old_ratio, new_ratio, new_ratio / old_ratio);
+        fflush(stderr);
+    }
+
+    // Only apply if there's meaningful improvement (> 5%)
+    if (new_ratio <= old_ratio * 1.05) {
+        return {}; // not worth it
+    }
+
+    // Return the inverse permutation: inv_perm[old_col] = new_pos
+    return inv_perm;
+}
+
 void llama_model::build_outlier_info(const llama_model_loader * ml) {
     outlier_info.clear();
 
@@ -1160,6 +1315,220 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                             run.start_block_col * 32, (run.start_block_col + run.count) * 32 - 1);
                 }
                 fflush(stderr);
+            }
+        }
+
+        // Column reordering (Proposal 4.4): after building initial merge runs,
+        // attempt to find a column permutation that improves merge ratio.
+        // If successful, permute the weight tensor blocks, reorganize the idx,
+        // and rebuild CSR/merge from the reordered layout.
+        {
+            int64_t n_block_cols = info.n_cols / 32;
+            std::vector<int32_t> inv_perm = reorder_columns(info, n_blocks, n_block_cols);
+
+            if (!inv_perm.empty() && (int64_t)inv_perm.size() == n_block_cols) {
+                // Permute the weight tensor blocks to match the new column order.
+                // Only handle quantized block types with block_size=32.
+                ggml_type wtype = tensor->type;
+                size_t block_size_bytes = 0;
+                if (wtype == GGML_TYPE_Q4_0) {
+                    block_size_bytes = sizeof(block_q4_0);
+                } else if (wtype == GGML_TYPE_Q8_0) {
+                    block_size_bytes = sizeof(block_q8_0);
+                }
+
+                if (block_size_bytes > 0 && n_block_cols > 0) {
+                    // Read the entire weight tensor data
+                    size_t total_bytes = (size_t)info.n_rows_out * (size_t)n_block_cols * block_size_bytes;
+                    std::vector<uint8_t> wt_data(total_bytes);
+                    std::vector<uint8_t> wt_perm(total_bytes);
+
+                    bool read_ok = false;
+                    if (tensor->buffer && tensor->data) {
+                        ggml_backend_tensor_get(tensor, wt_data.data(), 0, total_bytes);
+                        read_ok = true;
+                    } else if (tensor->data) {
+                        memcpy(wt_data.data(), tensor->data, total_bytes);
+                        read_ok = true;
+                    }
+
+                    if (read_ok) {
+                        // For each row, permute the blocks
+                        const size_t row_stride = (size_t)n_block_cols * block_size_bytes;
+                        for (int64_t r = 0; r < info.n_rows_out; r++) {
+                            uint8_t * src_row = wt_data.data() + (size_t)r * row_stride;
+                            uint8_t * dst_row = wt_perm.data() + (size_t)r * row_stride;
+                            for (int64_t old_col = 0; old_col < n_block_cols; old_col++) {
+                                int32_t new_col = inv_perm[old_col];
+                                memcpy(dst_row + (size_t)new_col * block_size_bytes,
+                                       src_row + (size_t)old_col * block_size_bytes,
+                                       block_size_bytes);
+                            }
+                        }
+
+                        // Write back
+                        if (tensor->buffer && tensor->data) {
+                            ggml_backend_tensor_set(tensor, wt_perm.data(), 0, total_bytes);
+                        } else if (tensor->data) {
+                            memcpy(tensor->data, wt_perm.data(), total_bytes);
+                        }
+                    }
+                }
+
+                // Re-sort the idx data by (row, inv_perm[old_block_col])
+                // We have idx_data from earlier in the function
+                if (idx_data || !idx_data_buf.empty()) {
+                    const int32_t * src = idx_data ? idx_data : idx_data_buf.data();
+                    std::vector<int32_t> new_idx(n_blocks * 2);
+                    for (int64_t k = 0; k < n_blocks; k++) {
+                        new_idx[k * 2] = src[k * 2]; // row stays same
+                        int32_t old_col = src[k * 2 + 1];
+                        new_idx[k * 2 + 1] = (old_col >= 0 && old_col < (int32_t)n_block_cols)
+                            ? inv_perm[old_col] : old_col;
+                    }
+
+                    // Sort by (row, new_block_col)
+                    std::vector<int64_t> sort_idx(n_blocks);
+                    for (int64_t k = 0; k < n_blocks; k++) sort_idx[k] = k;
+                    std::sort(sort_idx.begin(), sort_idx.end(),
+                        [&](int64_t a, int64_t b) {
+                            int32_t ra = new_idx[a * 2], rb = new_idx[b * 2];
+                            if (ra != rb) return ra < rb;
+                            return new_idx[a * 2 + 1] < new_idx[b * 2 + 1];
+                        });
+
+                    // Write reordered idx back to the backend tensor
+                    std::vector<int32_t> sorted_idx(n_blocks * 2);
+                    for (int64_t k = 0; k < n_blocks; k++) {
+                        int64_t si = sort_idx[k];
+                        sorted_idx[k * 2] = new_idx[si * 2];
+                        sorted_idx[k * 2 + 1] = new_idx[si * 2 + 1];
+                    }
+
+                    // Write back to idx tensor
+                    size_t idx_bytes = (size_t)n_blocks * 2 * sizeof(int32_t);
+                    if (idx_tensor->buffer && idx_tensor->data) {
+                        ggml_backend_tensor_set(idx_tensor, sorted_idx.data(), 0, idx_bytes);
+                    } else if (idx_tensor->data) {
+                        memcpy(idx_tensor->data, sorted_idx.data(), idx_bytes);
+                    }
+
+                    // Also re-sort the values tensor to match the new idx order
+                    // Determine the block byte size based on value type
+                    size_t values_block_bytes = 0;
+                    if (values_tensor->type == GGML_TYPE_BF16) {
+                        values_block_bytes = (size_t)values_tensor->ne[0] * 2; // 32 * 2 = 64
+                    } else if (values_tensor->type == GGML_TYPE_Q8_0) {
+                        values_block_bytes = sizeof(block_q8_0); // 34
+                    } else if (values_tensor->type == GGML_TYPE_I8) {
+                        values_block_bytes = (size_t)LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES; // 16
+                    }
+
+                    if (values_block_bytes > 0) {
+                        size_t values_total = (size_t)n_blocks * values_block_bytes;
+                        std::vector<uint8_t> values_data(values_total);
+                        std::vector<uint8_t> values_sorted(values_total);
+
+                        bool val_read_ok = false;
+                        if (values_tensor->buffer && values_tensor->data) {
+                            ggml_backend_tensor_get(values_tensor, values_data.data(), 0, values_total);
+                            val_read_ok = true;
+                        } else if (values_tensor->data) {
+                            memcpy(values_data.data(), values_tensor->data, values_total);
+                            val_read_ok = true;
+                        }
+
+                        if (val_read_ok) {
+                            for (int64_t k = 0; k < n_blocks; k++) {
+                                int64_t si = sort_idx[k];
+                                memcpy(values_sorted.data() + (size_t)k * values_block_bytes,
+                                       values_data.data() + (size_t)si * values_block_bytes,
+                                       values_block_bytes);
+                            }
+
+                            if (values_tensor->buffer && values_tensor->data) {
+                                ggml_backend_tensor_set(values_tensor, values_sorted.data(), 0, values_total);
+                            } else if (values_tensor->data) {
+                                memcpy(values_tensor->data, values_sorted.data(), values_total);
+                            }
+                        }
+                    }
+
+                    // Rebuild row_ptr
+                    std::fill(info.row_ptr.begin(), info.row_ptr.end(), 0);
+                    for (int64_t k = 0; k < n_blocks; k++) {
+                        int32_t row = new_idx[sort_idx[k] * 2];
+                        if (row >= 0 && row < info.n_rows_out) {
+                            info.row_ptr[row + 1]++;
+                        }
+                    }
+                    for (int64_t r = 0; r < info.n_rows_out; r++) {
+                        info.row_ptr[r + 1] += info.row_ptr[r];
+                    }
+
+                    // Rebuild block_col
+                    info.block_col.assign(n_blocks, 0);
+                    std::vector<int32_t> row_cursor = info.row_ptr;
+                    for (int64_t k = 0; k < n_blocks; k++) {
+                        int64_t si = sort_idx[k];
+                        int32_t row = new_idx[si * 2];
+                        int32_t bcol = new_idx[si * 2 + 1];
+                        if (row >= 0 && row < info.n_rows_out && bcol >= 0 && bcol < (int32_t)n_block_cols) {
+                            int32_t pos = row_cursor[row]++;
+                            info.block_col[pos] = bcol;
+                        }
+                    }
+
+                    // Rebuild merged runs from reordered blocks
+                    info.merged_runs.clear();
+                    for (int64_t r = 0; r < info.n_rows_out; r++) {
+                        const int64_t row_start = (int64_t)info.row_ptr[r];
+                        const int64_t row_end   = (int64_t)info.row_ptr[r + 1];
+                        if (row_start >= row_end) continue;
+
+                        int32_t run_start_col = info.block_col[row_start];
+                        int32_t run_count     = 1;
+                        int32_t run_values_start = (int32_t)row_start;
+
+                        for (int64_t k = row_start + 1; k < row_end; k++) {
+                            int32_t bcol = info.block_col[k];
+                            if (bcol == run_start_col + run_count) {
+                                run_count++;
+                            } else {
+                                llama_model::outlier_merged_run run;
+                                run.row = (int32_t)r;
+                                run.start_block_col = run_start_col;
+                                run.count = run_count;
+                                run.values_start = run_values_start;
+                                info.merged_runs.push_back(run);
+                                run_start_col = bcol;
+                                run_count = 1;
+                                run_values_start = (int32_t)k;
+                            }
+                        }
+                        llama_model::outlier_merged_run run;
+                        run.row = (int32_t)r;
+                        run.start_block_col = run_start_col;
+                        run.count = run_count;
+                        run.values_start = run_values_start;
+                        info.merged_runs.push_back(run);
+                    }
+
+                    // Store the inverse permutation for graph builder / GGUF metadata
+                    // inv_perm[old] = new; we need column_perm[new] = old for the graph builder
+                    std::vector<int32_t> inverse(n_block_cols);
+                    for (int32_t i = 0; i < (int32_t)n_block_cols; i++) {
+                        inverse[inv_perm[i]] = i;
+                    }
+                    info.column_perm = std::move(inverse);
+
+                    if (ggml_custom_logs_enabled() && !info.merged_runs.empty()) {
+                        double new_ratio = (double)n_blocks / (double)info.merged_runs.size();
+                        fprintf(stderr, "[reorder] %s: applied! new merged_runs=%zu ratio=%.1fx\n",
+                                name.c_str(), info.merged_runs.size(), new_ratio);
+                        fflush(stderr);
+                    }
+                }
             }
         }
 
@@ -3220,6 +3589,7 @@ llama_model_params llama_model_default_params() {
         /*.no_host                     =*/ false,
         /*.no_alloc                    =*/ false,
         /*.stream_outliers             =*/ false,
+        /*.fuse_outlier_matmul         =*/ false,
     };
 
     return result;

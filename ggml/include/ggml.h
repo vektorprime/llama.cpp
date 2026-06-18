@@ -589,6 +589,7 @@ extern "C" {
 
         GGML_OP_MUL_MAT_OUTLIER_BLOCKS,
         GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED,
+        GGML_OP_MUL_MAT_OUTLIER_FUSED,
 
         GGML_OP_COUNT,
     };
@@ -1464,6 +1465,29 @@ extern "C" {
             struct ggml_tensor  * merged_idx,
             struct ggml_tensor  * values,
             struct ggml_tensor  * x,
+            int64_t               n_rows_out,
+            int64_t               n_cols);
+
+    // Fused outlier-aware matmul (Proposal 4.2)
+    // Combines base Q4_0/Q8_0/Q2_K matmul with sparse outlier delta correction
+    // in a single pass, eliminating the separate correction kernel launch.
+    //
+    // w:          [n_cols, n_rows_out], quantized weights (Q4_0, Q8_0, Q2_K, etc.)
+    // x:          [n_cols, n_tokens], the activation input (F32)
+    // idx:        [2, n_outlier_blocks], i32  (row, block_col per block)
+    // values:     [elem_bytes, n_outlier_blocks], bf16/Q8_0/I8 (nibble) delta values
+    // result:     [n_rows_out, n_tokens]
+    //
+    // The kernel dequantizes each Q block, checks for outlier delta via CSR lookup
+    // (row_ptr + block_col), adds delta inline, and computes the dot product.
+    // This replaces both the base matmul and the separate correction for
+    // outlier-protected weights.
+    GGML_API struct ggml_tensor * ggml_mul_mat_outlier_fused(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * w,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * idx,
+            struct ggml_tensor  * values,
             int64_t               n_rows_out,
             int64_t               n_cols);
 

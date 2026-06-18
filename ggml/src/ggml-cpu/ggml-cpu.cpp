@@ -456,6 +456,10 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED:
             return src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_BF16 && src2->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
+        case GGML_OP_MUL_MAT_OUTLIER_FUSED:
+            return ggml_is_quantized(src0->type) && src1->type == GGML_TYPE_F32 && src2->type == GGML_TYPE_I32 &&
+                   (src3->type == GGML_TYPE_BF16 || src3->type == GGML_TYPE_Q8_0 || src3->type == GGML_TYPE_I8) &&
+                   op->type == GGML_TYPE_F32;
         case GGML_OP_SOFT_MAX_BACK: {
             if (op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32) {
                 return false;

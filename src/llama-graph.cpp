@@ -1062,19 +1062,61 @@ ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur,
           ggml_tensor * w_s) const {
-    ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
-
-    // Q8_0_BF16_OUTLIER: add sparse BF16 outlier correction for protected blocks
-    // Uses the streaming cache: sidecars are uploaded from CPU to GPU
-    // on-demand with a sliding window for predictive prefetch.
+    // Column reordering (Proposal 4.4): if the weight tensor has been
+    // column-permuted for better merge runs, apply the inverse permutation
+    // to the activation before the matmul.
+    ggml_tensor * cur_perm = cur;
     if (w && model.has_outlier_blocks(w)) {
+        const auto * ob = model.get_outlier_info(w);
+        if (ob && !ob->column_perm.empty()) {
+            // Create permutation index tensor on the same backend
+            int64_t n_cols = ob->n_cols;
+            int64_t n_block_cols = n_cols / 32;
+            if ((int64_t)ob->column_perm.size() == n_block_cols) {
+                // Build the full element-level permutation index:
+                // For each new column position j, perm_idx[j] = old column index
+                std::vector<int32_t> perm_idx(n_cols);
+                for (int64_t bc = 0; bc < n_block_cols; bc++) {
+                    int32_t old_bc = ob->column_perm[bc];
+                    for (int j = 0; j < 32; j++) {
+                        perm_idx[bc * 32 + j] = old_bc * 32 + j;
+                    }
+                }
+
+                // Create the index tensor on CPU first, then it'll be
+                // scheduled to the right backend by the allocator.
+                ggml_tensor * idx_t = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_cols);
+                memcpy(idx_t->data, perm_idx.data(), n_cols * sizeof(int32_t));
+
+                // Apply permutation via transpose + get_rows + transpose
+                // cur has shape [n_cols, n_tokens]
+                // transpose -> [n_tokens, n_cols], get_rows -> [n_tokens, n_cols],
+                // transpose back -> [n_cols, n_tokens]
+                ggml_tensor * cur_t = ggml_transpose(ctx0, cur);
+                ggml_tensor * cur_perm_t = ggml_get_rows(ctx0, cur_t, idx_t);
+                cur_perm = ggml_transpose(ctx0, cur_perm_t);
+                cur_perm = ggml_cont(ctx0, cur_perm);
+
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[reorder-graph] %s: applying activation permutation, n_cols=%lld n_block_cols=%lld\n",
+                            w->name, (long long)n_cols, (long long)n_block_cols);
+                }
+            }
+        }
+    }
+
+    // Determine if we should use the fused outlier matmul (Proposal 4.2)
+    const bool use_fused = model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
+
+    ggml_tensor * res = nullptr;
+
+    if (use_fused) {
         const auto * ob = model.get_outlier_info(w);
         if (ob && ob->n_blocks > 0) {
             const std::string & name = ob->name;
             ggml_tensor * gpu_idx    = nullptr;
             ggml_tensor * gpu_values = nullptr;
 
-            // Try the streaming cache first (ensure GPU upload if streaming enabled)
             if (model.stream_outliers()) {
                 if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
                     gpu_idx    = model.outlier_cache.get_gpu_idx(name);
@@ -1085,65 +1127,118 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 gpu_values = model.outlier_cache.get_gpu_values(name);
             }
 
-            // If not yet loaded, fall back to original GPU sidecar tensors
             if (!gpu_idx || !gpu_values) {
                 gpu_idx    = ob->idx;
                 gpu_values = ob->values;
             }
 
             if (gpu_idx && gpu_values) {
-                // Use merged format when available (Proposal 4.1)
-                ggml_tensor * gpu_merged_idx = model.outlier_cache.get_gpu_merged_idx(name);
-
-                if (gpu_merged_idx) {
-                    // Use the cached merged idx from streaming cache
-                    ggml_tensor * corr = ggml_mul_mat_outlier_blocks_merged(
-                            ctx0, gpu_merged_idx, gpu_values, cur,
-                            ob->n_rows_out, ob->n_cols);
-                    if (ggml_custom_logs_enabled()) {
-                        fprintf(stderr, "[delta-graph-merged] %s: correction op created (cached merged), n_merged_runs=%lld n_blocks=%lld\n",
-                                w->name, (long long)gpu_merged_idx->ne[1], (long long)ob->n_blocks);
-                    }
-                    res = ggml_add(ctx0, res, corr);
-                } else {
-                    // Fall back to original unmerged kernel
-                    ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
-                            ctx0, gpu_idx, gpu_values, cur,
-                            ob->n_rows_out, ob->n_cols);
-                    if (ggml_custom_logs_enabled()) {
-                        fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
-                                w->name,
-                                (long long)res->ne[0], (long long)res->ne[1],
-                                (long long)corr->ne[0], (long long)corr->ne[1],
-                                (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
-                    }
-                    res = ggml_add(ctx0, res, corr);
-                }
+                // Fused path: replace base matmul + correction with single fused op
+                res = ggml_mul_mat_outlier_fused(
+                        ctx0, w, cur_perm, gpu_idx, gpu_values,
+                        ob->n_rows_out, ob->n_cols);
+                ggml_set_op_params_i32(res, 2, (int32_t)ob->value_type);
                 if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
-                            w->name, (long long)res->ne[0], (long long)res->ne[1]);
+                    fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
+                            w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
                 }
-                // One-time debug: report which weights use correction
-                static std::set<const ggml_tensor *> _printed_outlier;
-                if (_printed_outlier.insert(w).second) {
-                    LLAMA_LOG_INFO("[outlier-corr] graph: %s — %lld outlier blocks (%.1f%% of %lld)\n",
-                        w->name, (long long)ob->n_blocks,
-                        (ob->n_rows_out * ob->n_cols / 32) > 0 ? 100.0 * ob->n_blocks / (ob->n_rows_out * ob->n_cols / 32) : 0.0,
-                        (long long)(ob->n_rows_out * ob->n_cols / 32));
+                // One-time debug: report which weights use fused matmul
+                static std::set<const ggml_tensor *> _printed_fused;
+                if (_printed_fused.insert(w).second) {
+                    LLAMA_LOG_INFO("[outlier-fused] graph: %s — %lld outlier blocks fused into matmul\n",
+                        w->name, (long long)ob->n_blocks);
                 }
-        } else {
-            const char * reason = "no outlier info";
-            if (!ob) reason = "get_outlier_info returned nullptr";
-            else if (ob->n_blocks == 0) reason = "n_blocks == 0";
-            else if (!ob->idx) reason = "idx tensor is null";
-            else if (!ob->values) reason = "values tensor is null";
-            if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-graph] %s: SKIPPED correction — %s\n", w->name, reason);
             }
         }
-    } else if (w && !model.has_outlier_blocks(w)) {
-        // Not an outlier tensor, no logging needed
     }
+
+    // Fallback: standard matmul if fused not available or not applicable
+    if (!res) {
+        res = ggml_mul_mat(ctx0, w, cur_perm);
+
+        // Q8_0_BF16_OUTLIER: add sparse outlier correction for protected blocks
+        // Uses the streaming cache: sidecars are uploaded from CPU to GPU
+        // on-demand with a sliding window for predictive prefetch.
+        if (w && model.has_outlier_blocks(w)) {
+            const auto * ob = model.get_outlier_info(w);
+            if (ob && ob->n_blocks > 0) {
+                const std::string & name = ob->name;
+                ggml_tensor * gpu_idx    = nullptr;
+                ggml_tensor * gpu_values = nullptr;
+
+                // Try the streaming cache first (ensure GPU upload if streaming enabled)
+                if (model.stream_outliers()) {
+                    if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
+                        gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+                        gpu_values = model.outlier_cache.get_gpu_values(name);
+                    }
+                } else {
+                    gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+                    gpu_values = model.outlier_cache.get_gpu_values(name);
+                }
+
+                // If not yet loaded, fall back to original GPU sidecar tensors
+                if (!gpu_idx || !gpu_values) {
+                    gpu_idx    = ob->idx;
+                    gpu_values = ob->values;
+                }
+
+                if (gpu_idx && gpu_values) {
+                    // Use merged format when available (Proposal 4.1)
+                    ggml_tensor * gpu_merged_idx = model.outlier_cache.get_gpu_merged_idx(name);
+
+                    if (gpu_merged_idx) {
+                        // Use the cached merged idx from streaming cache
+                        ggml_tensor * corr = ggml_mul_mat_outlier_blocks_merged(
+                                ctx0, gpu_merged_idx, gpu_values, cur,
+                                ob->n_rows_out, ob->n_cols);
+                        ggml_set_op_params_i32(corr, 2, (int32_t)ob->value_type);
+                        if (ggml_custom_logs_enabled()) {
+                            fprintf(stderr, "[delta-graph-merged] %s: correction op created (cached merged), n_merged_runs=%lld n_blocks=%lld\n",
+                                    w->name, (long long)gpu_merged_idx->ne[1], (long long)ob->n_blocks);
+                        }
+                        res = ggml_add(ctx0, res, corr);
+                    } else {
+                        // Fall back to original unmerged kernel
+                        ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
+                                ctx0, gpu_idx, gpu_values, cur_perm,
+                                ob->n_rows_out, ob->n_cols);
+                        ggml_set_op_params_i32(corr, 2, (int32_t)ob->value_type);
+                        if (ggml_custom_logs_enabled()) {
+                            fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
+                                    w->name,
+                                    (long long)res->ne[0], (long long)res->ne[1],
+                                    (long long)corr->ne[0], (long long)corr->ne[1],
+                                    (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
+                        }
+                        res = ggml_add(ctx0, res, corr);
+                    }
+                    if (ggml_custom_logs_enabled()) {
+                        fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
+                                w->name, (long long)res->ne[0], (long long)res->ne[1]);
+                    }
+                    // One-time debug: report which weights use correction
+                    static std::set<const ggml_tensor *> _printed_outlier;
+                    if (_printed_outlier.insert(w).second) {
+                        LLAMA_LOG_INFO("[outlier-corr] graph: %s — %lld outlier blocks (%.1f%% of %lld)\n",
+                            w->name, (long long)ob->n_blocks,
+                            (ob->n_rows_out * ob->n_cols / 32) > 0 ? 100.0 * ob->n_blocks / (ob->n_rows_out * ob->n_cols / 32) : 0.0,
+                            (long long)(ob->n_rows_out * ob->n_cols / 32));
+                    }
+            } else {
+                const char * reason = "no outlier info";
+                if (!ob) reason = "get_outlier_info returned nullptr";
+                else if (ob->n_blocks == 0) reason = "n_blocks == 0";
+                else if (!ob->idx) reason = "idx tensor is null";
+                else if (!ob->values) reason = "values tensor is null";
+                if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-graph] %s: SKIPPED correction — %s\n", w->name, reason);
+                }
+            }
+        } else if (w && !model.has_outlier_blocks(w)) {
+            // Not an outlier tensor, no logging needed
+        }
+        }
     }
 
     for (const auto & lora : *loras) {

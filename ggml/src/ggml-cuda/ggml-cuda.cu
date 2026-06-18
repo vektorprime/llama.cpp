@@ -2988,6 +2988,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED:
             ggml_cuda_op_mul_mat_outlier_blocks_merged(ctx, dst);
             break;
+        case GGML_OP_MUL_MAT_OUTLIER_FUSED:
+            ggml_cuda_op_mul_mat_outlier_fused(ctx, dst);
+            break;
         case GGML_OP_OUT_PROD:
             ggml_cuda_out_prod(ctx, dst);
             break;
@@ -5435,6 +5438,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SOLVE_TRI:
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED:
+        case GGML_OP_MUL_MAT_OUTLIER_FUSED:
             return true;
 
         default:
@@ -5457,6 +5461,7 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED:
+        case GGML_OP_MUL_MAT_OUTLIER_FUSED:
         case GGML_OP_ROPE:
         case GGML_OP_ROPE_BACK:
             return op->ne[2];

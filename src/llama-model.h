@@ -611,6 +611,12 @@ struct llama_model {
 
         // Merged contiguous runs for wider kernel launches (Proposal 4.1)
         std::vector<outlier_merged_run> merged_runs;
+
+        // Column permutation for clustering outlier blocks (Proposal 4.4)
+        // Inverse permutation: column_perm[new_col_index] = original_col_index
+        // Used by graph builder to permute activations before matmul.
+        // Empty if no reordering applied.
+        std::vector<int32_t> column_perm;
     };
 
     void build_outlier_info(const struct llama_model_loader * ml = nullptr);
@@ -648,6 +654,7 @@ struct llama_model {
     uint32_t n_gpu_layers() const;
     llama_split_mode split_mode() const;
     bool stream_outliers() const { return params.stream_outliers; }
+    bool fuse_outlier_matmul() const { return params.fuse_outlier_matmul; }
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
 

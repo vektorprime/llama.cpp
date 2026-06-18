@@ -683,3 +683,340 @@ void ggml_cuda_op_mul_mat_outlier_blocks_merged(ggml_backend_cuda_context & ctx,
             n_merged_runs, n_blocks_total, n_cols_all, n_cols_x, col_offset, x_stride,
             n_rows_out, n_tokens, values->type);
 }
+
+// ============================================================================
+// Fused outlier-aware matmul kernel (Proposal 4.2)
+//
+// Replaces the separate base matmul + sparse correction with a single fused
+// kernel that dequantizes Q4_0/Q8_0 weights, checks for outlier delta via CSR
+// lookup, adds delta inline, and computes the dot product.
+//
+// Grid: (n_rows_out, n_tokens) — one thread block per output element
+// Block: 256 threads
+// Each thread block loops over all blocks in its assigned row.
+// ============================================================================
+
+// Q4_0 block layout for direct access in kernel
+typedef struct {
+    half  d;
+    uint8_t qs[16];
+} block_q4_0_cuda;
+
+#define FUSED_BLOCK_SIZE 256
+
+static __global__ void fused_outlier_q4_0_kernel(
+        const block_q4_0_cuda * __restrict__ w_q4,      // [n_blocks_per_row, n_rows_out]
+        const float *           __restrict__ x,          // [n_cols_x, n_tokens]
+        const int32_t *         __restrict__ idx,        // [2, n_outlier_blocks]
+        const uint8_t *         __restrict__ values,     // [16, n_outlier_blocks] nibble-diff
+        float *                 __restrict__ dst,        // [n_rows_out, n_tokens]
+        const int64_t n_rows_out,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_tokens,
+        const int64_t n_blocks_per_row,
+        const int64_t n_outlier_blocks,
+        const int32_t *        __restrict__ row_ptr,     // [n_rows_out + 1] CSR prefix sum
+        const int32_t *        __restrict__ block_col_csr) { // [n_outlier_blocks] sorted block cols
+
+    const int64_t row   = blockIdx.x;
+    const int64_t token = blockIdx.y;
+
+    if (row >= n_rows_out || token >= n_tokens) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    float sum = 0.0f;
+
+    // Iterate over all blocks in this row
+    for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+        const int64_t col0 = bk * 32;
+        const int64_t weight_idx = row * n_blocks_per_row + bk;
+        const block_q4_0_cuda * q4block = &w_q4[weight_idx];
+        const float d = __half2float(q4block->d);
+
+        // CSR lookup: check if this block has a delta
+        int32_t delta_idx = -1;
+        const int32_t r_start = row_ptr[row];
+        const int32_t r_end   = row_ptr[row + 1];
+        for (int32_t k = r_start; k < r_end; k++) {
+            if (block_col_csr[k] == (int32_t)bk) {
+                delta_idx = k;
+                break;
+            }
+        }
+        const bool has_delta = (delta_idx >= 0);
+
+        // Each thread handles elements_per_thread in this block
+        for (int32_t j = tid; j < 32; j += block_size) {
+            const int64_t col_global = col0 + j;
+
+            if (col_global < col_offset || col_global >= col_offset + n_cols_x) {
+                continue;
+            }
+            if (col_global >= n_cols_all) {
+                continue;
+            }
+
+            // Dequantize Q4_0 weight
+            const uint8_t byte = q4block->qs[j >> 1];
+            const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+            float w = d * ((float)(int)nibble - 8.0f);
+
+            // Add delta if present (nibble-diff format)
+            if (has_delta) {
+                const uint8_t dbyte = values[delta_idx * 16 + (j >> 1)];
+                const uint8_t dnibble = (j & 1) ? (dbyte >> 4) : (dbyte & 0x0F);
+                if (dnibble & 0x08) {
+                    float dv = (dnibble & 0x02) ? 0.001f : 0.01f;
+                    if (dnibble & 0x01) dv *= 2.0f;
+                    if (!(dnibble & 0x04)) dv = -dv;
+                    w += dv;
+                }
+            }
+
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token * x_stride];
+            sum += w * a;
+        }
+    }
+
+    // Warp reduce
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    // First thread of each warp writes result
+    if ((tid & 31) == 0) {
+        dst[row + token * n_rows_out] = sum;
+    }
+}
+
+// Fallback kernel for generic Q8_0 or other types using ggml dequant API
+static __global__ void fused_outlier_generic_kernel(
+        const char *            __restrict__ w_data,     // quantized weight data
+        const float *           __restrict__ x,
+        const int32_t *         __restrict__ idx,
+        const uint8_t *         __restrict__ values,     // nibble-diff by default
+        float *                 __restrict__ dst,
+        const int64_t n_rows_out,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_tokens,
+        const int64_t n_blocks_per_row,
+        const int64_t n_outlier_blocks,
+        const int32_t *        __restrict__ row_ptr,
+        const int32_t *        __restrict__ block_col_csr,
+        const int32_t weight_type_size) {  // bytes per Q block
+
+    const int64_t row   = blockIdx.x;
+    const int64_t token = blockIdx.y;
+
+    if (row >= n_rows_out || token >= n_tokens) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+    float sum = 0.0f;
+
+    for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+        const int64_t col0 = bk * 32;
+        const int64_t weight_idx = row * n_blocks_per_row + bk;
+
+        // Dequantize this block on-the-fly (shared memory dequant buf)
+        __shared__ float dequant_buf[32];
+        if (tid < 32) {
+            // Simple dequant: read raw bytes, convert
+            const char * block_ptr = w_data + weight_idx * weight_type_size;
+            // For Q8_0: 2 bytes d + 32 bytes qs = 34 bytes
+            // For simplicity, use half d to float conversion
+            if (weight_type_size >= 34) {
+                const half * d_ptr = (const half *)block_ptr;
+                const char * qs = block_ptr + 2;
+                const float d = __half2float(*d_ptr);
+                dequant_buf[tid] = d * (float)qs[tid];
+            } else {
+                // Q4_0 fallback: 2 bytes d + 16 bytes qs
+                const half * d_ptr = (const half *)block_ptr;
+                const uint8_t * qs = (const uint8_t *)(block_ptr + 2);
+                const float d = __half2float(*d_ptr);
+                const uint8_t byte = qs[tid >> 1];
+                const uint8_t nibble = (tid & 1) ? (byte >> 4) : (byte & 0x0F);
+                dequant_buf[tid] = d * ((float)(int)nibble - 8.0f);
+            }
+        }
+        __syncthreads();
+
+        // CSR lookup for delta
+        int32_t delta_idx = -1;
+        const int32_t r_start = row_ptr[row];
+        const int32_t r_end   = row_ptr[row + 1];
+        for (int32_t k = r_start; k < r_end; k++) {
+            if (block_col_csr[k] == (int32_t)bk) {
+                delta_idx = k;
+                break;
+            }
+        }
+        const bool has_delta = (delta_idx >= 0);
+
+        for (int32_t j = tid; j < 32; j += block_size) {
+            const int64_t col_global = col0 + j;
+            if (col_global < col_offset || col_global >= col_offset + n_cols_x) continue;
+            if (col_global >= n_cols_all) continue;
+
+            float w = dequant_buf[j];
+
+            if (has_delta) {
+                const uint8_t dbyte = values[delta_idx * 16 + (j >> 1)];
+                const uint8_t dnibble = (j & 1) ? (dbyte >> 4) : (dbyte & 0x0F);
+                if (dnibble & 0x08) {
+                    float dv = (dnibble & 0x02) ? 0.001f : 0.01f;
+                    if (dnibble & 0x01) dv *= 2.0f;
+                    if (!(dnibble & 0x04)) dv = -dv;
+                    w += dv;
+                }
+            }
+
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token * x_stride];
+            sum += w * a;
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if ((tid & 31) == 0) {
+        dst[row + token * n_rows_out] = sum;
+    }
+}
+
+void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * w      = dst->src[0];
+    const ggml_tensor * x      = dst->src[1];
+    const ggml_tensor * idx    = dst->src[2];
+    const ggml_tensor * values = dst->src[3];
+
+    GGML_ASSERT(ggml_is_quantized(w->type));
+    GGML_ASSERT(x->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
+    GGML_ASSERT(idx->ne[0] == 2);
+    GGML_ASSERT(idx->ne[1] == values->ne[1]);
+
+    const int64_t n_rows_out      = ggml_get_op_params_i32(dst, 0);
+    const int64_t n_cols_all      = ggml_get_op_params_i32(dst, 1);
+    const int64_t n_outlier_blocks = idx->ne[1];
+    const int64_t n_tokens         = x->ne[1];
+    const int64_t n_cols_x         = x->ne[0];
+    const int64_t x_stride         = x->nb[1] / (int64_t)sizeof(float);
+    const int64_t n_blocks_per_row = n_cols_all / 32;
+
+    int64_t col_offset = 0;
+    if (x->view_src && x->view_offs > 0) {
+        col_offset = x->view_offs / (int64_t)sizeof(float);
+    } else if (n_cols_x < n_cols_all) {
+        col_offset = ctx.device * n_cols_x;
+    }
+
+    GGML_ASSERT(dst->ne[0] == n_rows_out);
+    GGML_ASSERT(dst->ne[1] == n_tokens);
+    GGML_ASSERT(n_cols_x <= n_cols_all);
+
+    cudaStream_t stream = ctx.stream();
+
+    // Build CSR layout from idx on GPU
+    // We need row_ptr and block_col on device for fast lookup
+    // Since the idx is already on GPU, we can build CSR on-the-fly using a small temp buffer
+    // For now, copy idx to host and build CSR there, then upload
+    const int32_t * idx_d = (const int32_t *) idx->data;
+
+    // Build CSR on host
+    std::vector<int32_t> row_ptr_h(n_rows_out + 1, 0);
+    std::vector<int32_t> block_col_h(n_outlier_blocks);
+    std::vector<int32_t> idx_h(n_outlier_blocks * 2);
+
+    CUDA_CHECK(cudaMemcpyAsync(idx_h.data(), idx_d,
+            n_outlier_blocks * 2 * sizeof(int32_t),
+            cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    for (int64_t k = 0; k < n_outlier_blocks; k++) {
+        int32_t row = idx_h[k * 2];
+        if (row >= 0 && row < (int32_t)n_rows_out) {
+            row_ptr_h[row + 1]++;
+        }
+    }
+    for (int64_t r = 0; r < n_rows_out; r++) {
+        row_ptr_h[r + 1] += row_ptr_h[r];
+    }
+
+    std::vector<int32_t> row_cursor = row_ptr_h;
+    for (int64_t k = 0; k < n_outlier_blocks; k++) {
+        int32_t row = idx_h[k * 2];
+        int32_t bcol = idx_h[k * 2 + 1];
+        if (row >= 0 && row < (int32_t)n_rows_out) {
+            int32_t pos = row_cursor[row]++;
+            block_col_h[pos] = bcol;
+        }
+    }
+
+    // Upload CSR to GPU
+    int32_t * row_ptr_d = nullptr;
+    int32_t * block_col_d = nullptr;
+    CUDA_CHECK(cudaMalloc(&row_ptr_d, (n_rows_out + 1) * sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(&block_col_d, n_outlier_blocks * sizeof(int32_t)));
+    CUDA_CHECK(cudaMemcpyAsync(row_ptr_d, row_ptr_h.data(),
+            (n_rows_out + 1) * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(block_col_d, block_col_h.data(),
+            n_outlier_blocks * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+
+    const bool is_q4_0 = (w->type == GGML_TYPE_Q4_0);
+    const bool is_nibble = (values->type == GGML_TYPE_I8);
+
+    dim3 block_dim(FUSED_BLOCK_SIZE, 1, 1);
+    dim3 grid_dim((uint32_t) n_rows_out, (uint32_t) n_tokens, 1);
+
+    if (is_q4_0 && is_nibble) {
+        const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
+        const uint8_t * values_d = (const uint8_t *) values->data;
+        const float * x_d = (const float *) x->data;
+        float * dst_d = (float *) dst->data;
+
+        fused_outlier_q4_0_kernel<<<grid_dim, block_dim, 0, stream>>>(
+                w_q4_d, x_d, idx_d, values_d, dst_d,
+                n_rows_out, n_cols_all, n_cols_x, col_offset, x_stride,
+                n_tokens, n_blocks_per_row, n_outlier_blocks,
+                row_ptr_d, block_col_d);
+    } else {
+        const char * w_data_d = (const char *) w->data;
+        const uint8_t * values_d = (const uint8_t *) values->data;
+        const float * x_d = (const float *) x->data;
+        float * dst_d = (float *) dst->data;
+        const int32_t w_type_size = (int32_t) ggml_type_size(w->type);
+
+        fused_outlier_generic_kernel<<<grid_dim, block_dim, 0, stream>>>(
+                w_data_d, x_d, idx_d, values_d, dst_d,
+                n_rows_out, n_cols_all, n_cols_x, col_offset, x_stride,
+                n_tokens, n_blocks_per_row, n_outlier_blocks,
+                row_ptr_d, block_col_d, w_type_size);
+    }
+
+    CUDA_CHECK(cudaGetLastError());
+
+    // Cleanup
+    CUDA_CHECK(cudaFree(row_ptr_d));
+    CUDA_CHECK(cudaFree(block_col_d));
+}

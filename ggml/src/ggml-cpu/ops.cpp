@@ -4475,6 +4475,8 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
 
     const int64_t n_rows_out = ggml_get_op_params_i32(dst, 0);
     const int64_t n_cols     = ggml_get_op_params_i32(dst, 1);
+    const int32_t value_type_i32 = ggml_get_op_params_i32(dst, 2); // may be unset (=0) for old models
+    const bool is_q2k_nibble = (values->type == GGML_TYPE_I8 && value_type_i32 == 3); // LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K = 3
     const int64_t n_blocks   = idx->ne[1];
     const int64_t n_tokens   = x->ne[1];
 
@@ -4555,8 +4557,17 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
                         uint8_t n = nibbles[jj];
                         float v = 0.0f;
                         if (n & 0x08) {
-                            v = (n & 0x02) ? 0.001f : 0.01f;
-                            if (n & 0x01) v *= 2.0f;
+                            if (is_q2k_nibble) {
+                                switch (n & 0x03) {
+                                    case 0: v = 0.002f; break;
+                                    case 1: v = 0.005f; break;
+                                    case 2: v = 0.02f;  break;
+                                    case 3: v = 0.05f;  break;
+                                }
+                            } else {
+                                v = (n & 0x02) ? 0.001f : 0.01f;
+                                if (n & 0x01) v *= 2.0f;
+                            }
                             if (!(n & 0x04)) v = -v;
                         }
                         fprintf(stderr, " %.6f", v);
@@ -4568,8 +4579,17 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
                     const uint8_t nibble = nibbles[j];
                     float w = 0.0f;
                     if (nibble & 0x08) {
-                        w = (nibble & 0x02) ? 0.001f : 0.01f;
-                        if (nibble & 0x01) w *= 2.0f;
+                        if (is_q2k_nibble) {
+                            switch (nibble & 0x03) {
+                                case 0: w = 0.002f; break;
+                                case 1: w = 0.005f; break;
+                                case 2: w = 0.02f;  break;
+                                case 3: w = 0.05f;  break;
+                            }
+                        } else {
+                            w = (nibble & 0x02) ? 0.001f : 0.01f;
+                            if (nibble & 0x01) w *= 2.0f;
+                        }
                         if (!(nibble & 0x04)) w = -w;
                     }
                     const float a = x_data[(col0 + j) + it * x_stride];
@@ -4650,6 +4670,8 @@ void ggml_compute_forward_mul_mat_outlier_blocks_merged(
 
     const int64_t n_rows_out    = ggml_get_op_params_i32(dst, 0);
     const int64_t n_cols        = ggml_get_op_params_i32(dst, 1);
+    const int32_t value_type_i32 = ggml_get_op_params_i32(dst, 2); // may be unset (=0) for old models
+    const bool is_q2k_nibble = (values->type == GGML_TYPE_I8 && value_type_i32 == 3);
     const int64_t n_merged_runs = merged_idx->ne[1];
     const int64_t n_tokens      = x->ne[1];
 
@@ -4750,6 +4772,156 @@ void ggml_compute_forward_mul_mat_outlier_blocks_merged(
                 }
             }
             dst_data[row + it * dst_stride] += sum;
+        }
+    }
+}
+
+// ggml_compute_forward_mul_mat_outlier_fused
+//
+// Fused outlier-aware matmul (Proposal 4.2)
+// Replaces base matmul + separate correction with a single fused pass.
+// For each row/token, dequantizes each Q4_0/Q8_0 block, checks for outlier
+// delta via CSR lookup, adds delta inline, and computes dot product.
+void ggml_compute_forward_mul_mat_outlier_fused(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * w      = dst->src[0];
+    const ggml_tensor * x      = dst->src[1];
+    const ggml_tensor * idx    = dst->src[2];
+    const ggml_tensor * values = dst->src[3];
+
+    GGML_ASSERT(ggml_is_quantized(w->type));
+    GGML_ASSERT(x->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
+    GGML_ASSERT(idx->ne[0] == 2);
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 16));
+    GGML_ASSERT(idx->ne[1] == values->ne[1]);
+
+    const int64_t n_rows_out = ggml_get_op_params_i32(dst, 0);
+    const int64_t n_cols     = ggml_get_op_params_i32(dst, 1);
+    const int64_t n_blocks   = idx->ne[1];
+    const int64_t n_tokens   = x->ne[1];
+
+    GGML_ASSERT(dst->ne[0] == n_rows_out);
+    GGML_ASSERT(dst->ne[1] == n_tokens);
+    GGML_ASSERT(x->ne[0] == n_cols);
+    GGML_ASSERT(w->ne[0] == n_cols);
+    GGML_ASSERT(w->ne[1] == n_rows_out);
+
+    const int64_t ith = params->ith;
+    const int64_t nth = params->nth;
+
+    float * dst_data = (float *) dst->data;
+    const int64_t dst_stride = dst->nb[1] / sizeof(float);
+
+    // Thread partitioning by rows
+    const int64_t row_per_thread = (n_rows_out + nth - 1) / nth;
+    const int64_t row0 = ith * row_per_thread;
+    const int64_t row1 = MIN(row0 + row_per_thread, n_rows_out);
+
+    if (row0 >= row1) return;
+
+    // Zero the output rows for this thread
+    for (int64_t row = row0; row < row1; row++) {
+        for (int64_t it = 0; it < n_tokens; it++) {
+            dst_data[row + it * dst_stride] = 0.0f;
+        }
+    }
+
+    const int32_t * idx_data    = (const int32_t *) idx->data;
+    const float * x_data        = (const float *) x->data;
+    const int64_t x_stride      = x->nb[1] / sizeof(float);
+    const int64_t n_blocks_per_row = n_cols / 32;
+
+    const bool is_q8_0_weight = (w->type == GGML_TYPE_Q8_0);
+    const bool is_q4_0_weight = (w->type == GGML_TYPE_Q4_0);
+    const bool is_q2_k_weight = (w->type == GGML_TYPE_Q2_K);
+
+    const block_q8_0 * w_q8 = (const block_q8_0 *) w->data;
+    const block_q4_0 * w_q4 = (const block_q4_0 *) w->data;
+
+    const bool is_q8_0_val   = (values->type == GGML_TYPE_Q8_0);
+    const bool is_nibble_val = (values->type == GGML_TYPE_I8);
+    const ggml_bf16_t * values_bf16   = (const ggml_bf16_t *) values->data;
+    const block_q8_0   * values_q8    = (const block_q8_0 *) values->data;
+    const uint8_t      * values_nibble = (const uint8_t *) values->data;
+
+    // Build CSR lookup for rapid delta check
+    // For each row, store sorted list of (block_col, delta_block_idx) pairs
+    std::vector<std::vector<std::pair<int32_t, int32_t>>> row_deltas(n_rows_out);
+    for (int64_t k = 0; k < n_blocks; k++) {
+        int32_t r = idx_data[k * 2];
+        int32_t bc = idx_data[k * 2 + 1];
+        if (r >= 0 && r < (int32_t)n_rows_out && bc >= 0 && bc < (int32_t)n_blocks_per_row) {
+            row_deltas[r].push_back({bc, (int32_t)k});
+        }
+    }
+
+    for (int64_t row = row0; row < row1; row++) {
+        const auto & deltas = row_deltas[row];
+        // Build a quick lookup: block_col -> delta_block_idx
+        // Since deltas are typically very sparse, linear scan is fine
+        // But we can sort for potential binary search
+        // For now, just linear scan since n_deltas_per_row is small
+
+        for (int64_t it = 0; it < n_tokens; it++) {
+            float sum = 0.0f;
+
+            for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                const int64_t weight_idx = row * n_blocks_per_row + bk;
+                const int64_t col0 = bk * 32;
+
+                // Check if this block has a delta
+                int32_t delta_idx = -1;
+                for (const auto & [dbc, didx] : deltas) {
+                    if (dbc == (int32_t)bk) {
+                        delta_idx = didx;
+                        break;
+                    }
+                }
+
+                const bool has_delta = (delta_idx >= 0);
+
+                for (int64_t j = 0; j < 32; j++) {
+                    // Dequantize weight
+                    float w_val;
+                    if (is_q4_0_weight) {
+                        const int q = (w_q4[weight_idx].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+                        w_val = GGML_FP16_TO_FP32(w_q4[weight_idx].d) * (q - 8);
+                    } else if (is_q8_0_weight) {
+                        w_val = GGML_FP16_TO_FP32(w_q8[weight_idx].d) * w_q8[weight_idx].qs[j];
+                    } else {
+                        // Fallback: use ggml dequantization
+                        float tmp[32];
+                        ggml_dequantize_row((const void *)((const char *)w->data + weight_idx * ggml_type_size(w->type)), tmp, 32, w->type);
+                        w_val = tmp[j];
+                    }
+
+                    // Add delta if present
+                    if (has_delta) {
+                        if (is_nibble_val) {
+                            const uint8_t byte = values_nibble[delta_idx * 16 + (j >> 1)];
+                            const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                            if (nibble & 0x08) {
+                                float dv = (nibble & 0x02) ? 0.001f : 0.01f;
+                                if (nibble & 0x01) dv *= 2.0f;
+                                if (!(nibble & 0x04)) dv = -dv;
+                                w_val += dv;
+                            }
+                        } else if (is_q8_0_val) {
+                            w_val += GGML_FP16_TO_FP32(values_q8[delta_idx].d) * values_q8[delta_idx].qs[j];
+                        } else {
+                            w_val += GGML_BF16_TO_FP32(values_bf16[delta_idx * 32 + j]);
+                        }
+                    }
+
+                    const float a = x_data[(col0 + j) + it * x_stride];
+                    sum += w_val * a;
+                }
+            }
+
+            dst_data[row + it * dst_stride] = sum;
         }
     }
 }

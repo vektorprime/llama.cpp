@@ -50,6 +50,7 @@ void ggml_compute_forward_group_norm(const struct ggml_compute_params * params, 
 void ggml_compute_forward_l2_norm(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_mul_mat_outlier_blocks(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_mul_mat_outlier_blocks_merged(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_mul_mat_outlier_fused(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_out_prod(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_scale(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_set(const struct ggml_compute_params * params, struct ggml_tensor * dst);

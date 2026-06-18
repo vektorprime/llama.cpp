@@ -1091,9 +1091,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
     "MUL_MAT_OUTLIER_BLOCKS",
     "MUL_MAT_OUTLIER_BLOCKS_MERGED",
+    "MUL_MAT_OUTLIER_FUSED",
 };
 
-static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1203,9 +1204,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
     "mul_mat_outlier_blocks(idx,values,x)",
     "mul_mat_outlier_blocks_merged(merged_idx,values,x)",
+    "mul_mat_outlier_fused(w,x,idx,values)",
 };
 
-static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3369,6 +3371,49 @@ struct ggml_tensor * ggml_mul_mat_outlier_blocks_merged(
     result->src[0] = merged_idx;
     result->src[1] = values;
     result->src[2] = x;
+
+    ggml_set_op_params_i32(result, 0, (int32_t) n_rows_out);
+    ggml_set_op_params_i32(result, 1, (int32_t) n_cols);
+
+    return result;
+}
+
+// ggml_mul_mat_outlier_fused
+//
+// Fused outlier-aware matmul (Proposal 4.2)
+// Replaces base matmul + sparse correction with a single fused pass.
+//
+// w      -> [n_cols, n_rows_out], quantized weights (Q4_0, Q8_0, Q2_K)
+// x      -> [n_cols, n_tokens]
+// idx    -> [2, n_blocks], i32 (row, block_col per block)
+// values -> [elem_bytes, n_blocks], bf16/Q8_0/I8 (nibble)
+// c      -> [n_rows_out, n_tokens]
+struct ggml_tensor * ggml_mul_mat_outlier_fused(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * w,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * idx,
+        struct ggml_tensor  * values,
+        int64_t               n_rows_out,
+        int64_t               n_cols) {
+    GGML_ASSERT(ggml_is_quantized(w->type));
+    GGML_ASSERT(x->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
+    GGML_ASSERT(idx->ne[0] == 2);
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 16));
+    GGML_ASSERT(idx->ne[1] == values->ne[1]);
+    GGML_ASSERT(x->ne[0] <= n_cols);
+
+    const int64_t n_tokens = x->ne[1];
+    const int64_t ne[4] = { n_rows_out, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 2, ne);
+
+    result->op     = GGML_OP_MUL_MAT_OUTLIER_FUSED;
+    result->src[0] = w;
+    result->src[1] = x;
+    result->src[2] = idx;
+    result->src[3] = values;
 
     ggml_set_op_params_i32(result, 0, (int32_t) n_rows_out);
     ggml_set_op_params_i32(result, 1, (int32_t) n_cols);
@@ -6928,7 +6973,8 @@ static void ggml_compute_backward(
             GGML_ASSERT(!src1_needs_grads && "backward pass for labels not implemented");
         } break;
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
-        case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED: {
+        case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED:
+        case GGML_OP_MUL_MAT_OUTLIER_FUSED: {
             // no backward pass needed for inference
         } break;
         case GGML_OP_GLU: {

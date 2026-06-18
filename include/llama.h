@@ -328,6 +328,7 @@ extern "C" {
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
         bool stream_outliers; // stream outlier sidecar data to GPU on demand (reduces VRAM)
+        bool fuse_outlier_matmul; // fuse outlier delta correction into base matmul (Proposal 4.2)
     };
 
     struct llama_sampler_seq_config {
@@ -411,9 +412,10 @@ extern "C" {
     };
 
     enum llama_outlier_value_type {
-        LLAMA_OUTLIER_VALUE_TYPE_BF16         = 0,
-        LLAMA_OUTLIER_VALUE_TYPE_Q8_0         = 1,
-        LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF  = 2,  // 4-bit custom diff encoding
+        LLAMA_OUTLIER_VALUE_TYPE_BF16            = 0,
+        LLAMA_OUTLIER_VALUE_TYPE_Q8_0            = 1,
+        LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF     = 2,  // 4-bit custom diff encoding (Q4_0/Q8_0)
+        LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K = 3,  // 4-bit custom diff encoding (Q2_K)
     };
 
     // model quantization parameters
