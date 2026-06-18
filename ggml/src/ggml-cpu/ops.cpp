@@ -4754,8 +4754,17 @@ void ggml_compute_forward_mul_mat_outlier_blocks_merged(
                         const uint8_t nibble = nibbles[j];
                         float w = 0.0f;
                         if (nibble & 0x08) {
-                            w = (nibble & 0x02) ? 0.001f : 0.01f;
-                            if (nibble & 0x01) w *= 2.0f;
+                            if (is_q2k_nibble) {
+                                switch (nibble & 0x03) {
+                                    case 0: w = 0.002f; break;
+                                    case 1: w = 0.005f; break;
+                                    case 2: w = 0.02f;  break;
+                                    case 3: w = 0.05f;  break;
+                                }
+                            } else {
+                                w = (nibble & 0x02) ? 0.001f : 0.01f;
+                                if (nibble & 0x01) w *= 2.0f;
+                            }
                             if (!(nibble & 0x04)) w = -w;
                         }
                         const float a = x_data[(bk_col0 + j) + it * x_stride];
@@ -4800,6 +4809,8 @@ void ggml_compute_forward_mul_mat_outlier_fused(
 
     const int64_t n_rows_out = ggml_get_op_params_i32(dst, 0);
     const int64_t n_cols     = ggml_get_op_params_i32(dst, 1);
+    const int32_t value_type_i32 = ggml_get_op_params_i32(dst, 2);
+    const bool is_q2k_nibble = (values->type == GGML_TYPE_I8 && value_type_i32 == 3);
     const int64_t n_blocks   = idx->ne[1];
     const int64_t n_tokens   = x->ne[1];
 
@@ -4894,7 +4905,10 @@ void ggml_compute_forward_mul_mat_outlier_fused(
                     } else {
                         // Fallback: use ggml dequantization
                         float tmp[32];
-                        ggml_dequantize_row((const void *)((const char *)w->data + weight_idx * ggml_type_size(w->type)), tmp, 32, w->type);
+                        {
+                            ggml_to_float_t const dq_row = ggml_get_type_traits(w->type)->to_float;
+                            dq_row((const void *)((const char *)w->data + weight_idx * ggml_type_size(w->type)), tmp, 32);
+                        }
                         w_val = tmp[j];
                     }
 
@@ -4904,8 +4918,19 @@ void ggml_compute_forward_mul_mat_outlier_fused(
                             const uint8_t byte = values_nibble[delta_idx * 16 + (j >> 1)];
                             const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
                             if (nibble & 0x08) {
-                                float dv = (nibble & 0x02) ? 0.001f : 0.01f;
-                                if (nibble & 0x01) dv *= 2.0f;
+                                float dv;
+                                if (is_q2k_nibble) {
+                                    switch (nibble & 0x03) {
+                                        case 0: dv = 0.002f; break;
+                                        case 1: dv = 0.005f; break;
+                                        case 2: dv = 0.02f;  break;
+                                        case 3: dv = 0.05f;  break;
+                                        default: dv = 0.0f; break;
+                                    }
+                                } else {
+                                    dv = (nibble & 0x02) ? 0.001f : 0.01f;
+                                    if (nibble & 0x01) dv *= 2.0f;
+                                }
                                 if (!(nibble & 0x04)) dv = -dv;
                                 w_val += dv;
                             }
