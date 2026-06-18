@@ -678,19 +678,16 @@ int llama_quantize(int argc, char ** argv) {
             if (arg_idx < argc-1) {
                 q8_outlier_include_weights = argv[++arg_idx];
                 q4_outlier_include_weights = q8_outlier_include_weights;
-                params.q2k_outlier_include_weights = q8_outlier_include_weights.c_str();
             } else {
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-exclude-weights") == 0) {
             if (arg_idx < argc-1) {
-                params.q2k_outlier_exclude_weights = q8_outlier_exclude_weights.c_str();
                 q8_outlier_exclude_weights = argv[++arg_idx];
                 q4_outlier_exclude_weights = q8_outlier_exclude_weights;
             } else {
                 usage(argv[0]);
             }
-                params.q2k_outlier_report_path = q8_outlier_report_path.c_str();
         } else if (strcmp(argv[arg_idx], "--outlier-report") == 0) {
             if (arg_idx < argc-1) {
                 q8_outlier_report_path = argv[++arg_idx];
@@ -714,7 +711,6 @@ int llama_quantize(int argc, char ** argv) {
                 params.q4_outlier_nonmax_rel_rmse = 0.01f;
                 params.q4_outlier_max_frac = 0.02f;
                 params.ftype = LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER;
-            } else {
             } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "q2_k")) {
                 ++arg_idx;
                 params.q2k_outlier_enable = true;
@@ -722,6 +718,7 @@ int llama_quantize(int argc, char ** argv) {
                 params.q2k_outlier_max_frac = 0.2f;
                 params.q2k_outlier_ratio = 4.0f;
                 params.ftype = LLAMA_FTYPE_MOSTLY_Q2_K_BF16_OUTLIER;
+            } else {
                 fprintf(stderr, "%s: --outlier-base currently supports 'q4_0' or 'q2_k'\n", __func__);
                 usage(argv[0]);
             }
@@ -774,6 +771,8 @@ int llama_quantize(int argc, char ** argv) {
 
     std::vector<std::string> imatrix_datasets;
     std::unordered_map<std::string, std::vector<float>> imatrix_data;
+    params.q2k_outlier_include_weights = q8_outlier_include_weights.empty() ? nullptr : q8_outlier_include_weights.c_str();
+    params.q2k_outlier_exclude_weights = q8_outlier_exclude_weights.empty() ? nullptr : q8_outlier_exclude_weights.c_str();
     int m_last_call = prepare_imatrix(imatrix_file, imatrix_datasets, included_weights, excluded_weights, imatrix_data);
 
     std::vector<llama_model_imatrix_data> i_data;
