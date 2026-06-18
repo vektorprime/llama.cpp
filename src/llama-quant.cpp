@@ -2015,11 +2015,12 @@ static q8_outlier_tensor_data q2k_outlier_analyze_tensor(
 static void q2k_outlier_compute_deltas(
         const float * f32_data,
         const void * q2k_data,
-        int64_t GGML_UNUSED(nrows),
+        int64_t nrows,
         int64_t n_per_row,
         q8_outlier_tensor_data & outliers,
         enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
 
+    (void)nrows;
     const size_t block_size = ggml_type_size(GGML_TYPE_Q2_K);
     const uint8_t * data = (const uint8_t *) q2k_data;
     const size_t n_blocks = outliers.idx.size() / 2;
