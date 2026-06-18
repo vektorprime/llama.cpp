@@ -43,6 +43,8 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_1:     return "Q5_1";
         case LLAMA_FTYPE_MOSTLY_Q8_0:     return "Q8_0";
         case LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER: return "Q8_0_BF16_OUTLIER";
+        case LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER: return "Q4_0_BF16_OUTLIER";
+        case LLAMA_FTYPE_MOSTLY_Q2_K_BF16_OUTLIER: return "Q2_K_BF16_OUTLIER";
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return "MXFP4 MoE";
         case LLAMA_FTYPE_MOSTLY_NVFP4:    return "NVFP4";
         case LLAMA_FTYPE_MOSTLY_Q2_K:     return "Q2_K - Medium";
@@ -671,6 +673,53 @@ llama_model_loader::llama_model_loader(
             }
         }
 
+
+        if (has_q2k_outlier_metadata()) {
+            auto q2k_meta = read_q2k_outlier_metadata();
+            for (const auto & t : q2k_meta) {
+                const ggml_tensor * base = get_tensor_meta(t.base_name.c_str());
+                if (!base) {
+                    throw std::runtime_error(format("q2k outlier: base tensor '%s' not found", t.base_name.c_str()));
+                }
+                if (base->type != GGML_TYPE_Q2_K) {
+                    LLAMA_LOG_ERROR("q2k outlier: base tensor '%s' has type %s, expected Q2_K
+",
+                        t.base_name.c_str(), ggml_type_name(base->type));
+                    throw std::runtime_error(format("q2k outlier: base tensor '%s' has wrong type %s, expected Q2_K",
+                        t.base_name.c_str(), ggml_type_name(base->type)));
+                }
+
+                const ggml_tensor * idx = get_tensor_meta(t.idx_name.c_str());
+                if (!idx) {
+                    throw std::runtime_error(format("q2k outlier: index tensor '%s' not found", t.idx_name.c_str()));
+                }
+                if (idx->type != GGML_TYPE_I32) {
+                    LLAMA_LOG_ERROR("q2k outlier: index tensor '%s' has type %s, expected I32
+",
+                        t.idx_name.c_str(), ggml_type_name(idx->type));
+                    throw std::runtime_error(format("q2k outlier: index tensor '%s' has wrong type %s, expected I32",
+                        t.idx_name.c_str(), ggml_type_name(idx->type)));
+                }
+                check_tensor_dims(t.idx_name, {2, (int64_t)t.n_blocks}, true);
+
+                const ggml_tensor * vals = get_tensor_meta(t.values_name.c_str());
+                if (!vals) {
+                    throw std::runtime_error(format("q2k outlier: values tensor '%s' not found", t.values_name.c_str()));
+                }
+                if (vals->type != GGML_TYPE_BF16 && vals->type != GGML_TYPE_Q8_0 && vals->type != GGML_TYPE_I8) {
+                    LLAMA_LOG_ERROR("q2k outlier: values tensor '%s' has type %s, expected BF16, Q8_0, or I8
+",
+                        t.values_name.c_str(), ggml_type_name(vals->type));
+                    throw std::runtime_error(format("q2k outlier: values tensor '%s' has wrong type %s, expected BF16, Q8_0, or I8",
+                        t.values_name.c_str(), ggml_type_name(vals->type)));
+                }
+                if (vals->type == GGML_TYPE_I8) {
+                    check_tensor_dims(t.values_name, {16, (int64_t)t.n_blocks}, true);
+                } else {
+                    check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
+                }
+            }
+        }
         uint16_t n_split = 0;
         get_key(llm_kv(LLM_KV_SPLIT_COUNT), n_split, false);
 
@@ -1044,6 +1093,38 @@ std::vector<llama_model_loader::llama_q4_outlier_tensor_meta> llama_model_loader
 
     for (uint32_t i = 0; i < tensor_count; i++) {
         std::string prefix = format("llama.q4_outlier.tensor.%d.", i);
+
+        std::string name_key = prefix + "name";
+        std::string idx_key = prefix + "index";
+        std::string values_key = prefix + "values";
+        std::string nblocks_key = prefix + "n_blocks";
+
+        get_key(name_key, result[i].base_name, true);
+        get_key(idx_key, result[i].idx_name, true);
+        get_key(values_key, result[i].values_name, true);
+        get_key(nblocks_key, result[i].n_blocks, true);
+    }
+
+    return result;
+}
+
+bool llama_model_loader::has_q2k_outlier_metadata() const {
+    const int kid = gguf_find_key(metadata, "llama.q2k_outlier.version");
+    return kid >= 0;
+}
+
+std::vector<llama_model_loader::llama_q2k_outlier_tensor_meta> llama_model_loader::read_q2k_outlier_metadata() {
+    std::vector<llama_q2k_outlier_tensor_meta> result;
+
+    uint32_t tensor_count = 0;
+    if (!get_key("llama.q2k_outlier.tensor_count", tensor_count, false)) {
+        return result;
+    }
+
+    result.resize(tensor_count);
+
+    for (uint32_t i = 0; i < tensor_count; i++) {
+        std::string prefix = format("llama.q2k_outlier.tensor.%d.", i);
 
         std::string name_key = prefix + "name";
         std::string idx_key = prefix + "index";

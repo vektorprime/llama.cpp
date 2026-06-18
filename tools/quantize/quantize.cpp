@@ -68,6 +68,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q8_0",     LLAMA_FTYPE_MOSTLY_Q8_0,     " 7.96G, +0.0026 ppl @ Llama-3-8B",  },
     { "Q8_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER, " mostly Q8_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
     { "Q4_0_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER, " mostly Q4_0 with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
+    { "Q2_K_BF16_OUTLIER", LLAMA_FTYPE_MOSTLY_Q2_K_BF16_OUTLIER, " mostly Q2_K with sparse BF16 outlier sidecars (CUDA-focused experimental)", },
     { "F16",      LLAMA_FTYPE_MOSTLY_F16,      "14.00G, +0.0020 ppl @ Mistral-7B",  },
     { "BF16",     LLAMA_FTYPE_MOSTLY_BF16,     "14.00G, -0.0050 ppl @ Mistral-7B",  },
     { "F32",      LLAMA_FTYPE_ALL_F32,         "26.00G              @ 7B",          },
@@ -642,6 +643,7 @@ int llama_quantize(int argc, char ** argv) {
                 float frac_val = std::stof(argv[++arg_idx]);
                 params.q8_outlier_max_frac = frac_val;
                 params.q4_outlier_max_frac = frac_val;
+                params.q2k_outlier_max_frac = frac_val;
                 if (params.q8_outlier_max_frac < 0.0f || params.q8_outlier_max_frac > 1.0f) {
                     fprintf(stderr, "error: --outlier-max-frac must be in [0, 1]\n");
                     usage(argv[0]);
@@ -664,6 +666,7 @@ int llama_quantize(int argc, char ** argv) {
             if (arg_idx < argc-1) {
                 float max_abs_error_val = std::stof(argv[++arg_idx]);
                 params.q4_outlier_max_abs_error = max_abs_error_val;
+                params.q2k_outlier_max_abs_error = max_abs_error_val;
                 if (params.q4_outlier_max_abs_error < 0.0f) {
                     fprintf(stderr, "error: --outlier-max-abs-error must be >= 0\n");
                     usage(argv[0]);
@@ -675,16 +678,19 @@ int llama_quantize(int argc, char ** argv) {
             if (arg_idx < argc-1) {
                 q8_outlier_include_weights = argv[++arg_idx];
                 q4_outlier_include_weights = q8_outlier_include_weights;
+                params.q2k_outlier_include_weights = q8_outlier_include_weights.c_str();
             } else {
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-exclude-weights") == 0) {
             if (arg_idx < argc-1) {
+                params.q2k_outlier_exclude_weights = q8_outlier_exclude_weights.c_str();
                 q8_outlier_exclude_weights = argv[++arg_idx];
                 q4_outlier_exclude_weights = q8_outlier_exclude_weights;
             } else {
                 usage(argv[0]);
             }
+                params.q2k_outlier_report_path = q8_outlier_report_path.c_str();
         } else if (strcmp(argv[arg_idx], "--outlier-report") == 0) {
             if (arg_idx < argc-1) {
                 q8_outlier_report_path = argv[++arg_idx];
@@ -709,7 +715,14 @@ int llama_quantize(int argc, char ** argv) {
                 params.q4_outlier_max_frac = 0.02f;
                 params.ftype = LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER;
             } else {
-                fprintf(stderr, "%s: --outlier-base currently supports only 'q4_0'\n", __func__);
+            } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "q2_k")) {
+                ++arg_idx;
+                params.q2k_outlier_enable = true;
+                params.q2k_outlier_max_abs_error = 0.002f;
+                params.q2k_outlier_max_frac = 0.2f;
+                params.q2k_outlier_ratio = 4.0f;
+                params.ftype = LLAMA_FTYPE_MOSTLY_Q2_K_BF16_OUTLIER;
+                fprintf(stderr, "%s: --outlier-base currently supports 'q4_0' or 'q2_k'\n", __func__);
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--outlier-value-type") == 0) {
@@ -717,14 +730,17 @@ int llama_quantize(int argc, char ** argv) {
                 ++arg_idx;
                 params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_Q8_0;
                 params.q8_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_Q8_0;
+                params.q2k_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_Q8_0;
             } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "bf16")) {
                 ++arg_idx;
                 params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
                 params.q8_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
+                params.q2k_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
             } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "nibble_diff")) {
                 ++arg_idx;
                 params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
                 params.q8_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
+                params.q2k_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
             } else {
                 fprintf(stderr, "%s: --outlier-value-type must be 'bf16', 'q8_0', or 'nibble_diff'\n", __func__);
                 usage(argv[0]);
@@ -754,6 +770,7 @@ int llama_quantize(int argc, char ** argv) {
     params.q4_outlier_include_weights = q4_outlier_include_weights.empty() ? nullptr : q4_outlier_include_weights.c_str();
     params.q4_outlier_exclude_weights = q4_outlier_exclude_weights.empty() ? nullptr : q4_outlier_exclude_weights.c_str();
     params.q4_outlier_report_path     = q4_outlier_report_path.empty()     ? nullptr : q4_outlier_report_path.c_str();
+    params.q2k_outlier_report_path     = q8_outlier_report_path.empty()     ? nullptr : q8_outlier_report_path.c_str();
 
     std::vector<std::string> imatrix_datasets;
     std::unordered_map<std::string, std::vector<float>> imatrix_data;
@@ -890,6 +907,10 @@ int llama_quantize(int argc, char ** argv) {
         params.q4_outlier_ratio = params.q8_outlier_ratio;
         params.q4_outlier_nonmax_rel_rmse = params.q8_outlier_nonmax_rel_rmse;
         params.q4_outlier_max_frac = params.q8_outlier_max_frac;
+    }
+
+    if (params.ftype == LLAMA_FTYPE_MOSTLY_Q2_K_BF16_OUTLIER) {
+        params.q2k_outlier_enable = true;
     }
 
     if (!params.dry_run) {

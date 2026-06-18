@@ -157,6 +157,7 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q8_0_BF16_OUTLIER = 41, // except 1d tensors, plus sparse BF16 outlier sidecars
         LLAMA_FTYPE_MOSTLY_Q4_0_BF16_OUTLIER = 42, // except 1d tensors, plus sparse BF16 outlier sidecars
+        LLAMA_FTYPE_MOSTLY_Q2_K_BF16_OUTLIER = 43, // except 1d tensors, plus sparse BF16 outlier sidecars
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -450,6 +451,15 @@ extern "C" {
         const char * q4_outlier_exclude_weights;                    // optional regex of tensors to exclude
         float q4_outlier_max_abs_error;                             // max-abs-error threshold (>0 enables, replaces residual-energy scoring)
         enum llama_outlier_value_type q4_outlier_value_type;        // delta storage type: BF16 or Q8_0
+        bool q2k_outlier_enable;                                    // enable Q2_K + sparse BF16 outlier sidecars
+        float q2k_outlier_max_abs_error;                            // max-abs-error threshold for Q2_K outlier detection
+        float q2k_outlier_max_frac;                                 // maximum protected block fraction per tensor
+        float q2k_outlier_ratio;                                    // ratio pre-filter: max_abs / second_abs must exceed this to be a candidate
+        float q2k_outlier_score;                                    // minimum residual-energy score to protect a block
+        const char * q2k_outlier_report_path;                       // optional JSON report path
+        const char * q2k_outlier_include_weights;                   // optional regex of tensors to include
+        const char * q2k_outlier_exclude_weights;                   // optional regex of tensors to exclude
+        enum llama_outlier_value_type q2k_outlier_value_type;       // delta storage type
     } llama_model_quantize_params;
 
     typedef struct llama_logit_bias {

@@ -123,4 +123,26 @@ static inline void llama_outlier_nibble_diff_unpack_block(const uint8_t packed[1
     }
 }
 
+// Q2_K_OUTLIER format constants (shares block size with Q8/Q4)
+static constexpr int32_t LLAMA_Q2K_OUTLIER_BLOCK_SIZE = 32;
+
+// Q2_K GGUF metadata key strings (separate namespace from Q8 and Q4)
+static constexpr const char * LLAMA_Q2K_OUTLIER_VERSION_KEY = "llama.q2k_outlier.version";
+static constexpr const char * LLAMA_Q2K_OUTLIER_BLOCK_SIZE_KEY = "llama.q2k_outlier.block_size";
+static constexpr const char * LLAMA_Q2K_OUTLIER_BASE_TYPE_KEY = "llama.q2k_outlier.base_type";
+static constexpr const char * LLAMA_Q2K_OUTLIER_VALUE_TYPE_KEY = "llama.q2k_outlier.value_type";
+static constexpr const char * LLAMA_Q2K_OUTLIER_INDEX_ENCODING_KEY = "llama.q2k_outlier.index_encoding";
+static constexpr const char * LLAMA_Q2K_OUTLIER_STORE_KEY = "llama.q2k_outlier.store";
+static constexpr const char * LLAMA_Q2K_OUTLIER_TENSOR_COUNT_KEY = "llama.q2k_outlier.tensor_count";
+
+// Q2_K per-tensor key suffixes
+static constexpr const char * LLAMA_Q2K_OUTLIER_TENSOR_NAME_SUFFIX = ".name";
+static constexpr const char * LLAMA_Q2K_OUTLIER_TENSOR_INDEX_SUFFIX = ".index";
+static constexpr const char * LLAMA_Q2K_OUTLIER_TENSOR_VALUES_SUFFIX = ".values";
+static constexpr const char * LLAMA_Q2K_OUTLIER_TENSOR_N_BLOCKS_SUFFIX = ".n_blocks";
+
+// Q2_K sidecar tensor name suffixes (same as Q8/Q4)
+static constexpr const char * LLAMA_Q2K_OUTLIER_IDX_SUFFIX = ".outlier_idx";
+static constexpr const char * LLAMA_Q2K_OUTLIER_VALUES_SUFFIX = ".outlier_bf16";
+
 #endif
