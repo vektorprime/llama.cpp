@@ -366,7 +366,7 @@ typedef struct {
     ggml_half ds[8];          // 8 sub-block scales (one per 32 elements)
     int8_t    qs[QK_K];       // 256 quants
 } block_q8_K;
-static_assert(sizeof(block_q8_K) == 2*sizeof(ggml_half) + 8*sizeof(ggml_half) + QK_K, "wrong q8_K block size/padding");
+static_assert(sizeof(block_q8_K) == sizeof(ggml_half) + 8*sizeof(ggml_half) + QK_K, "wrong q8_K block size/padding");
 
 // (Almost) "true" 2-bit quantization.
 // Due to the need to use blocks as per ggml design, it ends up using
