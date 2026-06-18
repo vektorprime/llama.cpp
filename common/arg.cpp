@@ -4147,6 +4147,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
+    add_opt(common_arg(
+        {"--custom-logs"},
+        "enable detailed debug logging (tensor names, quantization types, code flow markers)",
+        [](common_params & params) {
+            params.custom_logs = true;
+        }
+    ));
+
     return ctx_arg;
 }
 

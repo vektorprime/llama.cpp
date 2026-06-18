@@ -435,6 +435,10 @@ static results_perplexity perplexity_v2(llama_context * ctx, const common_params
         } else {
             LOG("%8d  %.4lf\n", i*params.ppl_stride, std::exp(nll / count));
         }
+        if (params.custom_logs) {
+            fprintf(stderr, "[CUSTOM-LOGS] chunk %d/%d: nll=%.6f count=%d ppl=%.6f\n",
+                    i + 1, n_chunk, nll, count, std::exp(nll / count));
+        }
     }
     LOG("\n");
 
@@ -2020,6 +2024,11 @@ int llama_perplexity(int argc, char ** argv) {
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_PERPLEXITY)) {
         return 1;
+    }
+
+    if (params.custom_logs) {
+        fprintf(stderr, "[CUSTOM-LOGS] llama-perplexity: --custom-logs enabled, model=%s n_ctx=%d\n",
+                params.model.path.c_str(), params.n_ctx);
     }
 
     const int32_t n_ctx = params.n_ctx;

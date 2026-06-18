@@ -387,6 +387,7 @@ static ggml_type tensor_type_fallback(quantize_state_impl & qs, const ggml_tenso
             case GGML_TYPE_Q4_K:    return_type = GGML_TYPE_Q5_0;   break;
             case GGML_TYPE_Q5_K:    return_type = GGML_TYPE_Q5_1;   break;
             case GGML_TYPE_Q6_K:    return_type = GGML_TYPE_Q8_0;   break;
+            case GGML_TYPE_Q8_K:    return_type = GGML_TYPE_Q8_0;   break;
             default:
                 throw std::runtime_error(format("no tensor type fallback is defined for type %s",
                                                 ggml_type_name(target_type)));
@@ -454,7 +455,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q5_K;
             }
-            else if (new_type != GGML_TYPE_Q8_0) {
+            else if (new_type != GGML_TYPE_Q8_0 && new_type != GGML_TYPE_Q8_K) {
                 new_type = GGML_TYPE_Q6_K;
             }
         }
@@ -796,6 +797,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_0: return GGML_TYPE_Q5_0;
         case LLAMA_FTYPE_MOSTLY_Q5_1: return GGML_TYPE_Q5_1;
         case LLAMA_FTYPE_MOSTLY_Q8_0: return GGML_TYPE_Q8_0;
+        case LLAMA_FTYPE_MOSTLY_Q8_K: return GGML_TYPE_Q8_K;
         case LLAMA_FTYPE_MOSTLY_F16:  return GGML_TYPE_F16;
         case LLAMA_FTYPE_MOSTLY_BF16: return GGML_TYPE_BF16;
         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
@@ -1036,6 +1038,14 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             metadata[i].target_type = tensor->type;
         }
 
+        if (params->custom_logs) {
+            LLAMA_LOG_INFO("[CUSTOM-LOGS] tensor %3zu: %-50s cur_type=%-8s new_type=%-8s allows_quant=%d\n",
+                           i, metadata[i].name.c_str(),
+                           ggml_type_name(tensor->type),
+                           ggml_type_name(metadata[i].target_type),
+                           metadata[i].allows_quantization ? 1 : 0);
+        }
+
         metadata[i].requires_imatrix = tensor_requires_imatrix(tensor->name, metadata[i].target_type, ftype);
 
         if (params->imatrix) {
@@ -1142,6 +1152,14 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         const ggml_type cur_type = tensor->type;
         const ggml_type new_type = tm.target_type;
+
+        if (params->custom_logs) {
+            LLAMA_LOG_INFO("[CUSTOM-LOGS] quantizing: %s cur=%s new=%s quant=%d\n",
+                           ggml_get_name(tensor),
+                           ggml_type_name(cur_type),
+                           ggml_type_name(new_type),
+                           (cur_type != new_type) ? 1 : 0);
+        }
 
         // If we've decided to quantize to the same type the tensor is already
         // in then there's nothing to do.
@@ -1297,6 +1315,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.pure                        =*/ false,
         /*.keep_split                  =*/ false,
         /*.dry_run                     =*/ false,
+        /*.custom_logs                 =*/ false,
         /*.imatrix                     =*/ nullptr,
         /*.kv_overrides                =*/ nullptr,
         /*.tensor_type                 =*/ nullptr,

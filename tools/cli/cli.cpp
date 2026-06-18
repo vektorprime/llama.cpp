@@ -356,6 +356,11 @@ int llama_cli(int argc, char ** argv) {
         return 1;
     }
 
+    if (params.custom_logs) {
+        fprintf(stderr, "[CUSTOM-LOGS] llama-cli: --custom-logs enabled, model=%s n_ctx=%d n_predict=%d\n",
+                params.model.path.c_str(), params.n_ctx, params.n_predict);
+    }
+
     // TODO: maybe support it later?
     if (params.conversation_mode == COMMON_CONVERSATION_MODE_DISABLED) {
         console::error("--no-conversation is not supported by llama-cli\n");
