@@ -1190,6 +1190,43 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     fprintf(stderr, "[delta-load]   total_delta_L2=%.6e\n", sqrt(total_l2));
                     fflush(stderr);
                 }
+            } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                std::vector<uint8_t> values_nibble_buf;
+                const uint8_t * values_nibble_ptr = nullptr;
+
+                if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
+                    values_nibble_ptr = (const uint8_t *) values_tensor->data;
+                } else if (values_tensor->buffer && values_tensor->data) {
+                    values_nibble_buf.resize(ggml_nbytes(values_tensor));
+                    ggml_backend_tensor_get(values_tensor, values_nibble_buf.data(), 0, ggml_nbytes(values_tensor));
+                    values_nibble_ptr = values_nibble_buf.data();
+                } else if (values_tensor->data) {
+                    values_nibble_ptr = (const uint8_t *) values_tensor->data;
+                }
+
+                if (values_nibble_ptr && ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-load] %s: n_blocks=%lld (nibble_diff)\n",
+                            name.c_str(), (long long)n_blocks);
+                    int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                    double total_l2 = 0.0;
+                    uint8_t nibbles[32];
+                    for (int64_t i = 0; i < n_blocks; i++) {
+                        double block_l2 = 0.0;
+                        llama_outlier_nibble_diff_unpack_block(values_nibble_ptr + i * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+                        for (int j = 0; j < 32; j++) {
+                            float d = llama_outlier_nibble_diff_decode(nibbles[j]);
+                            block_l2 += (double)d * d;
+                        }
+                        total_l2 += block_l2;
+                        if (i < sample) {
+                            fprintf(stderr, "[delta-load]   block[%lld] L2=%.6e\n",
+                                    (long long)i, sqrt(block_l2));
+                        }
+                    }
+                    fprintf(stderr, "[delta-load]   total_delta_L2=%.6e (sqrt of sum of all deltas squared)\n",
+                            sqrt(total_l2));
+                    fflush(stderr);
+                }
             } else {
                 std::vector<ggml_bf16_t> values_buf;
                 const ggml_bf16_t * values_ptr = nullptr;

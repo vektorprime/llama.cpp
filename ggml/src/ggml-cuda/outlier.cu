@@ -294,7 +294,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(dst->ne[1] == n_tokens);
     GGML_ASSERT(n_cols_x    <= n_cols_all);
     GGML_ASSERT(idx->ne[0]  == 2);
-    GGML_ASSERT(values->ne[0] == 32);
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 16));
 
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld values_type=%s\n",
