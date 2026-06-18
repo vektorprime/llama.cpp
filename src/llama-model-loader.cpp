@@ -682,8 +682,7 @@ llama_model_loader::llama_model_loader(
                     throw std::runtime_error(format("q2k outlier: base tensor '%s' not found", t.base_name.c_str()));
                 }
                 if (base->type != GGML_TYPE_Q2_K) {
-                    LLAMA_LOG_ERROR("q2k outlier: base tensor '%s' has type %s, expected Q2_K
-",
+                    LLAMA_LOG_ERROR("q2k outlier: base tensor '%s' has type %s, expected Q2_K\n",
                         t.base_name.c_str(), ggml_type_name(base->type));
                     throw std::runtime_error(format("q2k outlier: base tensor '%s' has wrong type %s, expected Q2_K",
                         t.base_name.c_str(), ggml_type_name(base->type)));
@@ -694,8 +693,7 @@ llama_model_loader::llama_model_loader(
                     throw std::runtime_error(format("q2k outlier: index tensor '%s' not found", t.idx_name.c_str()));
                 }
                 if (idx->type != GGML_TYPE_I32) {
-                    LLAMA_LOG_ERROR("q2k outlier: index tensor '%s' has type %s, expected I32
-",
+                    LLAMA_LOG_ERROR("q2k outlier: index tensor '%s' has type %s, expected I32\n",
                         t.idx_name.c_str(), ggml_type_name(idx->type));
                     throw std::runtime_error(format("q2k outlier: index tensor '%s' has wrong type %s, expected I32",
                         t.idx_name.c_str(), ggml_type_name(idx->type)));
@@ -707,8 +705,7 @@ llama_model_loader::llama_model_loader(
                     throw std::runtime_error(format("q2k outlier: values tensor '%s' not found", t.values_name.c_str()));
                 }
                 if (vals->type != GGML_TYPE_BF16 && vals->type != GGML_TYPE_Q8_0 && vals->type != GGML_TYPE_I8) {
-                    LLAMA_LOG_ERROR("q2k outlier: values tensor '%s' has type %s, expected BF16, Q8_0, or I8
-",
+                    LLAMA_LOG_ERROR("q2k outlier: values tensor '%s' has type %s, expected BF16, Q8_0, or I8\n",
                         t.values_name.c_str(), ggml_type_name(vals->type));
                     throw std::runtime_error(format("q2k outlier: values tensor '%s' has wrong type %s, expected BF16, Q8_0, or I8",
                         t.values_name.c_str(), ggml_type_name(vals->type)));

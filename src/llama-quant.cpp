@@ -2015,7 +2015,7 @@ static q8_outlier_tensor_data q2k_outlier_analyze_tensor(
 static void q2k_outlier_compute_deltas(
         const float * f32_data,
         const void * q2k_data,
-        int64_t nrows,
+        int64_t GGML_UNUSED(nrows),
         int64_t n_per_row,
         q8_outlier_tensor_data & outliers,
         enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
@@ -2183,7 +2183,7 @@ static void q2k_outlier_add_tensor_meta(
         int64_t ne0,
         int64_t ne1) {
     struct ggml_tensor tensor;
-    ggml_init_tensor(&tensor);
+    std::memset(&tensor, 0, sizeof(tensor));
     tensor.type = type;
     tensor.ne[0] = ne0;
     tensor.ne[1] = ne1;
