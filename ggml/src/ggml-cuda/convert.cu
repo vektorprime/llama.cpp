@@ -563,7 +563,7 @@ static __global__ void dequantize_block_q8_K(const void * __restrict__ vx, dst_t
     const block_q8_K * x = (const block_q8_K *) vx + i;
     const int tid = threadIdx.x;
     const float d = x->d;
-    yy[i*QK_K + tid] = d * (dst_t) x->qs[tid];
+    yy[i*QK_K + tid] = (dst_t)(d * (float) x->qs[tid]);
 }
 
 template<typename dst_t>
