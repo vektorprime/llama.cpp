@@ -2174,20 +2174,17 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         const auto * it = tensors[i];
         const struct ggml_tensor * tensor = it->tensor;
 
-        // Skip sidecar tensors when outputting plain Q8_0
-        if (!q8_outlier_enabled) {
+        // Skip source sidecar tensors when re-quantizing with outlier enabled — new ones will be generated.
+        // Also skip them when outputting plain types (no outlier).
+        {
             const std::string & tname = ggml_get_name(tensor);
-            if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
-                (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
-                continue;
-            }
-        }
-
-        // Skip sidecar tensors when outputting plain Q4_0
-        if (!q4_outlier_enabled) {
-            const std::string & tname = ggml_get_name(tensor);
-            if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
-                (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
+            const bool is_sidecar = (tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
+                                    (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13);
+            if (is_sidecar) {
+                if (!q8_outlier_enabled && !q4_outlier_enabled) {
+                    continue; // plain output: skip all sidecars
+                }
+                // Re-quantizing with outlier: skip old sidecars (new idx/values will be generated)
                 continue;
             }
         }
