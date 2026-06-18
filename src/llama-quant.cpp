@@ -2237,6 +2237,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         struct q8_outlier_source_info {
             std::vector<int32_t> idx;
             std::vector<ggml_bf16_t> values;
+            std::vector<uint8_t> values_nibble;
+            enum llama_outlier_value_type src_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
         };
         std::unordered_map<std::string, q8_outlier_source_info> source_outlier_info;
         if (ml.has_q8_outlier_metadata()) {
@@ -2251,11 +2253,24 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 const ggml_tensor * idx_tensor = idx_it->second.tensor;
                 const ggml_tensor * vals_tensor = vals_it->second.tensor;
                 info.idx.resize(ggml_nelements(idx_tensor));
-                info.values.resize(ggml_nelements(vals_tensor));
                 ml.load_data_for(const_cast<ggml_tensor *>(idx_tensor));
                 ml.load_data_for(const_cast<ggml_tensor *>(vals_tensor));
                 std::memcpy(info.idx.data(), idx_tensor->data, ggml_nbytes(idx_tensor));
-                std::memcpy(info.values.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+
+                if (vals_tensor->type == GGML_TYPE_I8) {
+                    info.src_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
+                    info.values_nibble.resize(ggml_nbytes(vals_tensor));
+                    std::memcpy(info.values_nibble.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+                } else if (vals_tensor->type == GGML_TYPE_Q8_0) {
+                    info.src_value_type = LLAMA_OUTLIER_VALUE_TYPE_Q8_0;
+                    // Q8_0 values stored in BF16 vector for reconstruction
+                    info.values.resize(ggml_nelements(vals_tensor));
+                    std::memcpy(info.values.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+                } else {
+                    info.src_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
+                    info.values.resize(ggml_nelements(vals_tensor));
+                    std::memcpy(info.values.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+                }
                 source_outlier_info.emplace(meta.base_name, std::move(info));
             }
         }
@@ -2300,13 +2315,23 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             if (tensor->type == GGML_TYPE_Q8_0) {
                 auto src_outlier_it = source_outlier_info.find(tm.name);
                 if (src_outlier_it != source_outlier_info.end()) {
-                    q8_outlier_reconstruct_tensor(
-                            tensor,
-                            src_outlier_it->second.idx,
-                            src_outlier_it->second.values,
-                            f32_data,
-                            tensor->ne[1],
-                            tensor->ne[0]);
+                    if (src_outlier_it->second.src_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                        q8_outlier_reconstruct_tensor_nibble(
+                                tensor,
+                                src_outlier_it->second.idx,
+                                src_outlier_it->second.values_nibble,
+                                f32_data,
+                                tensor->ne[1],
+                                tensor->ne[0]);
+                    } else {
+                        q8_outlier_reconstruct_tensor(
+                                tensor,
+                                src_outlier_it->second.idx,
+                                src_outlier_it->second.values,
+                                f32_data,
+                                tensor->ne[1],
+                                tensor->ne[0]);
+                    }
                 }
             }
 
@@ -2372,6 +2397,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             std::vector<int32_t> idx;
             std::vector<ggml_bf16_t> values;
             std::vector<uint8_t> values_q8;
+            std::vector<uint8_t> values_nibble;
             enum llama_outlier_value_type src_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
         };
         std::unordered_map<std::string, q4_outlier_source_info> source_outlier_info;
@@ -2395,6 +2421,10 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     info.src_value_type = LLAMA_OUTLIER_VALUE_TYPE_Q8_0;
                     info.values_q8.resize(ggml_nbytes(vals_tensor));
                     std::memcpy(info.values_q8.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
+                } else if (vals_tensor->type == GGML_TYPE_I8) {
+                    info.src_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
+                    info.values_nibble.resize(ggml_nbytes(vals_tensor));
+                    std::memcpy(info.values_nibble.data(), vals_tensor->data, ggml_nbytes(vals_tensor));
                 } else {
                     info.src_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
                     info.values.resize(ggml_nelements(vals_tensor));
@@ -2449,6 +2479,14 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                                 tensor,
                                 src_outlier_it->second.idx,
                                 src_outlier_it->second.values_q8,
+                                f32_data,
+                                tensor->ne[1],
+                                tensor->ne[0]);
+                    } else if (src_outlier_it->second.src_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                        q4_outlier_reconstruct_tensor_nibble(
+                                tensor,
+                                src_outlier_it->second.idx,
+                                src_outlier_it->second.values_nibble,
                                 f32_data,
                                 tensor->ne[1],
                                 tensor->ne[0]);
