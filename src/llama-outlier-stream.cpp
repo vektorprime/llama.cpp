@@ -35,7 +35,10 @@ void llama_outlier_stream_cache::add_entry(
     entry.idx_data.assign(idx_data, idx_data + n_blocks * 2);
 
     size_t elem_bytes = (values_type == GGML_TYPE_Q8_0)
-        ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
+        ? (size_t)34
+        : (values_type == GGML_TYPE_I8)
+        ? (size_t)16
+        : (size_t)(32 * sizeof(ggml_bf16_t));
     size_t total = (size_t)n_blocks * elem_bytes;
     entry.values_data.assign(values_data, values_data + total);
 
