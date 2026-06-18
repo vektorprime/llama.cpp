@@ -2639,8 +2639,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         const auto & tm = metadata[i];
         ggml_tensor * tensor = weight.tensor;
 
-        // Skip sidecar tensors when outputting plain Q8_0
-        if (!q8_outlier_enabled) {
+        // Skip source sidecar tensors — new ones will be generated during outlier analysis
+        {
             const std::string & tname = tm.name;
             if ((tname.size() > 12 && tname.rfind(".outlier_idx") == tname.size() - 12) ||
                 (tname.size() > 13 && tname.rfind(".outlier_bf16") == tname.size() - 13)) {
