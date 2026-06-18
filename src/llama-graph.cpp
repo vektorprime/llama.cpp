@@ -1137,7 +1137,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 res = ggml_mul_mat_outlier_fused(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
-                ggml_set_op_params_i32(res, 2, (int32_t)ob->value_type);
+                res->op_params[2] = (int32_t)ob->value_type;
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
@@ -1192,7 +1192,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                         ggml_tensor * corr = ggml_mul_mat_outlier_blocks_merged(
                                 ctx0, gpu_merged_idx, gpu_values, cur,
                                 ob->n_rows_out, ob->n_cols);
-                        ggml_set_op_params_i32(corr, 2, (int32_t)ob->value_type);
+                        corr->op_params[2] = (int32_t)ob->value_type;
                         if (ggml_custom_logs_enabled()) {
                             fprintf(stderr, "[delta-graph-merged] %s: correction op created (cached merged), n_merged_runs=%lld n_blocks=%lld\n",
                                     w->name, (long long)gpu_merged_idx->ne[1], (long long)ob->n_blocks);
@@ -1203,7 +1203,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                         ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
                                 ctx0, gpu_idx, gpu_values, cur_perm,
                                 ob->n_rows_out, ob->n_cols);
-                        ggml_set_op_params_i32(corr, 2, (int32_t)ob->value_type);
+                        corr->op_params[2] = (int32_t)ob->value_type;
                         if (ggml_custom_logs_enabled()) {
                             fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
                                     w->name,
