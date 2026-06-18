@@ -1755,6 +1755,27 @@ static void q4_outlier_reconstruct_tensor_nibble(
     }
 }
 
+// reconstruct from vector data (nibble-diff values, Q8 version)
+static void q8_outlier_reconstruct_tensor_nibble(
+        const ggml_tensor * /*tensor*/,
+        const std::vector<int32_t> & idx,
+        const std::vector<uint8_t> & values_nibble,
+        float * f32_buf,
+        int64_t /*rows*/,
+        int64_t cols) {
+    const int64_t n_blocks = (int64_t) idx.size() / 2;
+    uint8_t nibbles[32];
+    for (int64_t k = 0; k < n_blocks; ++k) {
+        const int64_t row = idx[k * 2];
+        const int64_t block_col = idx[k * 2 + 1];
+        float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        llama_outlier_nibble_diff_unpack_block(values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            dst[j] += llama_outlier_nibble_diff_decode(nibbles[j]);
+        }
+    }
+}
+
 static void q4_outlier_add_tensor_meta(
         struct gguf_context * ctx,
         const std::string & name,
@@ -2671,27 +2692,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                             if (!tensor_name_match_token_embd(tensor->name)) {
                                 throw std::runtime_error(format("imatrix size %d is different from tensor size %d for %s",
                                         int(it->second.size()), int(tensor->ne[0]*tensor->ne[2]), tensor->name));
-}
-
-static void q8_outlier_reconstruct_tensor_nibble(
-        const ggml_tensor * /*tensor*/,
-        const std::vector<int32_t> & idx,
-        const std::vector<uint8_t> & values_nibble,
-        float * f32_buf,
-        int64_t /*rows*/,
-        int64_t cols) {
-    const int64_t n_blocks = (int64_t) idx.size() / 2;
-    uint8_t nibbles[32];
-    for (int64_t k = 0; k < n_blocks; ++k) {
-        const int64_t row = idx[k * 2];
-        const int64_t block_col = idx[k * 2 + 1];
-        float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-        llama_outlier_nibble_diff_unpack_block(values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
-        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
-            dst[j] += llama_outlier_nibble_diff_decode(nibbles[j]);
-        }
-    }
-}
+                            }
                         }
                     }
                 }
