@@ -1099,6 +1099,70 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             info.block_col[pos] = bcol;
         }
 
+        // Build merged contiguous outlier block runs (Proposal 4.1)
+        // The idx is sorted by (row, block_col). Walk through each row's
+        // blocks, merging consecutive block_col values into wider runs.
+        // This reduces CUDA kernel launches from n_blocks to n_merged_runs.
+        {
+            for (int64_t r = 0; r < info.n_rows_out; r++) {
+                const int64_t row_start = (int64_t)info.row_ptr[r];
+                const int64_t row_end   = (int64_t)info.row_ptr[r + 1];
+                if (row_start >= row_end) continue;
+
+                int32_t run_start_col = info.block_col[row_start];
+                int32_t run_count     = 1;
+                int32_t run_values_start = (int32_t)row_start;
+
+                for (int64_t k = row_start + 1; k < row_end; k++) {
+                    int32_t bcol = info.block_col[k];
+                    if (bcol == run_start_col + run_count) {
+                        // Contiguous: extend the current run
+                        run_count++;
+                    } else {
+                        // Gap: finalize the current run
+                        llama_outlier_block_info::outlier_merged_run run;
+                        run.row = (int32_t)r;
+                        run.start_block_col = run_start_col;
+                        run.count = run_count;
+                        run.values_start = run_values_start;
+                        info.merged_runs.push_back(run);
+
+                        // Start a new run
+                        run_start_col = bcol;
+                        run_count = 1;
+                        run_values_start = (int32_t)k;
+                    }
+                }
+
+                // Finalize the last run in this row
+                llama_outlier_block_info::outlier_merged_run run;
+                run.row = (int32_t)r;
+                run.start_block_col = run_start_col;
+                run.count = run_count;
+                run.values_start = run_values_start;
+                info.merged_runs.push_back(run);
+            }
+
+            if (ggml_custom_logs_enabled() && !info.merged_runs.empty()) {
+                double ratio = (double)n_blocks / (double)info.merged_runs.size();
+                fprintf(stderr, "[merge] %s: n_blocks=%lld merged_runs=%zu ratio=%.1fx\n",
+                        name.c_str(), (long long)n_blocks,
+                        info.merged_runs.size(), ratio);
+                // Show a sample of merged runs
+                int64_t sample = (int64_t)info.merged_runs.size();
+                if (sample > 5) sample = 5;
+                fprintf(stderr, "[merge] %s: first %lld merged runs:\n",
+                        name.c_str(), (long long)sample);
+                for (int64_t i = 0; i < sample; i++) {
+                    const auto & run = info.merged_runs[(size_t)i];
+                    fprintf(stderr, "[merge]   run[%lld]: row=%d start_bc=%d count=%d vals_start=%d (cols %d-%d)\n",
+                            (long long)i, run.row, run.start_block_col, run.count, run.values_start,
+                            run.start_block_col * 32, (run.start_block_col + run.count) * 32 - 1);
+                }
+                fflush(stderr);
+            }
+        }
+
         outlier_info[tensor] = std::move(info);
 
         // DEBUG: Log buffer locations and data samples

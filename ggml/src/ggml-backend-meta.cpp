@@ -880,8 +880,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_MUL_MAT_ID: {
                 split_state = handle_mul_mat(src_ss);
             } break;
-            case GGML_OP_MUL_MAT_OUTLIER_BLOCKS: {
-                // src0 (idx) acts as "weight" [2, n_blocks], src2 (x) is activation [n_cols, n_tokens]
+            case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
+            case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED: {
+                // src0 (idx/merged_idx) acts as "weight" [2/4, n_blocks/runs], src2 (x) is activation [n_cols, n_tokens]
                 // In tensor parallelism: weights are split on axis 0 (columns) → idx is split on axis 1 (blocks)
                 // Activations are split on axis 0 (columns). The kernel only computes the dot product
                 // for the overlapping columns, so the output must be PARTIAL (reduced across GPUs).

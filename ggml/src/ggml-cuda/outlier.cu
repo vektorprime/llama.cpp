@@ -355,3 +355,331 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
         }
     }
 }
+
+// ============================================================================
+// Merged contiguous outlier block kernels (Proposal 4.1)
+// Each merged run can process multiple contiguous 32-weight blocks in one
+// kernel launch, reducing grid size from n_blocks to n_merged_runs.
+// ============================================================================
+
+// Helper: next power of 2 (for thread block sizing)
+static __device__ __host__ inline int32_t next_pow2(int32_t v) {
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    return v + 1;
+}
+
+static __global__ void outlier_blocks_kernel_nibble_merged(
+        const int32_t * __restrict__ merged_idx, // [4, n_merged_runs]: row, start_bc, count, vals_start
+        const uint8_t * __restrict__ values,     // [16, n_blocks] packed nibbles
+        const float *   __restrict__ x,          // [n_cols_x, n_tokens] shard-local
+        float *         __restrict__ dst,        // [n_rows_out, n_tokens]
+        const int64_t n_merged_runs,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens) {
+
+    const int64_t run_idx  = blockIdx.x;
+    const int64_t token_idx = blockIdx.y;
+
+    if (run_idx >= n_merged_runs || token_idx >= n_tokens) {
+        return;
+    }
+
+    const int32_t row            = merged_idx[run_idx * 4];
+    const int32_t start_block_col = merged_idx[run_idx * 4 + 1];
+    const int32_t count          = merged_idx[run_idx * 4 + 2];
+    const int32_t values_start   = merged_idx[run_idx * 4 + 3];
+
+    const int32_t total_elems = count * 32;
+
+    // Bounds check: skip if entire run is outside the activation shard
+    const int64_t run_col0 = (int64_t)start_block_col * 32;
+    const int64_t run_col_last = run_col0 + (int64_t)total_elems - 1;
+    if (run_col_last < col_offset || run_col0 >= col_offset + n_cols_x) {
+        return;
+    }
+    if (run_col_last >= n_cols_all) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    float sum = 0.0f;
+
+    // Each thread handles elements_per_thread weight elements
+    for (int32_t j = tid; j < total_elems; j += block_size) {
+        const int32_t block_idx_in_run = j >> 5;       // j / 32
+        const int32_t elem_in_block    = j & 31;        // j % 32
+        const int32_t orig_block       = values_start + block_idx_in_run;
+        const int64_t col_global       = (int64_t)(start_block_col + block_idx_in_run) * 32 + elem_in_block;
+
+        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
+            const uint8_t byte = values[orig_block * 16 + (elem_in_block >> 1)];
+            const uint8_t nibble = (elem_in_block & 1) ? (byte >> 4) : (byte & 0x0F);
+            const float w = nibble_diff_decode(nibble);
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token_idx * x_stride];
+            sum += w * a;
+        }
+    }
+
+    // Warp reduce
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
+        const int64_t dst_idx = row + token_idx * n_rows_out;
+        atomicAdd(dst + dst_idx, sum);
+    }
+}
+
+static __global__ void outlier_blocks_kernel_bf16_merged(
+        const int32_t *     __restrict__ merged_idx,
+        const nv_bfloat16 * __restrict__ values,
+        const float *       __restrict__ x,
+        float *             __restrict__ dst,
+        const int64_t n_merged_runs,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens) {
+
+    const int64_t run_idx  = blockIdx.x;
+    const int64_t token_idx = blockIdx.y;
+
+    if (run_idx >= n_merged_runs || token_idx >= n_tokens) {
+        return;
+    }
+
+    const int32_t row            = merged_idx[run_idx * 4];
+    const int32_t start_block_col = merged_idx[run_idx * 4 + 1];
+    const int32_t count          = merged_idx[run_idx * 4 + 2];
+    const int32_t values_start   = merged_idx[run_idx * 4 + 3];
+
+    const int32_t total_elems = count * 32;
+
+    const int64_t run_col0 = (int64_t)start_block_col * 32;
+    const int64_t run_col_last = run_col0 + (int64_t)total_elems - 1;
+    if (run_col_last < col_offset || run_col0 >= col_offset + n_cols_x) {
+        return;
+    }
+    if (run_col_last >= n_cols_all) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    float sum = 0.0f;
+
+    for (int32_t j = tid; j < total_elems; j += block_size) {
+        const int32_t block_idx_in_run = j >> 5;
+        const int32_t elem_in_block    = j & 31;
+        const int32_t orig_block       = values_start + block_idx_in_run;
+        const int64_t col_global       = (int64_t)(start_block_col + block_idx_in_run) * 32 + elem_in_block;
+
+        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
+            const float w = __bfloat162float(values[orig_block * 32 + elem_in_block]);
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token_idx * x_stride];
+            sum += w * a;
+        }
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
+        const int64_t dst_idx = row + token_idx * n_rows_out;
+        atomicAdd(dst + dst_idx, sum);
+    }
+}
+
+static __global__ void outlier_blocks_kernel_q8_0_merged(
+        const int32_t *          __restrict__ merged_idx,
+        const block_q8_0_cuda *  __restrict__ values,
+        const float *            __restrict__ x,
+        float *                  __restrict__ dst,
+        const int64_t n_merged_runs,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens) {
+
+    const int64_t run_idx  = blockIdx.x;
+    const int64_t token_idx = blockIdx.y;
+
+    if (run_idx >= n_merged_runs || token_idx >= n_tokens) {
+        return;
+    }
+
+    const int32_t row            = merged_idx[run_idx * 4];
+    const int32_t start_block_col = merged_idx[run_idx * 4 + 1];
+    const int32_t count          = merged_idx[run_idx * 4 + 2];
+    const int32_t values_start   = merged_idx[run_idx * 4 + 3];
+
+    const int32_t total_elems = count * 32;
+
+    const int64_t run_col0 = (int64_t)start_block_col * 32;
+    const int64_t run_col_last = run_col0 + (int64_t)total_elems - 1;
+    if (run_col_last < col_offset || run_col0 >= col_offset + n_cols_x) {
+        return;
+    }
+    if (run_col_last >= n_cols_all) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    float sum = 0.0f;
+
+    for (int32_t j = tid; j < total_elems; j += block_size) {
+        const int32_t block_idx_in_run = j >> 5;
+        const int32_t elem_in_block    = j & 31;
+        const int32_t orig_block       = values_start + block_idx_in_run;
+        const int64_t col_global       = (int64_t)(start_block_col + block_idx_in_run) * 32 + elem_in_block;
+
+        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
+            const block_q8_0_cuda * q8block = &values[orig_block];
+            const float d = __half2float(__ushort_as_half(q8block->d));
+            const float w = d * (float)q8block->qs[elem_in_block];
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token_idx * x_stride];
+            sum += w * a;
+        }
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
+        const int64_t dst_idx = row + token_idx * n_rows_out;
+        atomicAdd(dst + dst_idx, sum);
+    }
+}
+
+static void outlier_blocks_merged_cuda(
+        ggml_backend_cuda_context & ctx,
+        const int32_t *     merged_idx_d,
+        const void *        values_d,
+        const float *       x_d,
+        float *             dst_d,
+        const int64_t n_merged_runs,
+        const int64_t n_blocks_total,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens,
+        enum ggml_type values_type) {
+
+    cudaStream_t stream = ctx.stream();
+
+    CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream));
+
+    if (n_merged_runs == 0 || n_tokens == 0 || n_cols_x == 0) {
+        return;
+    }
+
+    GGML_UNUSED(n_blocks_total);
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-cuda-merged] kernel launch: n_merged_runs=%lld n_tokens=%lld values_type=%s\n",
+                (long long)n_merged_runs, (long long)n_tokens,
+                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
+        fflush(stderr);
+    }
+
+    // Use 1024 threads per block — handles up to 32 blocks per run without
+    // looping. Larger runs get handled by the per-thread loop.
+    dim3 block_dim(1024, 1, 1);
+    dim3 grid_dim((uint32_t) n_merged_runs, (uint32_t) n_tokens, 1);
+
+    if (values_type == GGML_TYPE_Q8_0) {
+        const block_q8_0_cuda * values_q8 = (const block_q8_0_cuda *) values_d;
+        outlier_blocks_kernel_q8_0_merged<<<grid_dim, block_dim, 0, stream>>>(
+                merged_idx_d, values_q8, x_d, dst_d,
+                n_merged_runs, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    } else if (values_type == GGML_TYPE_I8) {
+        const uint8_t * values_nibble = (const uint8_t *) values_d;
+        outlier_blocks_kernel_nibble_merged<<<grid_dim, block_dim, 0, stream>>>(
+                merged_idx_d, values_nibble, x_d, dst_d,
+                n_merged_runs, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    } else {
+        const nv_bfloat16 * values_bf16 = (const nv_bfloat16 *) values_d;
+        outlier_blocks_kernel_bf16_merged<<<grid_dim, block_dim, 0, stream>>>(
+                merged_idx_d, values_bf16, x_d, dst_d,
+                n_merged_runs, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    }
+
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void ggml_cuda_op_mul_mat_outlier_blocks_merged(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * merged_idx = dst->src[0];
+    const ggml_tensor * values     = dst->src[1];
+    const ggml_tensor * x          = dst->src[2];
+
+    GGML_ASSERT(merged_idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
+    GGML_ASSERT(x->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+    const int64_t n_rows_out    = ggml_get_op_params_i32(dst, 0);
+    const int64_t n_cols_all    = ggml_get_op_params_i32(dst, 1);
+    const int64_t n_merged_runs = merged_idx->ne[1];
+    const int64_t n_tokens      = x->ne[1];
+    const int64_t n_cols_x      = x->ne[0];
+    const int64_t x_stride      = x->nb[1] / (int64_t)sizeof(float);
+    const int64_t n_blocks_total = values->ne[1];
+
+    int64_t col_offset = 0;
+    if (x->view_src && x->view_offs > 0) {
+        col_offset = x->view_offs / (int64_t)sizeof(float);
+    } else if (n_cols_x < n_cols_all) {
+        col_offset = ctx.device * n_cols_x;
+    }
+
+    GGML_ASSERT(dst->ne[0] == n_rows_out);
+    GGML_ASSERT(dst->ne[1] == n_tokens);
+    GGML_ASSERT(n_cols_x <= n_cols_all);
+    GGML_ASSERT(merged_idx->ne[0] == 4);
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[delta-cuda-merged] enter: n_merged_runs=%lld n_blocks_total=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld values_type=%s\n",
+                (long long)n_merged_runs, (long long)n_blocks_total, (long long)n_rows_out, (long long)n_tokens,
+                (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset,
+                values->type == GGML_TYPE_Q8_0 ? "Q8_0" : values->type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
+        fflush(stderr);
+    }
+
+    const int32_t * merged_idx_d = (const int32_t *) merged_idx->data;
+    const void *    values_d     = values->data;
+    const float *   x_d          = (const float *) x->data;
+    float *         dst_d        = (float *) dst->data;
+
+    outlier_blocks_merged_cuda(ctx, merged_idx_d, values_d, x_d, dst_d,
+            n_merged_runs, n_blocks_total, n_cols_all, n_cols_x, col_offset, x_stride,
+            n_rows_out, n_tokens, values->type);
+}

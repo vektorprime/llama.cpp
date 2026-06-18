@@ -34,6 +34,74 @@ void llama_outlier_stream_cache::add_entry(
 
     entry.idx_data.assign(idx_data, idx_data + n_blocks * 2);
 
+    // Compute merged contiguous runs from the raw idx data (Proposal 4.1)
+    // The original idx is sorted by (row, block_col) from GGUF loading.
+    // Walk through and merge consecutive block_col values within each row.
+    {
+        // Build row_ptr from idx_data (simple histogram approach since idx is small)
+        std::vector<int32_t> row_ptr(n_rows_out + 1, 0);
+        for (int64_t k = 0; k < n_blocks; k++) {
+            int32_t row = idx_data[k * 2];
+            if (row >= 0 && row < n_rows_out) {
+                row_ptr[row + 1]++;
+            }
+        }
+        for (int64_t r = 0; r < n_rows_out; r++) {
+            row_ptr[r + 1] += row_ptr[r];
+        }
+
+        // Build block_col and track original positions
+        std::vector<int32_t> block_col(n_blocks);
+        std::vector<int32_t> row_cursor = row_ptr;
+        for (int64_t k = 0; k < n_blocks; k++) {
+            int32_t row = idx_data[k * 2];
+            if (row < 0 || row >= n_rows_out) continue;
+            int32_t bcol = idx_data[k * 2 + 1];
+            int32_t pos = row_cursor[row]++;
+            block_col[pos] = bcol;
+        }
+
+        // Now merge within each row
+        for (int64_t r = 0; r < n_rows_out; r++) {
+            const int64_t row_start = (int64_t)row_ptr[r];
+            const int64_t row_end   = (int64_t)row_ptr[r + 1];
+            if (row_start >= row_end) continue;
+
+            int32_t run_start_col = block_col[row_start];
+            int32_t run_count = 1;
+            int32_t run_values_start = (int32_t)row_start;
+
+            for (int64_t k = row_start + 1; k < row_end; k++) {
+                int32_t bcol = block_col[k];
+                if (bcol == run_start_col + run_count) {
+                    run_count++;
+                } else {
+                    entry.merged_idx_data.push_back((int32_t)r);
+                    entry.merged_idx_data.push_back(run_start_col);
+                    entry.merged_idx_data.push_back(run_count);
+                    entry.merged_idx_data.push_back(run_values_start);
+                    run_start_col = bcol;
+                    run_count = 1;
+                    run_values_start = (int32_t)k;
+                }
+            }
+            // Finalize last run
+            entry.merged_idx_data.push_back((int32_t)r);
+            entry.merged_idx_data.push_back(run_start_col);
+            entry.merged_idx_data.push_back(run_count);
+            entry.merged_idx_data.push_back(run_values_start);
+        }
+        entry.n_merged_runs = (int64_t)(entry.merged_idx_data.size() / 4);
+
+        if (ggml_custom_logs_enabled() && entry.n_merged_runs > 0) {
+            double ratio = (double)n_blocks / (double)entry.n_merged_runs;
+            fprintf(stderr, "[merge-cache] %s: n_blocks=%lld merged_runs=%lld ratio=%.1fx\n",
+                    name.c_str(), (long long)n_blocks,
+                    (long long)entry.n_merged_runs, ratio);
+            fflush(stderr);
+        }
+    }
+
     size_t elem_bytes = (values_type == GGML_TYPE_Q8_0)
         ? (size_t)34
         : (values_type == GGML_TYPE_I8)
@@ -172,6 +240,11 @@ ggml_tensor * llama_outlier_stream_cache::get_gpu_values(const std::string & nam
     return (it != entries.end() && it->second.loaded) ? it->second.values_gpu : nullptr;
 }
 
+ggml_tensor * llama_outlier_stream_cache::get_gpu_merged_idx(const std::string & name) const {
+    auto it = entries.find(name);
+    return (it != entries.end() && it->second.loaded) ? it->second.merged_idx_gpu : nullptr;
+}
+
 void llama_outlier_stream_cache::touch(const std::string & name) {
     auto it = std::find(lru.begin(), lru.end(), name);
     if (it != lru.end()) lru.erase(it);
@@ -182,6 +255,7 @@ size_t llama_outlier_stream_cache::total_cpu_bytes() const {
     size_t total = 0;
     for (const auto & [n, e] : entries) {
         total += e.idx_data.size() * sizeof(int32_t);
+        total += e.merged_idx_data.size() * sizeof(int32_t);
         total += e.values_data.size();
     }
     return total;
@@ -249,9 +323,10 @@ bool llama_outlier_stream_cache::upload_entry(
         ggml_backend_t backend, llama_outlier_cache_entry & entry) {
 
     const int64_t n_blocks = entry.n_blocks;
+    const int64_t n_merged = entry.n_merged_runs;
 
     struct ggml_init_params ctx_params = {
-        /*.mem_size   =*/ ggml_tensor_overhead() * 2 + 512,
+        /*.mem_size   =*/ ggml_tensor_overhead() * 3 + 512,
         /*.mem_buffer =*/ NULL,
         /*.no_alloc   =*/ true,
     };
@@ -260,6 +335,12 @@ bool llama_outlier_stream_cache::upload_entry(
     const int64_t values_ne0 = (entry.values_type == GGML_TYPE_I8) ? 16 : 32;
     ggml_tensor * idx_t = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, n_blocks);
     ggml_tensor * val_t = ggml_new_tensor_2d(ctx, entry.values_type, values_ne0, n_blocks);
+
+    // Create merged idx tensor if we have merged runs
+    ggml_tensor * merged_idx_t = nullptr;
+    if (n_merged > 0) {
+        merged_idx_t = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 4, n_merged);
+    }
 
     if (ggml_custom_logs_enabled()) {
         size_t idx_bytes = n_blocks * 2 * sizeof(int32_t);
@@ -303,10 +384,15 @@ bool llama_outlier_stream_cache::upload_entry(
             n_blocks * 2 * sizeof(int32_t));
     ggml_backend_tensor_set(val_t, entry.values_data.data(), 0,
             entry.values_data.size());
+    if (merged_idx_t && n_merged > 0) {
+        ggml_backend_tensor_set(merged_idx_t, entry.merged_idx_data.data(), 0,
+                n_merged * 4 * sizeof(int32_t));
+    }
 
-    entry.idx_gpu    = idx_t;
-    entry.values_gpu = val_t;
-    entry.loaded     = true;
+    entry.idx_gpu         = idx_t;
+    entry.merged_idx_gpu  = merged_idx_t;
+    entry.values_gpu      = val_t;
+    entry.loaded          = true;
 
     return true;
 }
@@ -320,7 +406,8 @@ void llama_outlier_stream_cache::free_entry_gpu(
         ggml_backend_buffer_free(entry.idx_gpu->buffer);
     }
 
-    entry.idx_gpu    = nullptr;
-    entry.values_gpu = nullptr;
-    entry.loaded     = false;
+    entry.idx_gpu         = nullptr;
+    entry.merged_idx_gpu  = nullptr;
+    entry.values_gpu      = nullptr;
+    entry.loaded          = false;
 }

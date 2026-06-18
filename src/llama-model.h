@@ -586,6 +586,15 @@ struct llama_model {
     // Q8_0_BF16_OUTLIER: sparse outlier block correction sidecars
     // maps base weight tensor name -> outlier block info (CSR layout)
     // populated by llama_model::build_outlier_info() after tensor loading
+
+    // Merged contiguous outlier block run for wider kernel launches
+    struct outlier_merged_run {
+        int32_t row;              // output row
+        int32_t start_block_col;  // first block_col in the contiguous run
+        int32_t count;            // number of contiguous 32-weight blocks
+        int32_t values_start;     // index into original values/idx for the first block
+    };
+
     struct llama_outlier_block_info {
         std::string                 name;              // base tensor name
         ggml_tensor *               idx    = nullptr;  // [2, n_blocks] i32  (row, block_col per block)
@@ -599,6 +608,9 @@ struct llama_model {
         // row_ptr[row]..row_ptr[row+1] gives range into block_col / values for that output row
         std::vector<int32_t> row_ptr;      // [n_rows_out + 1]
         std::vector<int32_t> block_col;    // [n_blocks]
+
+        // Merged contiguous runs for wider kernel launches (Proposal 4.1)
+        std::vector<outlier_merged_run> merged_runs;
     };
 
     void build_outlier_info(const struct llama_model_loader * ml = nullptr);

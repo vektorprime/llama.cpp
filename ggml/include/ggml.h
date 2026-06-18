@@ -588,6 +588,7 @@ extern "C" {
         GGML_OP_GLU,
 
         GGML_OP_MUL_MAT_OUTLIER_BLOCKS,
+        GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED,
 
         GGML_OP_COUNT,
     };
@@ -1446,6 +1447,21 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_mul_mat_outlier_blocks(
             struct ggml_context * ctx,
             struct ggml_tensor  * idx,
+            struct ggml_tensor  * values,
+            struct ggml_tensor  * x,
+            int64_t               n_rows_out,
+            int64_t               n_cols);
+
+    // Merged contiguous outlier block correction (Proposal 4.1)
+    // merged_idx: [4, n_merged_runs], i32  (row, start_block_col, count, values_start)
+    // values:     [elem_bytes, n_outlier_blocks], same values tensor as unmerged
+    // x:          [n_cols, n_tokens], the activation input
+    // result:     [n_rows_out, n_tokens]
+    // Each merged run processes count * 32 weights in one kernel launch,
+    // reducing grid size from n_blocks to n_merged_runs.
+    GGML_API struct ggml_tensor * ggml_mul_mat_outlier_blocks_merged(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * merged_idx,
             struct ggml_tensor  * values,
             struct ggml_tensor  * x,
             int64_t               n_rows_out,

@@ -27,15 +27,18 @@ struct llama_outlier_cache_entry {
 
     // CPU-resident data (copied from GGUF at load time)
     std::vector<int32_t>  idx_data;       // [n_blocks * 2]
+    std::vector<int32_t>  merged_idx_data; // [n_merged_runs * 4] for merged kernel (Proposal 4.1)
     std::vector<uint8_t>  values_data;    // [n_blocks * element_bytes]
     ggml_type             values_type = GGML_TYPE_BF16;
     int64_t               n_blocks    = 0;
+    int64_t               n_merged_runs = 0;
     int64_t               n_rows_out  = 0;
     int64_t               n_cols      = 0;
 
     // GPU-resident tensors — valid only when loaded=true
     bool             loaded    = false;
     ggml_tensor    * idx_gpu    = nullptr;
+    ggml_tensor    * merged_idx_gpu = nullptr;
     ggml_tensor    * values_gpu = nullptr;
 
     // Latched: entry was used in the current graph build and must NOT be
@@ -43,7 +46,7 @@ struct llama_outlier_cache_entry {
     // between forward passes.
     bool             latched   = false;
 
-    // Total byte size on GPU (idx + values)
+    // Total byte size on GPU (idx + merged_idx + values)
     size_t gpu_bytes() const {
         size_t elem;
         if (values_type == GGML_TYPE_Q8_0) {
@@ -53,8 +56,9 @@ struct llama_outlier_cache_entry {
         } else {
             elem = 32 * sizeof(ggml_bf16_t);           // 64 bytes per block
         }
-        return (size_t)(n_blocks * 2 * sizeof(int32_t))  // idx [2, n_blocks]
-             + (size_t)(n_blocks * elem);                  // values per block
+        return (size_t)(n_blocks * 2 * sizeof(int32_t))     // original idx [2, n_blocks]
+             + (size_t)(n_merged_runs * 4 * sizeof(int32_t)) // merged idx [4, n_merged_runs]
+             + (size_t)(n_blocks * elem);                    // values per block
     }
 };
 
@@ -114,6 +118,7 @@ struct llama_outlier_stream_cache {
 
     // Get GPU tensor pointers. Call ensure_gpu() first.
     ggml_tensor * get_gpu_idx(const std::string & name) const;
+    ggml_tensor * get_gpu_merged_idx(const std::string & name) const;
     ggml_tensor * get_gpu_values(const std::string & name) const;
 
     // Mark a tensor as recently used (moves to front of LRU).

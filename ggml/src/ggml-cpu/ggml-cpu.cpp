@@ -454,6 +454,7 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
         case GGML_OP_MUL_MAT:
             return src1->type == GGML_TYPE_F32 || src1->type == ggml_get_type_traits_cpu(src0->type)->vec_dot_type;
         case GGML_OP_MUL_MAT_OUTLIER_BLOCKS:
+        case GGML_OP_MUL_MAT_OUTLIER_BLOCKS_MERGED:
             return src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_BF16 && src2->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
         case GGML_OP_SOFT_MAX_BACK: {
             if (op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32) {
