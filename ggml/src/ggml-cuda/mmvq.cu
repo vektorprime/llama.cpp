@@ -22,6 +22,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_Q4_K:    return vec_dot_q4_K_q8_1;
         case GGML_TYPE_Q5_K:    return vec_dot_q5_K_q8_1;
         case GGML_TYPE_Q6_K:    return vec_dot_q6_K_q8_1;
+        case GGML_TYPE_Q8_K:    return vec_dot_q8_K_q8_1;
         case GGML_TYPE_IQ2_XXS: return vec_dot_iq2_xxs_q8_1;
         case GGML_TYPE_IQ2_XS:  return vec_dot_iq2_xs_q8_1;
         case GGML_TYPE_IQ2_S:   return vec_dot_iq2_s_q8_1;
@@ -50,6 +51,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
         case GGML_TYPE_Q4_K:    return VDR_Q4_K_Q8_1_MMVQ;
         case GGML_TYPE_Q5_K:    return VDR_Q5_K_Q8_1_MMVQ;
         case GGML_TYPE_Q6_K:    return VDR_Q6_K_Q8_1_MMVQ;
+        case GGML_TYPE_Q8_K:    return VDR_Q8_K_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_XXS: return VDR_IQ2_XXS_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_XS:  return VDR_IQ2_XS_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_S:   return VDR_IQ2_S_Q8_1_MMVQ;
@@ -125,6 +127,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_pascal_older(gg
         case GGML_TYPE_Q5_1:    return 6;
         case GGML_TYPE_Q5_K:    return 5;
         case GGML_TYPE_Q6_K:    return 4;
+        case GGML_TYPE_Q8_K:    return 4;
         case GGML_TYPE_Q8_0:    return 4;
         default:                return MMVQ_MAX_BATCH_SIZE;
     }
@@ -161,6 +164,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_gcn(ggml_type t
         case GGML_TYPE_Q4_K:    return 4;
         case GGML_TYPE_Q5_K:    return 4;
         case GGML_TYPE_Q6_K:    return 4;
+        case GGML_TYPE_Q8_K:    return 4;
         case GGML_TYPE_Q8_0:    return 4;
         default:                return MMVQ_MAX_BATCH_SIZE;
     }
@@ -189,6 +193,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna1_rdna2(ggm
         case GGML_TYPE_Q4_K:    return 5;
         case GGML_TYPE_Q5_K:    return 6;
         case GGML_TYPE_Q6_K:    return 5;
+        case GGML_TYPE_Q8_K:    return 5;
         default:                return MMVQ_MAX_BATCH_SIZE;
     }
 }
@@ -207,6 +212,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3(ggml_type
         case GGML_TYPE_Q4_K:    return 4;
         case GGML_TYPE_Q5_K:    return 4;
         case GGML_TYPE_Q6_K:    return 4;
+        case GGML_TYPE_Q8_K:    return 4;
         default:                return MMVQ_MAX_BATCH_SIZE;
     }
 }
@@ -232,6 +238,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type
         case GGML_TYPE_Q5_1:    return 7;
         case GGML_TYPE_Q5_K:    return 5;
         case GGML_TYPE_Q6_K:    return 5;
+        case GGML_TYPE_Q8_K:    return 5;
         case GGML_TYPE_Q8_0:    return 7;
         default:                return MMVQ_MAX_BATCH_SIZE;
     }
@@ -361,6 +368,7 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
                 case GGML_TYPE_Q4_K:
                     return 8;
                 case GGML_TYPE_Q6_K:
+                case GGML_TYPE_Q8_K:
                     return 2;
                 case GGML_TYPE_IQ4_NL:
                     return 8;
@@ -970,6 +978,12 @@ static void mul_mat_vec_q_switch_type(
             break;
         case GGML_TYPE_Q6_K:
             mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_Q6_K>
+                (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
+                 nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
+            break;
+        case GGML_TYPE_Q8_K:
+            mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_Q8_K>
                 (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
                  nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
                  nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
