@@ -1120,7 +1120,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                         run_count++;
                     } else {
                         // Gap: finalize the current run
-                        llama_outlier_block_info::outlier_merged_run run;
+                        llama_model::outlier_merged_run run;
                         run.row = (int32_t)r;
                         run.start_block_col = run_start_col;
                         run.count = run_count;
@@ -1135,7 +1135,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                 }
 
                 // Finalize the last run in this row
-                llama_outlier_block_info::outlier_merged_run run;
+                llama_model::outlier_merged_run run;
                 run.row = (int32_t)r;
                 run.start_block_col = run_start_col;
                 run.count = run_count;
