@@ -254,15 +254,21 @@ bool llama_outlier_stream_cache::upload_entry(
     };
     ggml_context * ctx = ggml_init(ctx_params);
 
+    const int64_t values_ne0 = (entry.values_type == GGML_TYPE_I8) ? 16 : 32;
     ggml_tensor * idx_t = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, n_blocks);
-    ggml_tensor * val_t = ggml_new_tensor_2d(ctx, entry.values_type, 32, n_blocks);
+    ggml_tensor * val_t = ggml_new_tensor_2d(ctx, entry.values_type, values_ne0, n_blocks);
 
     if (ggml_custom_logs_enabled()) {
         size_t idx_bytes = n_blocks * 2 * sizeof(int32_t);
-        size_t val_bytes = (entry.values_type == GGML_TYPE_Q8_0)
-            ? (size_t)n_blocks * 34
-            : (size_t)n_blocks * 32 * sizeof(ggml_bf16_t);
-        struct ggml_tensor * temp_t = ggml_new_tensor_2d(ctx, entry.values_type, 32, n_blocks);
+        size_t val_bytes;
+        if (entry.values_type == GGML_TYPE_Q8_0) {
+            val_bytes = (size_t)n_blocks * 34;
+        } else if (entry.values_type == GGML_TYPE_I8) {
+            val_bytes = (size_t)n_blocks * 16;
+        } else {
+            val_bytes = (size_t)n_blocks * 32 * sizeof(ggml_bf16_t);
+        }
+        struct ggml_tensor * temp_t = ggml_new_tensor_2d(ctx, entry.values_type, values_ne0, n_blocks);
         size_t alloc_size = ggml_nbytes(temp_t) + ggml_nbytes(idx_t);
         fprintf(stderr, "[outlier-stream-upload] '%s': n_blocks=%lld idx=%zuB val=%zuB alloc_req=%zuB val_type=%s idx_buf_sz=%zu val_buf_sz=%zu\n",
                 entry.name.c_str(), (long long)n_blocks, idx_bytes, val_bytes, alloc_size,

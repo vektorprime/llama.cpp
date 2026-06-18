@@ -788,7 +788,8 @@ struct q8_outlier_tensor_data {
 
     std::vector<int32_t> idx;
     std::vector<ggml_bf16_t> values;
-    std::vector<uint8_t> values_q8; // Q8_0 quantized delta blocks (used when value_type == Q8_0)
+    std::vector<uint8_t> values_q8;      // Q8_0 quantized delta blocks (used when value_type == Q8_0)
+    std::vector<uint8_t> values_nibble;  // packed nibble-diff (used when value_type == NIBBLE_DIFF)
     std::unordered_set<int64_t> protected_blocks;
 
     float estimated_bpw = 0.0f;
@@ -1008,7 +1009,7 @@ static q8_outlier_tensor_data q8_outlier_analyze_tensor(
 
 
 // Compute deltas = original_F32 - Q8_dequantized for each outlier block,
-// replacing the stored full BF16 values with BF16 deltas.
+// replacing the stored full BF16 values with BF16 deltas, Q8_0 blocks, or nibble-diff.
 // This allows the Q8 base tensor to remain intact (no zeroing), so operations
 // that don't support correction (e.g., ggml_get_rows) still get Q8 approximation.
 static void q8_outlier_compute_deltas(
@@ -1016,13 +1017,20 @@ static void q8_outlier_compute_deltas(
         const void * q8_data,
         float /*nrows*/,
         int64_t n_per_row,
-        q8_outlier_tensor_data & outliers) {
+        q8_outlier_tensor_data & outliers,
+        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
 
     const size_t block_size = ggml_type_size(GGML_TYPE_Q8_0);
     const uint8_t * data = (const uint8_t *) q8_data;
 
+    const size_t n_blocks = outliers.idx.size() / 2;
+
+    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+        outliers.values_nibble.resize(n_blocks * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES);
+    }
+
     // Iterate using idx vector which has (row, block_col) pairs in order
-    for (size_t k = 0; k < outliers.idx.size() / 2; k++) {
+    for (size_t k = 0; k < n_blocks; k++) {
         const int64_t row = outliers.idx[k * 2];
         const int64_t block_col = outliers.idx[k * 2 + 1];
         const int64_t col = block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
@@ -1035,26 +1043,46 @@ static void q8_outlier_compute_deltas(
         float q8_vals[LLAMA_Q8_OUTLIER_BLOCK_SIZE];
         dequantize_row_q8_0(reinterpret_cast<const block_q8_0 *>(block_ptr), q8_vals, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
 
-        // Compute delta and store as BF16
+        // Compute delta and store in chosen format
+        float deltas[LLAMA_Q8_OUTLIER_BLOCK_SIZE];
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-            float delta = orig[j] - q8_vals[j];
-            outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(delta);
+            deltas[j] = orig[j] - q8_vals[j];
+        }
+
+        if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+            uint8_t nibbles[32];
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+                nibbles[j] = llama_outlier_nibble_diff_encode(deltas[j]);
+            }
+            llama_outlier_nibble_diff_pack_block(nibbles, outliers.values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES);
+        } else {
+            // BF16: overwrite the existing values
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+                outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(deltas[j]);
+            }
         }
     }
 
     if (ggml_custom_logs_enabled()) {
-        fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q8_dequant)\n",
-                outliers.name.c_str(), outliers.idx.size() / 2);
+        fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q8_dequant), value_type=%s\n",
+                outliers.name.c_str(), n_blocks,
+                value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" : "BF16");
 
         // Detailed logging for first 3 outlier blocks
-        const size_t n_blocks = outliers.idx.size() / 2;
         const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
         for (size_t k = 0; k < log_blocks; k++) {
             double l2 = 0.0;
             double mean_abs = 0.0;
             double max_abs = 0.0;
             for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-                float d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
+                float d;
+                if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    uint8_t nibbles[32];
+                    llama_outlier_nibble_diff_unpack_block(outliers.values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+                    d = llama_outlier_nibble_diff_decode(nibbles[j]);
+                } else {
+                    d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
+                }
                 l2 += (double)d * d;
                 double ad = fabs((double)d);
                 mean_abs += ad;
@@ -1070,7 +1098,14 @@ static void q8_outlier_compute_deltas(
         if (n_blocks > 0) {
             fprintf(stderr, "[delta-quant]   block[0] all 32 deltas:");
             for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
-                float d = ggml_bf16_to_fp32(outliers.values[j]);
+                float d;
+                if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    uint8_t nibbles[32];
+                    llama_outlier_nibble_diff_unpack_block(outliers.values_nibble.data(), nibbles);
+                    d = llama_outlier_nibble_diff_decode(nibbles[j]);
+                } else {
+                    d = ggml_bf16_to_fp32(outliers.values[j]);
+                }
                 fprintf(stderr, " %.6e", d);
             }
             fprintf(stderr, "\n");
@@ -1122,11 +1157,14 @@ static void q8_outlier_add_tensor_meta(
 
 static void q8_outlier_write_metadata(
         struct gguf_context * ctx,
-        const std::vector<q8_outlier_tensor_data> & tensors) {
+        const std::vector<q8_outlier_tensor_data> & tensors,
+        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
     gguf_set_val_u32(ctx, LLAMA_Q8_OUTLIER_VERSION_KEY, 1);
     gguf_set_val_u32(ctx, LLAMA_Q8_OUTLIER_BLOCK_SIZE_KEY, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_BASE_TYPE_KEY, "q8_0");
-    gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_VALUE_TYPE_KEY, "bf16");
+    gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_VALUE_TYPE_KEY,
+            value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" :
+            value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "q8_0" : "bf16");
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
     gguf_set_val_str(ctx, LLAMA_Q8_OUTLIER_STORE_KEY, "delta");
     gguf_set_val_u32(ctx, LLAMA_Q8_OUTLIER_TENSOR_COUNT_KEY, (uint32_t) tensors.size());
@@ -1176,8 +1214,12 @@ static void q8_outlier_write_report(
     fout << "}\n";
 }
 
-static size_t q8_outlier_sidecar_size(const q8_outlier_tensor_data & t) {
-    return t.idx.size() * sizeof(int32_t) + t.values.size() * sizeof(ggml_bf16_t);
+static size_t q8_outlier_sidecar_size(const q8_outlier_tensor_data & t, enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+    const size_t idx_size = t.idx.size() * sizeof(int32_t);
+    if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+        return idx_size + t.values_nibble.size();
+    }
+    return idx_size + t.values.size() * sizeof(ggml_bf16_t);
 }
 
 // reconstruct a full F32 tensor from a Q8_0 base (already dequantized to f32_buf)
@@ -1190,16 +1232,31 @@ static void q8_outlier_reconstruct_tensor(
     int64_t /*n_rows*/,
     int64_t n_cols) {
     const int32_t * idx = (const int32_t *) idx_tensor->data;
-    const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
     const int64_t n_blocks = ggml_nelements(idx_tensor) / 2;
 
-    for (int64_t b = 0; b < n_blocks; ++b) {
-        const int64_t row = idx[b * 2];
-        const int64_t block_col = idx[b * 2 + 1];
-        const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-        const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
-            f32_buf[off + j] += ggml_bf16_to_fp32(v[j]);
+    if (values_tensor->type == GGML_TYPE_BF16) {
+        const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
+        for (int64_t b = 0; b < n_blocks; ++b) {
+            const int64_t row = idx[b * 2];
+            const int64_t block_col = idx[b * 2 + 1];
+            const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+                f32_buf[off + j] += ggml_bf16_to_fp32(v[j]);
+            }
+        }
+    } else {
+        // nibble-diff: values are packed I8 [16, n_blocks]
+        const uint8_t * values = (const uint8_t *) values_tensor->data;
+        uint8_t nibbles[32];
+        for (int64_t b = 0; b < n_blocks; ++b) {
+            const int64_t row = idx[b * 2];
+            const int64_t block_col = idx[b * 2 + 1];
+            const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            llama_outlier_nibble_diff_unpack_block(values + b * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+                f32_buf[off + j] += llama_outlier_nibble_diff_decode(nibbles[j]);
+            }
         }
     }
 }
@@ -1470,15 +1527,16 @@ static void q4_outlier_compute_deltas(
         float /*nrows*/,
         int64_t n_per_row,
         q8_outlier_tensor_data & outliers,
-        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16) {
+        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
 
     const size_t block_size = ggml_type_size(GGML_TYPE_Q4_0);  // 18 bytes
     const uint8_t * data = (const uint8_t *) q4_data;
     const size_t n_blocks = outliers.idx.size() / 2;
 
     if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
-        // Store deltas as Q8_0 blocks: each 32-element delta -> one Q8_0 block (34 bytes)
         outliers.values_q8.resize(n_blocks * sizeof(block_q8_0));
+    } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+        outliers.values_nibble.resize(n_blocks * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES);
     } else {
         outliers.values.resize(n_blocks * LLAMA_Q8_OUTLIER_BLOCK_SIZE);
     }
@@ -1490,9 +1548,7 @@ static void q4_outlier_compute_deltas(
 
         const float * orig = f32_data + row * n_per_row + col;
 
-        // Q4_0 block: ggml_fp16_t d (2 bytes) + uint8_t qs[16] (16 bytes) = 18 bytes
         const uint8_t * block_ptr = data + row * (n_per_row / 32) * block_size + block_col * block_size;
-        // Use official GGML dequantize to ensure delta matches inference kernels
         float q4_vals[LLAMA_Q8_OUTLIER_BLOCK_SIZE];
         dequantize_row_q4_0(reinterpret_cast<const block_q4_0 *>(block_ptr), q4_vals, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
 
@@ -1502,9 +1558,14 @@ static void q4_outlier_compute_deltas(
         }
 
         if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
-            // Quantize deltas to Q8_0 block
             block_q8_0 * q8block = reinterpret_cast<block_q8_0 *>(outliers.values_q8.data() + k * sizeof(block_q8_0));
             quantize_row_q8_0_ref(deltas, q8block, LLAMA_Q8_OUTLIER_BLOCK_SIZE);
+        } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+            uint8_t nibbles[32];
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
+                nibbles[j] = llama_outlier_nibble_diff_encode(deltas[j]);
+            }
+            llama_outlier_nibble_diff_pack_block(nibbles, outliers.values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES);
         } else {
             for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; j++) {
                 outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j] = ggml_fp32_to_bf16(deltas[j]);
@@ -1515,7 +1576,8 @@ static void q4_outlier_compute_deltas(
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-quant] %s: computed %zu deltas (original - Q4_dequant), value_type=%s\n",
                 outliers.name.c_str(), n_blocks,
-                value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" : "BF16");
+                value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" :
+                value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" : "BF16");
         const size_t log_blocks = n_blocks < 3 ? n_blocks : 3;
         for (size_t k = 0; k < log_blocks; k++) {
             double l2 = 0.0;
@@ -1526,6 +1588,10 @@ static void q4_outlier_compute_deltas(
                 if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
                     const block_q8_0 * q8block = reinterpret_cast<const block_q8_0 *>(outliers.values_q8.data() + k * sizeof(block_q8_0));
                     d = ggml_fp16_to_fp32(q8block->d) * q8block->qs[j];
+                } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    uint8_t nibbles[32];
+                    llama_outlier_nibble_diff_unpack_block(outliers.values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+                    d = llama_outlier_nibble_diff_decode(nibbles[j]);
                 } else {
                     d = ggml_bf16_to_fp32(outliers.values[k * LLAMA_Q8_OUTLIER_BLOCK_SIZE + j]);
                 }
@@ -1584,7 +1650,7 @@ static void q4_outlier_reconstruct_tensor_q8(
     }
 }
 
-// reconstruct from pointer tensors (BF16 values)
+// reconstruct from pointer tensors (BF16 or nibble-diff values)
 static void q4_outlier_reconstruct_tensor(
     const ggml_tensor * /*base_tensor*/,
     const ggml_tensor * idx_tensor,
@@ -1593,16 +1659,30 @@ static void q4_outlier_reconstruct_tensor(
     int64_t /*n_rows*/,
     int64_t n_cols) {
     const int32_t * idx = (const int32_t *) idx_tensor->data;
-    const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
     const int64_t n_blocks = ggml_nelements(idx_tensor) / 2;
 
-    for (int64_t b = 0; b < n_blocks; ++b) {
-        const int64_t row = idx[b * 2];
-        const int64_t block_col = idx[b * 2 + 1];
-        const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-        const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
-        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
-            f32_buf[off + j] += ggml_bf16_to_fp32(v[j]);
+    if (values_tensor->type == GGML_TYPE_I8) {
+        const uint8_t * values = (const uint8_t *) values_tensor->data;
+        uint8_t nibbles[32];
+        for (int64_t b = 0; b < n_blocks; ++b) {
+            const int64_t row = idx[b * 2];
+            const int64_t block_col = idx[b * 2 + 1];
+            const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            llama_outlier_nibble_diff_unpack_block(values + b * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+                f32_buf[off + j] += llama_outlier_nibble_diff_decode(nibbles[j]);
+            }
+        }
+    } else {
+        const ggml_bf16_t * values = (const ggml_bf16_t *) values_tensor->data;
+        for (int64_t b = 0; b < n_blocks; ++b) {
+            const int64_t row = idx[b * 2];
+            const int64_t block_col = idx[b * 2 + 1];
+            const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            const ggml_bf16_t * v = values + b * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+                f32_buf[off + j] += ggml_bf16_to_fp32(v[j]);
+            }
         }
     }
 }
@@ -1626,6 +1706,51 @@ static void q4_outlier_reconstruct_tensor_q8_ptr(
         const float d = ggml_fp16_to_fp32(values[b].d);
         for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
             f32_buf[off + j] += d * values[b].qs[j];
+        }
+    }
+}
+
+// reconstruct from pointer tensors (nibble-diff values)
+static void q4_outlier_reconstruct_tensor_nibble_ptr(
+    const ggml_tensor * /*base_tensor*/,
+    const ggml_tensor * idx_tensor,
+    const ggml_tensor * values_tensor,
+    float * f32_buf,
+    int64_t /*n_rows*/,
+    int64_t n_cols) {
+    const int32_t * idx = (const int32_t *) idx_tensor->data;
+    const uint8_t * values = (const uint8_t *) values_tensor->data;
+    const int64_t n_blocks = ggml_nelements(idx_tensor) / 2;
+    uint8_t nibbles[32];
+
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        const int64_t row = idx[b * 2];
+        const int64_t block_col = idx[b * 2 + 1];
+        const int64_t off = row * n_cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        llama_outlier_nibble_diff_unpack_block(values + b * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            f32_buf[off + j] += llama_outlier_nibble_diff_decode(nibbles[j]);
+        }
+    }
+}
+
+// reconstruct from vector data (nibble-diff values)
+static void q4_outlier_reconstruct_tensor_nibble(
+        const ggml_tensor * /*tensor*/,
+        const std::vector<int32_t> & idx,
+        const std::vector<uint8_t> & values_nibble,
+        float * f32_buf,
+        int64_t /*rows*/,
+        int64_t cols) {
+    const int64_t n_blocks = (int64_t) idx.size() / 2;
+    uint8_t nibbles[32];
+    for (int64_t k = 0; k < n_blocks; ++k) {
+        const int64_t row = idx[k * 2];
+        const int64_t block_col = idx[k * 2 + 1];
+        float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        llama_outlier_nibble_diff_unpack_block(values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            dst[j] += llama_outlier_nibble_diff_decode(nibbles[j]);
         }
     }
 }
@@ -1655,11 +1780,13 @@ static void q4_outlier_add_tensor_meta(
 static void q4_outlier_write_metadata(
         struct gguf_context * ctx,
         const std::vector<q8_outlier_tensor_data> & tensors,
-        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16) {
+        enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
     gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_VERSION_KEY, 1);
     gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_BLOCK_SIZE_KEY, LLAMA_Q4_OUTLIER_BLOCK_SIZE);
     gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_BASE_TYPE_KEY, "q4_0");
-    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_VALUE_TYPE_KEY, value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "q8_0" : "bf16");
+    gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_VALUE_TYPE_KEY,
+            value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" :
+            value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "q8_0" : "bf16");
     gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_INDEX_ENCODING_KEY, "row_block_col");
     gguf_set_val_str(ctx, LLAMA_Q4_OUTLIER_STORE_KEY, "delta");
     gguf_set_val_u32(ctx, LLAMA_Q4_OUTLIER_TENSOR_COUNT_KEY, (uint32_t) tensors.size());
@@ -1706,10 +1833,12 @@ static void q4_outlier_write_report(
     fout << "}\n";
 }
 
-static size_t q4_outlier_sidecar_size(const q8_outlier_tensor_data & t, enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16) {
+static size_t q4_outlier_sidecar_size(const q8_outlier_tensor_data & t, enum llama_outlier_value_type value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
     const size_t idx_size = t.idx.size() * sizeof(int32_t);
     if (value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
         return idx_size + t.values_q8.size();
+    } else if (value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+        return idx_size + t.values_nibble.size();
     }
     return idx_size + t.values.size() * sizeof(ggml_bf16_t);
 }
@@ -2195,12 +2324,16 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         for (const q8_outlier_tensor_data & outliers : q8_outlier_tensors) {
             q8_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.idx_name, GGML_TYPE_I32, 2, outliers.n_blocks());
-            q8_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, GGML_TYPE_BF16, LLAMA_Q8_OUTLIER_BLOCK_SIZE, outliers.n_blocks());
+            const ggml_type q8_values_type = params->q8_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF
+                ? GGML_TYPE_I8 : GGML_TYPE_BF16;
+            const int64_t q8_values_ne0 = params->q8_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF
+                ? LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES : LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+            q8_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, q8_values_type, q8_values_ne0, outliers.n_blocks());
         }
         // Only write/overwrite outlier metadata if we actually analyzed tensors.
         // In copy mode, source metadata was already preserved by gguf_set_kv above.
         if (!params->only_copy) {
-            q8_outlier_write_metadata(ctx_outs[0].get(), q8_outlier_tensors);
+            q8_outlier_write_metadata(ctx_outs[0].get(), q8_outlier_tensors, params->q8_outlier_value_type);
         }
     }
 
@@ -2345,8 +2478,19 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         for (const q8_outlier_tensor_data & outliers : q4_outlier_tensors) {
             q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.idx_name, GGML_TYPE_I32, 2, outliers.n_blocks());
-            const ggml_type values_type = params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? GGML_TYPE_Q8_0 : GGML_TYPE_BF16;
-            q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, values_type, LLAMA_Q4_OUTLIER_BLOCK_SIZE, outliers.n_blocks());
+            ggml_type values_type;
+            int64_t values_ne0;
+            if (params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+                values_type = GGML_TYPE_Q8_0;
+                values_ne0 = LLAMA_Q4_OUTLIER_BLOCK_SIZE;
+            } else if (params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                values_type = GGML_TYPE_I8;
+                values_ne0 = LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES;
+            } else {
+                values_type = GGML_TYPE_BF16;
+                values_ne0 = LLAMA_Q4_OUTLIER_BLOCK_SIZE;
+            }
+            q4_outlier_add_tensor_meta(ctx_outs[0].get(), outliers.values_name, values_type, values_ne0, outliers.n_blocks());
         }
         if (!params->only_copy) {
             q4_outlier_write_metadata(ctx_outs[0].get(), q4_outlier_tensors, params->q4_outlier_value_type);
@@ -2527,7 +2671,27 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                             if (!tensor_name_match_token_embd(tensor->name)) {
                                 throw std::runtime_error(format("imatrix size %d is different from tensor size %d for %s",
                                         int(it->second.size()), int(tensor->ne[0]*tensor->ne[2]), tensor->name));
-                            }
+}
+
+static void q8_outlier_reconstruct_tensor_nibble(
+        const ggml_tensor * /*tensor*/,
+        const std::vector<int32_t> & idx,
+        const std::vector<uint8_t> & values_nibble,
+        float * f32_buf,
+        int64_t /*rows*/,
+        int64_t cols) {
+    const int64_t n_blocks = (int64_t) idx.size() / 2;
+    uint8_t nibbles[32];
+    for (int64_t k = 0; k < n_blocks; ++k) {
+        const int64_t row = idx[k * 2];
+        const int64_t block_col = idx[k * 2 + 1];
+        float * dst = f32_buf + row * cols + block_col * LLAMA_Q8_OUTLIER_BLOCK_SIZE;
+        llama_outlier_nibble_diff_unpack_block(values_nibble.data() + k * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
+        for (int j = 0; j < LLAMA_Q8_OUTLIER_BLOCK_SIZE; ++j) {
+            dst[j] += llama_outlier_nibble_diff_decode(nibbles[j]);
+        }
+    }
+}
                         }
                     }
                 }
@@ -2603,7 +2767,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 if (q8_outlier_enabled && new_type == GGML_TYPE_Q8_0) {
                     auto it = q8_outlier_by_name.find(tm.name);
                     if (it != q8_outlier_by_name.end()) {
-                        q8_outlier_compute_deltas(f32_data, new_data, nrows, n_per_row, q8_outlier_tensors[it->second]);
+                        q8_outlier_compute_deltas(f32_data, new_data, nrows, n_per_row, q8_outlier_tensors[it->second], params->q8_outlier_value_type);
                     }
                 }
                 if (q4_outlier_enabled && new_type == GGML_TYPE_Q4_0) {
@@ -2639,11 +2803,19 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 fout.write((const char *) outliers.idx.data(), idx_size);
                 zeros(fout, GGML_PAD(idx_size, align) - idx_size);
             }
-            // Write outlier_bf16 tensor data
+            // Write values tensor data (nibble-diff or BF16)
             {
-                const size_t values_size = outliers.values.size() * sizeof(ggml_bf16_t);
-                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values.data());
-                fout.write((const char *) outliers.values.data(), values_size);
+                size_t values_size;
+                const void * values_ptr;
+                if (params->q8_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    values_size = outliers.values_nibble.size();
+                    values_ptr = outliers.values_nibble.data();
+                } else {
+                    values_size = outliers.values.size() * sizeof(ggml_bf16_t);
+                    values_ptr = outliers.values.data();
+                }
+                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), values_ptr);
+                fout.write((const char *) values_ptr, values_size);
                 zeros(fout, GGML_PAD(values_size, align) - values_size);
             }
         }
@@ -2659,17 +2831,21 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 zeros(fout, GGML_PAD(idx_size, align) - idx_size);
             }
             {
+                size_t values_size;
+                const void * values_ptr;
                 if (params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
-                    const size_t values_size = outliers.values_q8.size();
-                    gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values_q8.data());
-                    fout.write((const char *) outliers.values_q8.data(), values_size);
-                    zeros(fout, GGML_PAD(values_size, align) - values_size);
+                    values_size = outliers.values_q8.size();
+                    values_ptr = outliers.values_q8.data();
+                } else if (params->q4_outlier_value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    values_size = outliers.values_nibble.size();
+                    values_ptr = outliers.values_nibble.data();
                 } else {
-                    const size_t values_size = outliers.values.size() * sizeof(ggml_bf16_t);
-                    gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), outliers.values.data());
-                    fout.write((const char *) outliers.values.data(), values_size);
-                    zeros(fout, GGML_PAD(values_size, align) - values_size);
+                    values_size = outliers.values.size() * sizeof(ggml_bf16_t);
+                    values_ptr = outliers.values.data();
                 }
+                gguf_set_tensor_data(ctx_outs[cur_split].get(), outliers.values_name.c_str(), values_ptr);
+                fout.write((const char *) values_ptr, values_size);
+                zeros(fout, GGML_PAD(values_size, align) - values_size);
             }
         }
     }
@@ -2684,7 +2860,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     // Compute and report sidecar size
     {
         size_t sidecar_size = 0;
-        for (const auto & t : q8_outlier_tensors) sidecar_size += q8_outlier_sidecar_size(t);
+        for (const auto & t : q8_outlier_tensors) sidecar_size += q8_outlier_sidecar_size(t, params->q8_outlier_value_type);
         for (const auto & t : q4_outlier_tensors) sidecar_size += q4_outlier_sidecar_size(t, params->q4_outlier_value_type);
         if (sidecar_size > 0) {
             const size_t total_with_sidecar = total_size_new + sidecar_size;
@@ -2731,6 +2907,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q8_outlier_nonmax_rel_rmse  =*/ 0.01f,
         /*.q8_outlier_max_frac         =*/ 0.02f,
         /*.q8_outlier_store            =*/ LLAMA_Q8_OUTLIER_STORE_FULL,
+        /*.q8_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF,
         /*.q8_outlier_report_path      =*/ nullptr,
         /*.q8_outlier_include_weights  =*/ nullptr,
         /*.q8_outlier_exclude_weights  =*/ nullptr,
@@ -2743,7 +2920,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q4_outlier_include_weights  =*/ nullptr,
         /*.q4_outlier_exclude_weights  =*/ nullptr,
         /*.q4_outlier_max_abs_error    =*/ 0.0f,
-        /*.q4_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_BF16
+        /*.q4_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF
     };
 
     return result;

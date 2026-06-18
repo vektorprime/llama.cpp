@@ -410,8 +410,9 @@ extern "C" {
     };
 
     enum llama_outlier_value_type {
-        LLAMA_OUTLIER_VALUE_TYPE_BF16 = 0,
-        LLAMA_OUTLIER_VALUE_TYPE_Q8_0 = 1,
+        LLAMA_OUTLIER_VALUE_TYPE_BF16         = 0,
+        LLAMA_OUTLIER_VALUE_TYPE_Q8_0         = 1,
+        LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF  = 2,  // 4-bit custom diff encoding
     };
 
     // model quantization parameters
@@ -435,6 +436,7 @@ extern "C" {
         float q8_outlier_nonmax_rel_rmse;                           // non-outlier relative RMSE threshold
         float q8_outlier_max_frac;                                  // maximum protected block fraction per tensor
         enum llama_q8_outlier_store q8_outlier_store;                // storage mode; FULL is implemented
+        enum llama_outlier_value_type q8_outlier_value_type;         // delta storage type: BF16 or nibble-diff
         const char * q8_outlier_report_path;                        // optional JSON report path
         const char * q8_outlier_include_weights;                    // optional regex of tensors to include
         const char * q8_outlier_exclude_weights;                    // optional regex of tensors to exclude

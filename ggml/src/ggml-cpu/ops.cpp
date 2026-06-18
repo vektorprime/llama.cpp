@@ -4469,7 +4469,7 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const ggml_tensor * x      = dst->src[2];
 
     GGML_ASSERT(idx->type    == GGML_TYPE_I32);
-    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
     GGML_ASSERT(x->type      == GGML_TYPE_F32);
     GGML_ASSERT(dst->type    == GGML_TYPE_F32);
 
@@ -4480,15 +4480,15 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
 
     GGML_ASSERT(dst->ne[0] == n_rows_out);
     GGML_ASSERT(dst->ne[1] == n_tokens);
-    GGML_ASSERT(x->ne[0] == n_cols); // CPU doesn't currently handle sharding/views
+    GGML_ASSERT(x->ne[0] == n_cols);
 
     const int64_t ith = params->ith;
     const int64_t nth = params->nth;
 
-    // [delta-cpu] log at top of function (thread 0 only)
     if (ith == 0 && ggml_custom_logs_enabled()) {
-        fprintf(stderr, "[delta-cpu] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols=%lld\n",
-                (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens, (long long)n_cols);
+        fprintf(stderr, "[delta-cpu] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols=%lld values_type=%s\n",
+                (long long)n_blocks, (long long)n_rows_out, (long long)n_tokens, (long long)n_cols,
+                values->type == GGML_TYPE_Q8_0 ? "Q8_0" : values->type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
         fflush(stderr);
     }
 
@@ -4506,24 +4506,25 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
     const float * x_data        = (const float *) x->data;
     const int64_t x_stride      = x->nb[1] / sizeof(float);
 
-    const bool is_q8_0 = (values->type == GGML_TYPE_Q8_0);
-    const ggml_bf16_t * values_bf16 = (const ggml_bf16_t *) values->data;
-    const block_q8_0 * values_q8 = (const block_q8_0 *) values->data;
+    const bool is_q8_0   = (values->type == GGML_TYPE_Q8_0);
+    const bool is_nibble = (values->type == GGML_TYPE_I8);
+    const ggml_bf16_t * values_bf16   = (const ggml_bf16_t *) values->data;
+    const block_q8_0   * values_q8    = (const block_q8_0 *) values->data;
+    const uint8_t      * values_nibble = (const uint8_t *) values->data;
 
-    // Partition OUTPUT rows per thread — each thread only writes to its own rows,
-    // eliminating the need for atomics or barriers on the merge step
     const int64_t row_per_thread = (n_rows_out + nth - 1) / nth;
     const int64_t row0 = ith * row_per_thread;
     const int64_t row1 = MIN(row0 + row_per_thread, n_rows_out);
 
-    // Zero this thread's output rows (correctly striding across tokens)
     for (int64_t row = row0; row < row1; row++) {
         for (int64_t it = 0; it < n_tokens; it++) {
             dst_data[row + it * dst_stride] = 0.0f;
         }
     }
 
-    // Each thread iterates all blocks but only accumulates into its own row range
+    bool debug_printed = false;
+    uint8_t nibbles_buf[32];
+
     for (int64_t ib = 0; ib < n_blocks; ib++) {
         const int32_t row       = idx_data[ib * 2];
         const int32_t block_col = idx_data[ib * 2 + 1];
@@ -4539,12 +4540,49 @@ void ggml_compute_forward_mul_mat_outlier_blocks(
 
         for (int64_t it = 0; it < n_tokens; it++) {
             float sum = 0.0f;
-            for (int64_t j = 0; j < 32; j++) {
-                const float w = is_q8_0
-                    ? GGML_FP16_TO_FP32(values_q8[ib].d) * values_q8[ib].qs[j]
-                    : GGML_BF16_TO_FP32(values_bf16[ib * 32 + j]);
-                const float a = x_data[(col0 + j) + it * x_stride];
-                sum += w * a;
+
+            if (is_nibble) {
+                uint8_t nibbles[32];
+                for (int j = 0; j < 16; j++) {
+                    const uint8_t byte = values_nibble[ib * 16 + j];
+                    nibbles[j * 2]     = byte & 0x0F;
+                    nibbles[j * 2 + 1] = byte >> 4;
+                }
+                if (!debug_printed && ib == 0 && it == 0 && ggml_custom_logs_enabled()) {
+                    debug_printed = true;
+                    fprintf(stderr, "[delta-cpu] nibble_decode: first 4 deltas=");
+                    for (int jj = 0; jj < 4; jj++) {
+                        uint8_t n = nibbles[jj];
+                        float v = 0.0f;
+                        if (n & 0x08) {
+                            v = (n & 0x02) ? 0.001f : 0.01f;
+                            if (n & 0x01) v *= 2.0f;
+                            if (!(n & 0x04)) v = -v;
+                        }
+                        fprintf(stderr, " %.6f", v);
+                    }
+                    fprintf(stderr, "\n");
+                    fflush(stderr);
+                }
+                for (int64_t j = 0; j < 32; j++) {
+                    const uint8_t nibble = nibbles[j];
+                    float w = 0.0f;
+                    if (nibble & 0x08) {
+                        w = (nibble & 0x02) ? 0.001f : 0.01f;
+                        if (nibble & 0x01) w *= 2.0f;
+                        if (!(nibble & 0x04)) w = -w;
+                    }
+                    const float a = x_data[(col0 + j) + it * x_stride];
+                    sum += w * a;
+                }
+            } else {
+                for (int64_t j = 0; j < 32; j++) {
+                    const float w = is_q8_0
+                        ? GGML_FP16_TO_FP32(values_q8[ib].d) * values_q8[ib].qs[j]
+                        : GGML_BF16_TO_FP32(values_bf16[ib * 32 + j]);
+                    const float a = x_data[(col0 + j) + it * x_stride];
+                    sum += w * a;
+                }
             }
             dst_data[row + it * dst_stride] += sum;
         }

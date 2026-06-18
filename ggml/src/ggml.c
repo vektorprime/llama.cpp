@@ -3310,10 +3310,10 @@ struct ggml_tensor * ggml_mul_mat_outlier_blocks(
         int64_t               n_rows_out,
         int64_t               n_cols) {
     GGML_ASSERT(idx->type == GGML_TYPE_I32);
-    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
     GGML_ASSERT(x->type == GGML_TYPE_F32);
     GGML_ASSERT(idx->ne[0] == 2);  // [row, block_col]
-    GGML_ASSERT(values->ne[0] == 32); // block_size = 32
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 16)); // block_size or nibble bytes
     GGML_ASSERT(idx->ne[1] == values->ne[1]); // same number of outlier blocks
     GGML_ASSERT(x->ne[0] <= n_cols); // shard-local column count may be smaller with tensor parallelism
 

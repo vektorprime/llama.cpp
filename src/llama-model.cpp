@@ -1007,16 +1007,16 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx must be I32\n", __func__, name.c_str());
             continue;
         }
-        if (values_tensor->type != GGML_TYPE_BF16 && values_tensor->type != GGML_TYPE_Q8_0) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values must be BF16 or Q8_0\n", __func__, name.c_str());
+        if (values_tensor->type != GGML_TYPE_BF16 && values_tensor->type != GGML_TYPE_Q8_0 && values_tensor->type != GGML_TYPE_I8) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values must be BF16, Q8_0, or I8\n", __func__, name.c_str());
             continue;
         }
         if (idx_tensor->ne[0] != 2) {
             LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx ne[0] must be 2\n", __func__, name.c_str());
             continue;
         }
-        if (values_tensor->ne[0] != 32) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32\n", __func__, name.c_str());
+        if (values_tensor->ne[0] != 32 && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 16)) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32 (or 16 for nibble)\n", __func__, name.c_str());
             continue;
         }
 
@@ -1033,7 +1033,9 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         info.n_blocks   = n_blocks;
         info.n_rows_out = tensor->ne[1];
         info.n_cols     = tensor->ne[0];
-        info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 : LLAMA_OUTLIER_VALUE_TYPE_BF16;
+        info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 :
+                          values_tensor->type == GGML_TYPE_I8  ? LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF :
+                                                                  LLAMA_OUTLIER_VALUE_TYPE_BF16;
 
         // Build CSR layout
         // Read idx data: [2, n_blocks] -> (row, block_col) per block
@@ -1304,16 +1306,16 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                 n_type_mismatch++;
                 continue;
             }
-            if (val_meta->type != GGML_TYPE_BF16 && val_meta->type != GGML_TYPE_Q8_0) {
+            if (val_meta->type != GGML_TYPE_BF16 && val_meta->type != GGML_TYPE_Q8_0 && val_meta->type != GGML_TYPE_I8) {
                 n_type_mismatch++;
                 if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': val type=%s (expect BF16 or Q8_0)\n",
+                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': val type=%s (expect BF16, Q8_0, or I8)\n",
                             w_name.c_str(), ggml_type_name(val_meta->type));
                     fflush(stderr);
                 }
                 continue;
             }
-            if (idx_meta->ne[0] != 2 || val_meta->ne[0] != 32) {
+            if (idx_meta->ne[0] != 2 || (val_meta->ne[0] != 32 && !(val_meta->type == GGML_TYPE_I8 && val_meta->ne[0] == 16))) {
                 n_shape_mismatch++;
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': idx ne=[%lld,%lld] val ne=[%lld,%lld] (expect 2,32)\n",
@@ -1346,7 +1348,10 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             info.n_rows_out = parent_t->ne[1];
             info.n_cols     = parent_t->ne[0];
             info.value_type = val_meta->type == GGML_TYPE_Q8_0
-                ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 : LLAMA_OUTLIER_VALUE_TYPE_BF16;
+                ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 :
+                val_meta->type == GGML_TYPE_I8
+                ? LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF :
+                LLAMA_OUTLIER_VALUE_TYPE_BF16;
 
             // Read idx data from GGUF for CSR layout
             std::vector<int32_t> idx_buf_gguf(n_blocks * 2);
@@ -1444,8 +1449,14 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             }
 
             if (idx_data) {
-                size_t val_elem = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
-                    ? (size_t)34 : (size_t)(32 * sizeof(ggml_bf16_t));
+                size_t val_elem;
+                if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+                    val_elem = (size_t)34;
+                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    val_elem = (size_t)16;
+                } else {
+                    val_elem = (size_t)(32 * sizeof(ggml_bf16_t));
+                }
                 size_t val_total = (size_t)info.n_blocks * val_elem;
 
                 if (val_t->buffer && ggml_backend_buffer_is_host(val_t->buffer) && val_t->data) {
@@ -1469,9 +1480,14 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
             if (w_idx && w_val) {
                 size_t idx_nbytes = (size_t)info.n_blocks * 2 * sizeof(int32_t);
-                size_t val_nbytes = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
-                    ? (size_t)info.n_blocks * 34
-                    : (size_t)info.n_blocks * 32 * sizeof(ggml_bf16_t);
+                size_t val_nbytes;
+                if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+                    val_nbytes = (size_t)info.n_blocks * 34;
+                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    val_nbytes = (size_t)info.n_blocks * 16;
+                } else {
+                    val_nbytes = (size_t)info.n_blocks * 32 * sizeof(ggml_bf16_t);
+                }
 
                 idx_buf.resize(info.n_blocks * 2);
                 val_buf.resize(val_nbytes);
@@ -1518,8 +1534,14 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             continue;
         }
 
-        ggml_type vt = (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0)
-            ? GGML_TYPE_Q8_0 : GGML_TYPE_BF16;
+        ggml_type vt;
+        if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
+            vt = GGML_TYPE_Q8_0;
+        } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+            vt = GGML_TYPE_I8;
+        } else {
+            vt = GGML_TYPE_BF16;
+        }
 
         outlier_cache.add_entry(info.name, idx_data, val_data,
                 vt, info.n_blocks, info.n_rows_out, info.n_cols);
@@ -1572,7 +1594,8 @@ void llama_model::patch_embedding_outliers() {
                     buf_loc,
                     (void*)weight_tensor->data,
                     (long long)info.n_blocks,
-                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" : "BF16",
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" :
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" : "BF16",
                     (void*)info.idx, (void*)info.values);
             fflush(stderr);
         }
@@ -1624,6 +1647,8 @@ void llama_model::patch_embedding_outliers() {
 
         if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
             values_element_size = sizeof(block_q8_0);
+        } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+            values_element_size = 16;
         } else {
             values_element_size = 32 * sizeof(ggml_bf16_t); // 32 * 2 = 64
         }
@@ -1734,6 +1759,24 @@ void llama_model::patch_embedding_outliers() {
                     dequantize_row_q8_0(q8_blk, delta_f32, 32);
                     for (int j = 0; j < 32; j++) {
                         f32_row[col + j] += delta_f32[j];
+                    }
+                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
+                    // nibble-diff delta: unpack and decode
+                    const uint8_t * packed = values_cpu + (size_t)bi * 16;
+                    uint8_t nibbles[32];
+                    for (int j = 0; j < 16; j++) {
+                        nibbles[j * 2]     = packed[j] & 0x0F;
+                        nibbles[j * 2 + 1] = packed[j] >> 4;
+                    }
+                    for (int j = 0; j < 32; j++) {
+                        float w = 0.0f;
+                        uint8_t n = nibbles[j];
+                        if (n & 0x08) {
+                            w = (n & 0x02) ? 0.001f : 0.01f;
+                            if (n & 0x01) w *= 2.0f;
+                            if (!(n & 0x04)) w = -w;
+                        }
+                        f32_row[col + j] += w;
                     }
                 } else {
                     // BF16 delta: convert and add

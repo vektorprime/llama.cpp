@@ -21,6 +21,75 @@
 
 #define OUTLIER_BLOCK_SIZE 32
 
+// Nibble-diff decoding: 4 bits per weight, 16 bytes = 32 weights per block
+// Bit layout: bit3=enable, bit2=sign(1=pos), bit1=zero_cnt, bit0=digit(0=1,1=2)
+static __device__ inline float nibble_diff_decode(uint8_t nibble) {
+    if (!(nibble & 0x08)) return 0.0f;
+    float v = (nibble & 0x02) ? 0.001f : 0.01f;
+    if (nibble & 0x01) v *= 2.0f;
+    if (!(nibble & 0x04)) v = -v;
+    return v;
+}
+
+static __global__ void outlier_blocks_kernel_nibble(
+        const int32_t * __restrict__ idx,       // [2, n_blocks]
+        const uint8_t * __restrict__ values,    // [16, n_blocks] packed nibbles
+        const float *   __restrict__ x,         // [n_cols_x, n_tokens] shard-local
+        float *         __restrict__ dst,       // [n_rows_out, n_tokens]
+        const int64_t n_blocks,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens) {
+
+    const int64_t block_idx = blockIdx.x;
+    const int64_t token_idx = blockIdx.y;
+
+    if (block_idx >= n_blocks || token_idx >= n_tokens) {
+        return;
+    }
+
+    const int32_t row       = idx[block_idx * 2];
+    const int32_t block_col = idx[block_idx * 2 + 1];
+    const int64_t col0      = (int64_t) block_col * 32;
+
+    if (col0 + 31 < col_offset || col0 >= col_offset + n_cols_x) {
+        return;
+    }
+
+    if (col0 + 31 >= n_cols_all) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    float sum = 0.0f;
+
+    if (tid < 32) {
+        const int64_t j = tid;
+        const int64_t col_global = col0 + j;
+        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
+            const uint8_t byte = values[block_idx * 16 + (j >> 1)];
+            const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+            const float w = nibble_diff_decode(nibble);
+            const int64_t col_local = col_global - col_offset;
+            const float a = x[col_local + token_idx * x_stride];
+            sum = w * a;
+        }
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if (tid == 0 && row >= 0 && row < n_rows_out) {
+        const int64_t dst_idx = row + token_idx * n_rows_out;
+        atomicAdd(dst + dst_idx, sum);
+    }
+}
+
 static __global__ void outlier_blocks_kernel_bf16(
         const int32_t *     __restrict__ idx,       // [2, n_blocks]
         const nv_bfloat16 * __restrict__ values,    // [32, n_blocks] in BF16
@@ -173,7 +242,7 @@ static void outlier_blocks_cuda(
         fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u) values_type=%s\n",
                 (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
                 (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z,
-                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : "BF16");
+                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
         fflush(stderr);
     }
 
@@ -181,6 +250,11 @@ static void outlier_blocks_cuda(
         const block_q8_0_cuda * values_q8 = (const block_q8_0_cuda *) values_d;
         outlier_blocks_kernel_q8_0<<<grid_dim, block_dim, 0, stream>>>(
                 idx_d, values_q8, x_d, dst_d,
+                n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    } else if (values_type == GGML_TYPE_I8) {
+        const uint8_t * values_nibble = (const uint8_t *) values_d;
+        outlier_blocks_kernel_nibble<<<grid_dim, block_dim, 0, stream>>>(
+                idx_d, values_nibble, x_d, dst_d,
                 n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
     } else {
         const nv_bfloat16 * values_bf16 = (const nv_bfloat16 *) values_d;
@@ -198,7 +272,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     const ggml_tensor * x      = dst->src[2];
 
     GGML_ASSERT(idx->type    == GGML_TYPE_I32);
-    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
     GGML_ASSERT(x->type      == GGML_TYPE_F32);
     GGML_ASSERT(dst->type    == GGML_TYPE_F32);
 
