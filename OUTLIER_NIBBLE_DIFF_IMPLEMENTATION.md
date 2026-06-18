@@ -316,6 +316,10 @@ Latching means entries loaded during a forward pass stay in VRAM until the pass 
 | [delta-load] logging assumes BF16 values for nibble-diff | Crash: `ggml_backend_tensor_get` out of bounds on I8 tensor | Added `NIBBLE_DIFF` branch with `ggml_nbytes()` and nibble decode |
 | CUDA `values->ne[0] == 32` assertion fails for nibble-diff | Crash at inference when nibble-diff values have ne[0]=16 | Changed to accept 16 for GGML_TYPE_I8 |
 | Missing `#include \"llama-q8-outlier.h\"` in llama-model.cpp | Compile error: nibble functions not declared | Added include directive |
+| Q8 re-analysis assumes BF16 values (no nibble-diff support) | Silent garbage on re-quantizing nibble-diff model | Added `values_nibble`/`src_value_type` to `q8_outlier_source_info`, dispatch to `q8_outlier_reconstruct_tensor_nibble` |
+| Q4 re-analysis lacks nibble-diff branch | Nibble-diff treated as BF16, silent garbage | Added `values_nibble` field, I8 detection, dispatch to `q4_outlier_reconstruct_tensor_nibble` |
+| `--outlier-value-type` CLI missing `nibble_diff` option | Can't explicitly set nibble-diff; also only set Q4 value type | Added `nibble_diff` option, now sets both Q4 and Q8 value types |
+| Source sidecar tensors not skipped during re-quantize | I8 tensors fail conversion: "cannot dequantize/convert tensor type i8" | Always skip `.outlier_idx`/`.outlier_bf16` tensors in both GGUF pass and quantization loop |
 
 ---
 
