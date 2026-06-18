@@ -7,6 +7,7 @@
 #include "llama-mmap.h"
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
+#include "llama-q8-outlier.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
