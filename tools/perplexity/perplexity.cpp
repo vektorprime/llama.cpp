@@ -1909,6 +1909,90 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
 
     if (kld.count < 100) return; // we do not wish to do statistics on so few values
 
+    // Write per-token analysis CSV before sorting destroys index mapping
+    if (!params.analysis_csv.empty() && !token_analyses.empty()) {
+        std::ofstream csv(params.analysis_csv);
+        if (!csv) {
+            LOG_ERR("%s: failed to open analysis CSV '%s'\n", __func__, params.analysis_csv.c_str());
+        } else {
+            csv << "chunk,seq,pos_global,pos_window,token_id,token_text,p_diff,kld\n";
+            int n_written = 0;
+            for (const auto & ta : token_analyses) {
+                std::string token_text;
+                char buf[64];
+                int n = llama_token_to_piece(vocab, ta.token_id, buf, sizeof(buf), 0, false);
+                if (n < 0) {
+                    snprintf(buf, sizeof(buf), "<tok_%d>", ta.token_id);
+                    token_text = buf;
+                } else {
+                    // Escape special chars for CSV
+                    std::string raw(buf, n);
+                    if (raw.find(',') != std::string::npos || raw.find('"') != std::string::npos || raw.find('\n') != std::string::npos) {
+                        token_text = '"' + raw + '"';
+                    } else {
+                        token_text = raw;
+                    }
+                }
+                csv << ta.chunk << "," << ta.seq << ","
+                    << (int64_t)(ta.chunk * n_ctx + ta.pos) << ","
+                    << ta.pos << "," << ta.token_id << ","
+                    << token_text << ","
+                    << ta.p_diff << "," << ta.kld << "\n";
+                n_written++;
+            }
+            csv.close();
+            LOG_INF("%s: wrote %d rows to %s\n", __func__, n_written, params.analysis_csv.c_str());
+        }
+    }
+
+    // Also write a top-N worst-tokens report with context
+    if (!params.analysis_csv.empty() && !token_analyses.empty()) {
+        // Sort token_analyses by absolute p_diff
+        std::vector<token_analysis> sorted = token_analyses;
+        std::sort(sorted.begin(), sorted.end(),
+            [](const token_analysis & a, const token_analysis & b) {
+                return std::fabs(a.p_diff) > std::fabs(b.p_diff);
+            });
+
+        std::string worst_path = params.analysis_csv + ".worst_tokens.txt";
+        std::ofstream worst(worst_path);
+        if (worst) {
+            int top_n = std::min((int)sorted.size(), 200);
+            worst << "Top " << top_n << " largest |Δp| tokens\n";
+            worst << "==============================\n\n";
+            for (int rank = 0; rank < top_n; rank++) {
+                const auto & ta = sorted[rank];
+                char buf[256];
+                int n = llama_token_to_piece(vocab, ta.token_id, buf, sizeof(buf), 0, false);
+                std::string tok_text(n > 0 ? std::string(buf, n) : "<unk>");
+
+                // Get surrounding context tokens
+                int64_t global_pos = (int64_t)ta.chunk * n_ctx + ta.pos;
+                worst << "Rank " << (rank+1) << ": |Δp|=" << std::fabs(ta.p_diff)
+                      << "  Δp=" << (ta.p_diff >= 0 ? "+" : "")
+                      << ta.p_diff << "  KLD=" << ta.kld
+                      << "  token='" << tok_text << "' (id=" << ta.token_id << ")"
+                      << "  chunk=" << ta.chunk << " seq=" << ta.seq
+                      << "  pos=" << ta.pos << " global=" << global_pos << "\n";
+
+                // Show surrounding context: 10 tokens before, the token itself, 10 tokens after
+                worst << "  Context: ";
+                for (int ctx_off = -10; ctx_off <= 10; ctx_off++) {
+                    int64_t gp = global_pos + ctx_off;
+                    if (gp < 0 || gp >= (int64_t)tokens.size()) continue;
+                    char tbuf[64];
+                    int tn = llama_token_to_piece(vocab, tokens[gp], tbuf, sizeof(tbuf), 0, false);
+                    std::string tt(tn > 0 ? std::string(tbuf, tn) : "?");
+                    if (ctx_off == 0) worst << "[" << tt << "] ";
+                    else worst << tt << " ";
+                }
+                worst << "\n\n";
+            }
+            worst.close();
+            LOG_INF("%s: wrote worst-tokens report to %s\n", __func__, worst_path.c_str());
+        }
+    }
+
     std::sort(kld_values.begin(), kld_values.end());
     std::sort(p_diff_values.begin(), p_diff_values.end());
 
