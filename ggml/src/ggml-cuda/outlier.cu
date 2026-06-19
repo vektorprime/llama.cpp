@@ -671,7 +671,7 @@ typedef struct {
     uint8_t qs[16];
 } block_q4_0_cuda;
 
-#define FUSED_BLOCK_SIZE 256
+#define FUSED_BLOCK_SIZE 32
 
 // Fused Q4_0 matmul with BF16_SINGLE outlier delta correction.
 // Each outlier block stores one BF16 delta at a specific position within the block.
