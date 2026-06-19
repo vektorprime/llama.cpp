@@ -21,91 +21,8 @@
 
 #define OUTLIER_BLOCK_SIZE 32
 
-// Nibble-diff decoding: 4 bits per weight, 16 bytes = 32 weights per block
-// Bit layout: bit3=enable, bit2=sign(1=pos), bit1=zero_cnt, bit0=digit(0=1,1=2)
-static __device__ inline float nibble_diff_decode(uint8_t nibble) {
-    if (!(nibble & 0x08)) return 0.0f;
-    float v = (nibble & 0x02) ? 0.001f : 0.01f;
-    if (nibble & 0x01) v *= 2.0f;
-    if (!(nibble & 0x04)) v = -v;
-    return v;
-}
+// Nibble-diff removed — use BF16 or Q8_0 outlier value types instead
 
-// Q2_K nibble-diff decoding: same bit layout, different value table
-// Bits 1-0: 00=0.002, 01=0.005, 10=0.02, 11=0.05
-static __device__ inline float nibble_diff_decode_q2k(uint8_t nibble) {
-    if (!(nibble & 0x08)) return 0.0f;
-    float v;
-    switch (nibble & 0x03) {
-        case 0: v = 0.002f; break;
-        case 1: v = 0.005f; break;
-        case 2: v = 0.02f;  break;
-        case 3: v = 0.05f;  break;
-        default: v = 0.0f; break;
-    }
-    if (!(nibble & 0x04)) v = -v;
-    return v;
-}
-
-static __global__ void outlier_blocks_kernel_nibble(
-        const int32_t * __restrict__ idx,       // [2, n_blocks]
-        const uint8_t * __restrict__ values,    // [16, n_blocks] packed nibbles
-        const float *   __restrict__ x,         // [n_cols_x, n_tokens] shard-local
-        float *         __restrict__ dst,       // [n_rows_out, n_tokens]
-        const int64_t n_blocks,
-        const int64_t n_cols_all,
-        const int64_t n_cols_x,
-        const int64_t col_offset,
-        const int64_t x_stride,
-        const int64_t n_rows_out,
-        const int64_t n_tokens,
-        const int32_t value_type) {             // LLAMA_OUTLIER_VALUE_TYPE_*
-
-    const int64_t block_idx = blockIdx.x;
-    const int64_t token_idx = blockIdx.y;
-
-    if (block_idx >= n_blocks || token_idx >= n_tokens) {
-        return;
-    }
-
-    const int32_t row       = idx[block_idx * 2];
-    const int32_t block_col = idx[block_idx * 2 + 1];
-    const int64_t col0      = (int64_t) block_col * 32;
-
-    if (col0 + 31 < col_offset || col0 >= col_offset + n_cols_x) {
-        return;
-    }
-
-    if (col0 + 31 >= n_cols_all) {
-        return;
-    }
-
-    const int tid = threadIdx.x;
-    float sum = 0.0f;
-
-    if (tid < 32) {
-        const int64_t j = tid;
-        const int64_t col_global = col0 + j;
-        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
-            const uint8_t byte = values[block_idx * 16 + (j >> 1)];
-            const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
-            const float w = (value_type == 3) ? nibble_diff_decode_q2k(nibble) : nibble_diff_decode(nibble);
-            const int64_t col_local = col_global - col_offset;
-            const float a = x[col_local + token_idx * x_stride];
-            sum = w * a;
-        }
-    }
-
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        sum += __shfl_down_sync(0xffffffff, sum, offset);
-    }
-
-    if (tid == 0 && row >= 0 && row < n_rows_out) {
-        const int64_t dst_idx = row + token_idx * n_rows_out;
-        atomicAdd(dst + dst_idx, sum);
-    }
-}
 
 // Single-outlier kernel: 3 bytes per block (2 BF16 delta + 1 u8 position)
 static __global__ void outlier_blocks_kernel_single(
@@ -302,7 +219,7 @@ static void outlier_blocks_cuda(
                 (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
                 (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z,
                 values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ?
-                (value_type_i32 == 4 ? "I8_single" : "I8_nibble") : "BF16");
+                (value_type_i32 == 4 ? "I8_single" : "I8") : "BF16");
         fflush(stderr);
     }
 
@@ -317,12 +234,6 @@ static void outlier_blocks_cuda(
         outlier_blocks_kernel_single<<<grid_dim, single_block_dim, 0, stream>>>(
                 idx_d, values_single, x_d, dst_d,
                 n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
-    } else if (values_type == GGML_TYPE_I8) {
-        const uint8_t * values_nibble = (const uint8_t *) values_d;
-        outlier_blocks_kernel_nibble<<<grid_dim, block_dim, 0, stream>>>(
-                idx_d, values_nibble, x_d, dst_d,
-                n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens,
-                value_type_i32);
     } else {
         const nv_bfloat16 * values_bf16 = (const nv_bfloat16 *) values_d;
         outlier_blocks_kernel_bf16<<<grid_dim, block_dim, 0, stream>>>(
@@ -362,7 +273,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(dst->ne[1] == n_tokens);
     GGML_ASSERT(n_cols_x    <= n_cols_all);
     GGML_ASSERT(idx->ne[0]  == 2);
-    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && (values->ne[0] == 16 || values->ne[0] == 3)));
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 3));
 
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld values_type=%s\n",
@@ -439,78 +350,6 @@ static __device__ __host__ inline int32_t next_pow2(int32_t v) {
     v |= v >> 8;
     v |= v >> 16;
     return v + 1;
-}
-
-static __global__ void outlier_blocks_kernel_nibble_merged(
-        const int32_t * __restrict__ merged_idx, // [4, n_merged_runs]: row, start_bc, count, vals_start
-        const uint8_t * __restrict__ values,     // [16, n_blocks] packed nibbles
-        const float *   __restrict__ x,          // [n_cols_x, n_tokens] shard-local
-        float *         __restrict__ dst,        // [n_rows_out, n_tokens]
-        const int64_t n_merged_runs,
-        const int64_t n_cols_all,
-        const int64_t n_cols_x,
-        const int64_t col_offset,
-        const int64_t x_stride,
-        const int64_t n_rows_out,
-        const int64_t n_tokens,
-        const int32_t value_type) {              // LLAMA_OUTLIER_VALUE_TYPE_*
-
-    const int64_t run_idx  = blockIdx.x;
-    const int64_t token_idx = blockIdx.y;
-
-    if (run_idx >= n_merged_runs || token_idx >= n_tokens) {
-        return;
-    }
-
-    const int32_t row            = merged_idx[run_idx * 4];
-    const int32_t start_block_col = merged_idx[run_idx * 4 + 1];
-    const int32_t count          = merged_idx[run_idx * 4 + 2];
-    const int32_t values_start   = merged_idx[run_idx * 4 + 3];
-
-    const int32_t total_elems = count * 32;
-
-    // Bounds check: skip if entire run is outside the activation shard
-    const int64_t run_col0 = (int64_t)start_block_col * 32;
-    const int64_t run_col_last = run_col0 + (int64_t)total_elems - 1;
-    if (run_col_last < col_offset || run_col0 >= col_offset + n_cols_x) {
-        return;
-    }
-    if (run_col_last >= n_cols_all) {
-        return;
-    }
-
-    const int tid = threadIdx.x;
-    const int block_size = blockDim.x;
-
-    float sum = 0.0f;
-
-    // Each thread handles elements_per_thread weight elements
-    for (int32_t j = tid; j < total_elems; j += block_size) {
-        const int32_t block_idx_in_run = j >> 5;       // j / 32
-        const int32_t elem_in_block    = j & 31;        // j % 32
-        const int32_t orig_block       = values_start + block_idx_in_run;
-        const int64_t col_global       = (int64_t)(start_block_col + block_idx_in_run) * 32 + elem_in_block;
-
-        if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
-            const uint8_t byte = values[orig_block * 16 + (elem_in_block >> 1)];
-            const uint8_t nibble = (elem_in_block & 1) ? (byte >> 4) : (byte & 0x0F);
-            const float w = (value_type == 3) ? nibble_diff_decode_q2k(nibble) : nibble_diff_decode(nibble);
-            const int64_t col_local = col_global - col_offset;
-            const float a = x[col_local + token_idx * x_stride];
-            sum += w * a;
-        }
-    }
-
-    // Warp reduce
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        sum += __shfl_down_sync(0xffffffff, sum, offset);
-    }
-
-    if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
-        const int64_t dst_idx = row + token_idx * n_rows_out;
-        atomicAdd(dst + dst_idx, sum);
-    }
 }
 
 static __global__ void outlier_blocks_kernel_bf16_merged(
@@ -677,7 +516,7 @@ static void outlier_blocks_merged_cuda(
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cuda-merged] kernel launch: n_merged_runs=%lld n_tokens=%lld values_type=%s\n",
                 (long long)n_merged_runs, (long long)n_tokens,
-                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
+                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ? "I8" : "BF16");
         fflush(stderr);
     }
 
@@ -691,12 +530,6 @@ static void outlier_blocks_merged_cuda(
         outlier_blocks_kernel_q8_0_merged<<<grid_dim, block_dim, 0, stream>>>(
                 merged_idx_d, values_q8, x_d, dst_d,
                 n_merged_runs, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
-    } else if (values_type == GGML_TYPE_I8) {
-        const uint8_t * values_nibble = (const uint8_t *) values_d;
-        outlier_blocks_kernel_nibble_merged<<<grid_dim, block_dim, 0, stream>>>(
-                merged_idx_d, values_nibble, x_d, dst_d,
-                n_merged_runs, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens,
-                value_type_i32);
     } else {
         const nv_bfloat16 * values_bf16 = (const nv_bfloat16 *) values_d;
         outlier_blocks_kernel_bf16_merged<<<grid_dim, block_dim, 0, stream>>>(
@@ -742,7 +575,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks_merged(ggml_backend_cuda_context & ctx,
         fprintf(stderr, "[delta-cuda-merged] enter: n_merged_runs=%lld n_blocks_total=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld values_type=%s\n",
                 (long long)n_merged_runs, (long long)n_blocks_total, (long long)n_rows_out, (long long)n_tokens,
                 (long long)n_cols_all, (long long)n_cols_x, (long long)col_offset,
-                values->type == GGML_TYPE_Q8_0 ? "Q8_0" : values->type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
+                values->type == GGML_TYPE_Q8_0 ? "Q8_0" : values->type == GGML_TYPE_I8 ? "I8" : "BF16");
         fflush(stderr);
     }
 

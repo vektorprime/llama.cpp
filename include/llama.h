@@ -413,8 +413,6 @@ extern "C" {
     enum llama_outlier_value_type {
         LLAMA_OUTLIER_VALUE_TYPE_BF16            = 0,
         LLAMA_OUTLIER_VALUE_TYPE_Q8_0            = 1,
-        LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF     = 2,  // 4-bit custom diff encoding (Q4_0/Q8_0)
-        LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K = 3,  // 4-bit custom diff encoding (Q2_K)
         LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE    = 4,  // single BF16 per block (outlier position + delta)
     };
 
@@ -439,7 +437,8 @@ extern "C" {
         float q8_outlier_nonmax_rel_rmse;                           // non-outlier relative RMSE threshold
         float q8_outlier_max_frac;                                  // maximum protected block fraction per tensor
         enum llama_q8_outlier_store q8_outlier_store;                // storage mode; FULL is implemented
-        enum llama_outlier_value_type q8_outlier_value_type;         // delta storage type: BF16 or nibble-diff
+        enum llama_outlier_value_type q8_outlier_value_type;         // delta storage type: BF16, Q8_0, or BF16_SINGLE
+        const char * q8_outlier_protect_blocks_file;               // file listing (tensor, row, block_col) to force-protect
         const char * q8_outlier_report_path;                        // optional JSON report path
         const char * q8_outlier_include_weights;                    // optional regex of tensors to include
         const char * q8_outlier_exclude_weights;                    // optional regex of tensors to exclude
@@ -453,6 +452,7 @@ extern "C" {
         const char * q4_outlier_exclude_weights;                    // optional regex of tensors to exclude
         float q4_outlier_max_abs_error;                             // max-abs-error threshold (>0 enables, replaces residual-energy scoring)
         enum llama_outlier_value_type q4_outlier_value_type;        // delta storage type: BF16 or Q8_0
+        const char * q4_outlier_protect_blocks_file;               // file listing (tensor, row, block_col) to force-protect
         bool q2k_outlier_enable;                                    // enable Q2_K + sparse BF16 outlier sidecars
         float q2k_outlier_max_abs_error;                            // max-abs-error threshold for Q2_K outlier detection
         float q2k_outlier_max_frac;                                 // maximum protected block fraction per tensor
