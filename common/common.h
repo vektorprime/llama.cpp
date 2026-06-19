@@ -528,6 +528,8 @@ struct common_params {
 
     bool   kl_divergence    = false; // compute KL divergence
 
+    std::string analysis_csv;      // output per-token Δp/KLD analysis to CSV
+
     bool check             = false; // check rather than generate results for llama-results
 
     bool usage             = false; // print usage
