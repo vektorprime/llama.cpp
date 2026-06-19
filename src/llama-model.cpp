@@ -1171,8 +1171,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx ne[0] must be 2\n", __func__, name.c_str());
             continue;
         }
-        if (values_tensor->ne[0] != 32 && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 16) && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 3)) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32 (or 16 for nibble, or 3 for single)\n", __func__, name.c_str());
+        if (values_tensor->ne[0] != 32 && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 3)) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32 (or 3 for single)\n", __func__, name.c_str());
             continue;
         }
 
@@ -1191,7 +1191,6 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         info.n_cols     = tensor->ne[0];
         info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 :
                           values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 3 ? LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE :
-                          values_tensor->type == GGML_TYPE_I8  ? LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF :
                                                                   LLAMA_OUTLIER_VALUE_TYPE_BF16;
 
         // Build CSR layout
@@ -1422,7 +1421,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     } else if (values_tensor->type == GGML_TYPE_Q8_0) {
                         values_block_bytes = sizeof(block_q8_0); // 34
                     } else if (values_tensor->type == GGML_TYPE_I8) {
-                        values_block_bytes = (size_t)values_tensor->ne[0]; // 16 (nibble) or 3 (single)
+                        values_block_bytes = (size_t)values_tensor->ne[0]; // 3 (single-only)
                     }
 
                     if (values_block_bytes > 0) {
@@ -1625,43 +1624,6 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     fprintf(stderr, "[delta-load]   total_delta_L2=%.6e\n", sqrt(total_l2));
                     fflush(stderr);
                 }
-            } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
-                std::vector<uint8_t> values_nibble_buf;
-                const uint8_t * values_nibble_ptr = nullptr;
-
-                if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
-                    values_nibble_ptr = (const uint8_t *) values_tensor->data;
-                } else if (values_tensor->buffer && values_tensor->data) {
-                    values_nibble_buf.resize(ggml_nbytes(values_tensor));
-                    ggml_backend_tensor_get(values_tensor, values_nibble_buf.data(), 0, ggml_nbytes(values_tensor));
-                    values_nibble_ptr = values_nibble_buf.data();
-                } else if (values_tensor->data) {
-                    values_nibble_ptr = (const uint8_t *) values_tensor->data;
-                }
-
-                if (values_nibble_ptr && ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[delta-load] %s: n_blocks=%lld (nibble_diff)\n",
-                            name.c_str(), (long long)n_blocks);
-                    int64_t sample = n_blocks < 3 ? n_blocks : 3;
-                    double total_l2 = 0.0;
-                    uint8_t nibbles[32];
-                    for (int64_t i = 0; i < n_blocks; i++) {
-                        double block_l2 = 0.0;
-                        llama_outlier_nibble_diff_unpack_block(values_nibble_ptr + i * LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES, nibbles);
-                        for (int j = 0; j < 32; j++) {
-                            float d = llama_outlier_nibble_diff_decode(nibbles[j]);
-                            block_l2 += (double)d * d;
-                        }
-                        total_l2 += block_l2;
-                        if (i < sample) {
-                            fprintf(stderr, "[delta-load]   block[%lld] L2=%.6e\n",
-                                    (long long)i, sqrt(block_l2));
-                        }
-                    }
-                    fprintf(stderr, "[delta-load]   total_delta_L2=%.6e (sqrt of sum of all deltas squared)\n",
-                            sqrt(total_l2));
-                    fflush(stderr);
-                }
             } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
                 if (ggml_custom_logs_enabled()) {
                     // Only read from GPU when logging is enabled
@@ -1786,7 +1748,6 @@ void llama_model::patch_embedding_outliers() {
                     (void*)weight_tensor->data,
                     (long long)info.n_blocks,
                     info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" :
-                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" :
                     info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE ? "bf16_single" : "BF16",
                     (void*)info.idx, (void*)info.values);
             fflush(stderr);
@@ -1839,8 +1800,6 @@ void llama_model::patch_embedding_outliers() {
 
         if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
             values_element_size = sizeof(block_q8_0);
-        } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
-            values_element_size = 16;
         } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
             values_element_size = LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
         } else {
@@ -1928,24 +1887,6 @@ void llama_model::patch_embedding_outliers() {
                     dequantize_row_q8_0(q8_blk, delta_f32, 32);
                     for (int j = 0; j < 32; j++) {
                         f32_row[col + j] += delta_f32[j];
-                    }
-                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
-                    // nibble-diff delta: unpack and decode
-                    const uint8_t * packed = values_cpu + (size_t)bi * 16;
-                    uint8_t nibbles[32];
-                    for (int j = 0; j < 16; j++) {
-                        nibbles[j * 2]     = packed[j] & 0x0F;
-                        nibbles[j * 2 + 1] = packed[j] >> 4;
-                    }
-                    for (int j = 0; j < 32; j++) {
-                        float w = 0.0f;
-                        uint8_t n = nibbles[j];
-                        if (n & 0x08) {
-                            w = (n & 0x02) ? 0.001f : 0.01f;
-                            if (n & 0x01) w *= 2.0f;
-                            if (!(n & 0x04)) w = -w;
-                        }
-                        f32_row[col + j] += w;
                     }
                 } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
                     // single-outlier: 3 bytes per block [BF16 delta, uint8 pos]
