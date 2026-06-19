@@ -1067,16 +1067,17 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
                 half h; memcpy(&h, &d_raw, 2); d_val = __half2float(h);
             }
 
-            fprintf(stderr, "[fused-debug] %s ne=[%lld,%lld] vt=%d n_out=%lld nz_sample=%lld/%lld",
+            fprintf(stderr, "[fused-debug] %s ne=[%lld,%lld] vt=%d n_out=%lld nz_sample=%lld/%lld nca=%lld nbpr=%lld",
                     w->name ? w->name : "(unnamed)",
                     (long long)n_rows_out, (long long)n_tokens,
                     value_type_i32, (long long)n_outlier_blocks,
-                    (long long)nz_sample, (long long)n_sample);
+                    (long long)nz_sample, (long long)n_sample,
+                    (long long)n_cols_all, (long long)n_blocks_per_row);
             fprintf(stderr, " first_vals=[");
             for (int64_t i = 0; i < n_dump; i++) {
                 fprintf(stderr, "%s%g", i ? "," : "", host_dump[i]);
             }
-            fprintf(stderr, "] w_d=%g w_qs0=%02x\n", d_val, w_raw[2]);
+            fprintf(stderr, "] w_d=%g w_ne0=%lld\n", d_val, (long long)w->ne[0]);
             fflush(stderr);
         }
     }
