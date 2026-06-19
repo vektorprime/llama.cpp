@@ -1422,7 +1422,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     } else if (values_tensor->type == GGML_TYPE_Q8_0) {
                         values_block_bytes = sizeof(block_q8_0); // 34
                     } else if (values_tensor->type == GGML_TYPE_I8) {
-                        values_block_bytes = (size_t)LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES; // 16
+                        values_block_bytes = (size_t)values_tensor->ne[0]; // 16 (nibble) or 3 (single)
                     }
 
                     if (values_block_bytes > 0) {
