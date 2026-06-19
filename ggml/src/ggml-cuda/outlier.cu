@@ -714,7 +714,7 @@ static __global__ void fused_outlier_q4_0_kernel(
         const float d = __half2float(q4block->d);
 
         // DEBUG: skip delta lookup to test base matmul only
-        static bool debug_no_delta = (getenv("FUSED_NO_DELTA") != nullptr);
+        bool debug_no_delta = (getenv("FUSED_NO_DELTA") != nullptr);
         bool has_delta = false;
         float delta_val = 0.0f;
         int   delta_pos = -1;
