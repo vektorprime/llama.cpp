@@ -2104,7 +2104,8 @@ void llama_model::patch_embedding_outliers() {
                     (void*)weight_tensor->data,
                     (long long)info.n_blocks,
                     info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0 ? "Q8_0" :
-                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" : "BF16",
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF ? "nibble_diff" :
+                    info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE ? "bf16_single" : "BF16",
                     (void*)info.idx, (void*)info.values);
             fflush(stderr);
         }
@@ -2158,6 +2159,8 @@ void llama_model::patch_embedding_outliers() {
             values_element_size = sizeof(block_q8_0);
         } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
             values_element_size = 16;
+        } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
+            values_element_size = LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
         } else {
             values_element_size = 32 * sizeof(ggml_bf16_t); // 32 * 2 = 64
         }
@@ -2287,6 +2290,13 @@ void llama_model::patch_embedding_outliers() {
                         }
                         f32_row[col + j] += w;
                     }
+                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
+                    // single-outlier: 3 bytes per block [BF16 delta, uint8 pos]
+                    const uint8_t * p = values_cpu + (size_t)bi * LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
+                    ggml_bf16_t bf16;
+                    memcpy(&bf16, p, 2);
+                    uint8_t pos = p[2];
+                    f32_row[col + pos] += ggml_bf16_to_fp32(bf16);
                 } else {
                     // BF16 delta: convert and add
                     const ggml_bf16_t * delta_bf16 = reinterpret_cast<const ggml_bf16_t *>(

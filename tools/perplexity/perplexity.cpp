@@ -1758,6 +1758,19 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
     std::vector<uint16_t> log_probs_uint16(size_t(n_ctx - 1 - n_ctx/2) * nv);
     std::vector<float>    kld_values(size_t(n_ctx - 1 - n_ctx/2)*n_chunk);
     std::vector<float> p_diff_values(size_t(n_ctx - 1 - n_ctx/2)*n_chunk);
+
+    // Per-token analysis tracking: record token IDs and positions alongside p_diff/kld
+    struct token_analysis {
+        int32_t chunk;
+        int32_t seq;
+        int32_t pos;        // position within context window
+        int32_t token_id;
+        float   p_diff;
+        float   kld;
+    };
+    std::vector<token_analysis> token_analyses;
+    token_analyses.reserve(p_diff_values.size());
+
     std::vector<float> logits;
     if (num_batches > 1) {
         logits.reserve(size_t(n_ctx) * n_vocab);
@@ -1868,10 +1881,24 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
 
             const float * all_logits = num_batches > 1 ? logits.data() : llama_get_logits_ith(ctx, seq*n_ctx + first);
 
+            float * p_diff_start = p_diff_ptr;  // capture start for per-token analysis
             process_logits(n_vocab, all_logits, tokens.data() + start + seq*n_ctx + first, n_ctx - 1 - first,
                     workers, log_probs_uint16, kld, kld_ptr, p_diff_ptr);
-            p_diff_ptr += n_ctx - 1 - first;
-            kld_ptr    += n_ctx - 1 - first;
+            const int n_tok = n_ctx - 1 - first;
+
+            // Record per-token analysis data
+            if (!params.analysis_csv.empty()) {
+                const int32_t * tok_ptr = tokens.data() + start + seq*n_ctx + first;
+                for (int t = 0; t < n_tok; t++) {
+                    token_analyses.push_back({
+                        (int32_t)i, (int32_t)seq, (int32_t)(first + t),
+                        tok_ptr[t], p_diff_start[t], kld_ptr[t]
+                    });
+                }
+            }
+
+            p_diff_ptr += n_tok;
+            kld_ptr    += n_tok;
 
             LOG("%4d", i + seq + 1);
 
