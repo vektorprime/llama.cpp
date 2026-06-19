@@ -2212,6 +2212,15 @@ void llama_model::patch_embedding_outliers() {
         }
 
         // Buffers for dequantization/re-quantization
+        // Pre-allocate full tensor buffer if on GPU to avoid row-by-row I/O
+        std::vector<uint8_t> q4_all;
+        const size_t q4_total_bytes = (size_t)nrows * q4_row_size;
+        if (weight_on_gpu && weight_tensor->data) {
+            q4_all.resize(q4_total_bytes);
+            ggml_backend_tensor_get(weight_tensor, q4_all.data(), 0, q4_total_bytes);
+        }
+        const uint8_t * q4_base = q4_all.empty() ? (const uint8_t *)weight_tensor->data : q4_all.data();
+
         std::vector<uint8_t> q4_row_buf(q4_row_size);
         std::vector<float>   f32_row(ncols);
 
@@ -2236,23 +2245,9 @@ void llama_model::patch_embedding_outliers() {
                 fflush(stderr);
             }
 
-            // Read Q4_0 row data from GPU or CPU
-            const uint8_t * q4_src = nullptr;
+            // Get Q4_0 row data from the pre-read buffer
             const size_t row_offset = (size_t)row * q4_row_size;
-            if (weight_on_gpu && weight_tensor->data) {
-                ggml_backend_tensor_get(weight_tensor, q4_row_buf.data(), row_offset, q4_row_size);
-                q4_src = q4_row_buf.data();
-            } else if (weight_tensor->data) {
-                q4_src = (const uint8_t *) weight_tensor->data + row_offset;
-            }
-            if (!q4_src) {
-                if (ggml_custom_logs_enabled() && row == first_patched_row) {
-                    fprintf(stderr, "[delta-patch]   WARNING: q4_src is NULL for row %lld (weight_on_gpu=%d, data=%p)\n",
-                            (long long)row, (int)weight_on_gpu, (void*)weight_tensor->data);
-                    fflush(stderr);
-                }
-                continue;
-            }
+            const uint8_t * q4_src = q4_base + row_offset;
 
             // Dequantize Q4_0 row -> FP32
             dequantize_row_q4_0(reinterpret_cast<const block_q4_0 *>(q4_src),
@@ -2307,20 +2302,17 @@ void llama_model::patch_embedding_outliers() {
                 }
             }
 
-            // Re-quantize FP32 -> Q4_0
-            block_q4_0 * q4_out = reinterpret_cast<block_q4_0 *>(q4_row_buf.data());
+            // Re-quantize FP32 -> Q4_0 and store in q4_all (or row_buf if no batch)
+            uint8_t * q4_dst = q4_all.empty() ? q4_row_buf.data() : q4_all.data() + row_offset;
+            block_q4_0 * q4_out = reinterpret_cast<block_q4_0 *>(q4_dst);
             quantize_row_q4_0_ref(f32_row.data(), q4_out, ncols);
 
-            // Write back to GPU or CPU
-            if (weight_on_gpu && weight_tensor->data) {
-                ggml_backend_tensor_set(weight_tensor, q4_row_buf.data(), row_offset, q4_row_size);
-            } else if (ggml_custom_logs_enabled() && row == first_patched_row) {
-                fprintf(stderr, "[delta-patch]   WARNING: skip write-back for row %lld (weight_on_gpu=%d, data=%p)\n",
-                        (long long)row, (int)weight_on_gpu, (void*)weight_tensor->data);
-                fflush(stderr);
-            }
-
             patched_rows++;
+        }
+
+        // Write back entire tensor to GPU once
+        if (!q4_all.empty() && weight_on_gpu && weight_tensor->data) {
+            ggml_backend_tensor_set(weight_tensor, q4_all.data(), 0, q4_total_bytes);
         }
 
         LLAMA_LOG_INFO("%s: patched %lld/%lld rows of embedding '%s'\n",
