@@ -505,8 +505,6 @@ static void outlier_blocks_merged_cuda(
 
     cudaStream_t stream = ctx.stream();
 
-    CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream));
-
     if (n_merged_runs == 0 || n_tokens == 0 || n_cols_x == 0) {
         return;
     }
@@ -583,6 +581,11 @@ void ggml_cuda_op_mul_mat_outlier_blocks_merged(ggml_backend_cuda_context & ctx,
     const void *    values_d     = values->data;
     const float *   x_d          = (const float *) x->data;
     float *         dst_d        = (float *) dst->data;
+
+    // When dst is a view of the matmul output, skip memset to preserve matmul result
+    if (dst->view_src == nullptr) {
+        CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), ctx.stream()));
+    }
 
     outlier_blocks_merged_cuda(ctx, merged_idx_d, values_d, x_d, dst_d,
             n_merged_runs, n_blocks_total, n_cols_all, n_cols_x, col_offset, x_stride,

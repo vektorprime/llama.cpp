@@ -1164,7 +1164,8 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                                 (long long)corr->ne[0], (long long)corr->ne[1],
                                 (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
                     }
-                    res = ggml_add(ctx0, res, corr);
+                    res = ggml_acc_inplace(ctx0, res, corr,
+                            res->nb[1], res->nb[2], res->nb[3], 0);
                     if (ggml_custom_logs_enabled()) {
                         fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
                                 w->name, (long long)res->ne[0], (long long)res->ne[1]);
