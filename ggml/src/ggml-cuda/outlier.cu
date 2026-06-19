@@ -1027,6 +1027,30 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     CUDA_CHECK(cudaGetLastError());
 
+    // Debug: dump first output elements to compare fused vs expected
+    static bool debug_dump = (getenv("HERMES_DEBUG_FUSED") != nullptr);
+    if (debug_dump) {
+        static int dump_count = 0;
+        if (dump_count < 3) {
+            dump_count++;
+            int64_t n_dump = std::min((int64_t)16, n_rows_out * n_tokens);
+            std::vector<float> host_dump(n_dump);
+            CUDA_CHECK(cudaMemcpy(host_dump.data(), dst->data, n_dump * sizeof(float), cudaMemcpyDeviceToHost));
+            fprintf(stderr, "[fused-debug] tensor=%s ne=[%lld,%lld] value_type=%d n_outlier=%lld first_vals=[",
+                    w->name ? w->name : "(unnamed)",
+                    (long long)n_rows_out, (long long)n_tokens,
+                    value_type_i32, (long long)n_outlier_blocks);
+            bool all_zero = true, any_nan = false;
+            for (int64_t i = 0; i < n_dump; i++) {
+                if (host_dump[i] != 0.0f) all_zero = false;
+                if (isnan(host_dump[i])) any_nan = true;
+                fprintf(stderr, "%s%g", i ? "," : "", host_dump[i]);
+            }
+            fprintf(stderr, "] all_zero=%d any_nan=%d\n", all_zero, any_nan);
+            fflush(stderr);
+        }
+    }
+
     // Note: row_ptr_d / block_col_d are cached, not freed here.
     // They live for the lifetime of the idx tensor (entire process).
 }
