@@ -777,8 +777,9 @@ static __global__ void fused_outlier_q4_0_kernel(
         sum += __shfl_down_sync(0xffffffff, sum, offset);
     }
 
-    // First thread of each warp writes result
-    if ((tid & 31) == 0) {
+    // Only thread 0 writes — with FUSED_BLOCK_SIZE > 32, idle threads'
+    // warp-lane-0 would race and write zero, overwriting the correct sum.
+    if (tid == 0) {
         dst[row + token * n_rows_out] = sum;
     }
 }
@@ -902,7 +903,8 @@ static __global__ void fused_outlier_generic_kernel(
         sum += __shfl_down_sync(0xffffffff, sum, offset);
     }
 
-    if ((tid & 31) == 0) {
+    // Only thread 0 writes (see fused_outlier_q4_0_kernel for rationale)
+    if (tid == 0) {
         dst[row + token * n_rows_out] = sum;
     }
 }
