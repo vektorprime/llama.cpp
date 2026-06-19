@@ -713,30 +713,36 @@ static __global__ void fused_outlier_q4_0_kernel(
         const block_q4_0_cuda * q4block = &w_q4[weight_idx];
         const float d = __half2float(q4block->d);
 
-        // CSR lookup: check if this block has a delta
-        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
-        int32_t delta_idx = -1;
-        int32_t values_idx = -1;
-        const int32_t r_start = row_ptr[row];
-        const int32_t r_end   = row_ptr[row + 1];
-        for (int32_t k = r_start; k < r_end; k++) {
-            if (block_col_csr[k * 2] == (int32_t)bk) {
-                delta_idx = k;
-                values_idx = block_col_csr[k * 2 + 1];
-                break;
-            }
-        }
-        const bool has_delta = (delta_idx >= 0);
-
-        // Pre-load single-outlier delta if present (3 bytes per block)
+        // DEBUG: skip delta lookup to test base matmul only
+        static bool debug_no_delta = (getenv("FUSED_NO_DELTA") != nullptr);
+        bool has_delta = false;
         float delta_val = 0.0f;
         int   delta_pos = -1;
-        if (has_delta) {
-            const uint8_t * p = values + values_idx * 3;
-            nv_bfloat16 bf16;
-            bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
-            delta_val = __bfloat162float(bf16);
-            delta_pos = (int)p[2];
+
+        if (!debug_no_delta) {
+            // CSR lookup: check if this block has a delta
+            // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
+            int32_t delta_idx = -1;
+            int32_t values_idx = -1;
+            const int32_t r_start = row_ptr[row];
+            const int32_t r_end   = row_ptr[row + 1];
+            for (int32_t k = r_start; k < r_end; k++) {
+                if (block_col_csr[k * 2] == (int32_t)bk) {
+                    delta_idx = k;
+                    values_idx = block_col_csr[k * 2 + 1];
+                    break;
+                }
+            }
+            has_delta = (delta_idx >= 0);
+
+            // Pre-load single-outlier delta if present (3 bytes per block)
+            if (has_delta) {
+                const uint8_t * p = values + values_idx * 3;
+                nv_bfloat16 bf16;
+                bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
+                delta_val = __bfloat162float(bf16);
+                delta_pos = (int)p[2];
+            }
         }
 
         // Each thread handles elements_per_thread in this block
