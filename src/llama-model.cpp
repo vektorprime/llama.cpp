@@ -1662,6 +1662,41 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                             sqrt(total_l2));
                     fflush(stderr);
                 }
+            } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
+                std::vector<uint8_t> values_buf;
+                const uint8_t * values_ptr = nullptr;
+
+                if (values_tensor->buffer && ggml_backend_buffer_is_host(values_tensor->buffer) && values_tensor->data) {
+                    values_ptr = (const uint8_t *) values_tensor->data;
+                } else if (values_tensor->buffer && values_tensor->data) {
+                    values_buf.resize(ggml_nbytes(values_tensor));
+                    ggml_backend_tensor_get(values_tensor, values_buf.data(), 0, ggml_nbytes(values_tensor));
+                    values_ptr = values_buf.data();
+                } else if (values_tensor->data) {
+                    values_ptr = (const uint8_t *) values_tensor->data;
+                }
+
+                if (values_ptr && ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-load] %s: n_blocks=%lld (bf16_single)\n",
+                            name.c_str(), (long long)n_blocks);
+
+                    int64_t sample = n_blocks < 3 ? n_blocks : 3;
+                    double total_l2 = 0.0;
+                    for (int64_t i = 0; i < n_blocks; i++) {
+                        const uint8_t * packed = values_ptr + i * LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
+                        ggml_bf16_t bf16;
+                        memcpy(&bf16, packed, 2);
+                        uint8_t pos = packed[2];
+                        float d = ggml_bf16_to_fp32(bf16);
+                        total_l2 += (double)d * d;
+                        if (i < sample) {
+                            fprintf(stderr, "[delta-load]   block[%lld] pos=%d delta=%.6e\n",
+                                    (long long)i, (int)pos, (double)d);
+                        }
+                    }
+                    fprintf(stderr, "[delta-load]   total_delta_L2=%.6e\n", sqrt(total_l2));
+                    fflush(stderr);
+                }
             } else {
                 std::vector<ggml_bf16_t> values_buf;
                 const ggml_bf16_t * values_ptr = nullptr;
@@ -1926,6 +1961,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
                     val_elem = (size_t)34;
                 } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
                     val_elem = (size_t)16;
+                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
+                    val_elem = (size_t)LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
                 } else {
                     val_elem = (size_t)(32 * sizeof(ggml_bf16_t));
                 }

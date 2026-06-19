@@ -107,6 +107,47 @@ static __global__ void outlier_blocks_kernel_nibble(
     }
 }
 
+// Single-outlier kernel: 3 bytes per block (2 BF16 delta + 1 u8 position)
+static __global__ void outlier_blocks_kernel_single(
+        const int32_t * __restrict__ idx,       // [2, n_blocks]
+        const uint8_t *  __restrict__ values,   // [3, n_blocks] packed
+        const float *    __restrict__ x,        // [n_cols_x, n_tokens] shard-local
+        float *          __restrict__ dst,      // [n_rows_out, n_tokens]
+        const int64_t n_blocks,
+        const int64_t n_cols_all,
+        const int64_t n_cols_x,
+        const int64_t col_offset,
+        const int64_t x_stride,
+        const int64_t n_rows_out,
+        const int64_t n_tokens) {
+
+    const int64_t block_idx = blockIdx.x;
+    const int64_t token_idx = blockIdx.y;
+
+    if (block_idx >= n_blocks || token_idx >= n_tokens) return;
+
+    const int32_t row       = idx[block_idx * 2];
+    const int32_t block_col = idx[block_idx * 2 + 1];
+
+    // Read packed values: 2 bytes BF16 delta + 1 byte position
+    const uint8_t * p = values + block_idx * 3;
+    nv_bfloat16 bf16;
+    bf16.__x = ((uint16_t)p[1] << 8) | p[0];
+    float delta = __bfloat162float(bf16);
+    int   pos   = (int)p[2];
+
+    const int64_t col_global = (int64_t)block_col * 32 + pos;
+
+    if (col_global >= col_offset && col_global < col_offset + n_cols_x &&
+        col_global < n_cols_all &&
+        row >= 0 && row < n_rows_out) {
+        const int64_t col_local = col_global - col_offset;
+        float sum = delta * x[col_local + token_idx * x_stride];
+        const int64_t dst_idx = row + token_idx * n_rows_out;
+        atomicAdd(dst + dst_idx, sum);
+    }
+}
+
 static __global__ void outlier_blocks_kernel_bf16(
         const int32_t *     __restrict__ idx,       // [2, n_blocks]
         const nv_bfloat16 * __restrict__ values,    // [32, n_blocks] in BF16
@@ -260,7 +301,8 @@ static void outlier_blocks_cuda(
         fprintf(stderr, "[delta-cuda] kernel launch: grid=(%u,%u,%u) block=(%u,%u,%u) values_type=%s\n",
                 (unsigned)grid_dim.x, (unsigned)grid_dim.y, (unsigned)grid_dim.z,
                 (unsigned)block_dim.x, (unsigned)block_dim.y, (unsigned)block_dim.z,
-                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ? "I8_nibble" : "BF16");
+                values_type == GGML_TYPE_Q8_0 ? "Q8_0" : values_type == GGML_TYPE_I8 ?
+                (value_type_i32 == 4 ? "I8_single" : "I8_nibble") : "BF16");
         fflush(stderr);
     }
 
@@ -268,6 +310,12 @@ static void outlier_blocks_cuda(
         const block_q8_0_cuda * values_q8 = (const block_q8_0_cuda *) values_d;
         outlier_blocks_kernel_q8_0<<<grid_dim, block_dim, 0, stream>>>(
                 idx_d, values_q8, x_d, dst_d,
+                n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    } else if (values_type == GGML_TYPE_I8 && value_type_i32 == 4) {
+        const uint8_t * values_single = (const uint8_t *) values_d;
+        dim3 single_block_dim(1, 1, 1);
+        outlier_blocks_kernel_single<<<grid_dim, single_block_dim, 0, stream>>>(
+                idx_d, values_single, x_d, dst_d,
                 n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
     } else if (values_type == GGML_TYPE_I8) {
         const uint8_t * values_nibble = (const uint8_t *) values_d;
@@ -314,7 +362,7 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     GGML_ASSERT(dst->ne[1] == n_tokens);
     GGML_ASSERT(n_cols_x    <= n_cols_all);
     GGML_ASSERT(idx->ne[0]  == 2);
-    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 16));
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && (values->ne[0] == 16 || values->ne[0] == 3)));
 
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cuda] enter: n_blocks=%lld n_rows_out=%lld n_tokens=%lld n_cols_all=%lld n_cols_x=%lld col_offset=%lld values_type=%s\n",

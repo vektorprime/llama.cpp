@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 // ggml_compute_forward_dup
@@ -4804,7 +4805,7 @@ void ggml_compute_forward_mul_mat_outlier_fused(
     GGML_ASSERT(idx->type == GGML_TYPE_I32);
     GGML_ASSERT(values->type == GGML_TYPE_BF16 || values->type == GGML_TYPE_Q8_0 || values->type == GGML_TYPE_I8);
     GGML_ASSERT(idx->ne[0] == 2);
-    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && values->ne[0] == 16));
+    GGML_ASSERT(values->ne[0] == 32 || (values->type == GGML_TYPE_I8 && (values->ne[0] == 16 || values->ne[0] == 3)));
     GGML_ASSERT(idx->ne[1] == values->ne[1]);
 
     const int64_t n_rows_out = ggml_get_op_params_i32(dst, 0);
@@ -4853,7 +4854,8 @@ void ggml_compute_forward_mul_mat_outlier_fused(
     const block_q4_0 * w_q4 = (const block_q4_0 *) w->data;
 
     const bool is_q8_0_val   = (values->type == GGML_TYPE_Q8_0);
-    const bool is_nibble_val = (values->type == GGML_TYPE_I8);
+    const bool is_nibble_val = (values->type == GGML_TYPE_I8 && value_type_i32 != 4);
+    const bool is_single_val = (values->type == GGML_TYPE_I8 && value_type_i32 == 4);
     const ggml_bf16_t * values_bf16   = (const ggml_bf16_t *) values->data;
     const block_q8_0   * values_q8    = (const block_q8_0 *) values->data;
     const uint8_t      * values_nibble = (const uint8_t *) values->data;
@@ -4914,7 +4916,14 @@ void ggml_compute_forward_mul_mat_outlier_fused(
 
                     // Add delta if present
                     if (has_delta) {
-                        if (is_nibble_val) {
+                        if (is_single_val) {
+                            const uint8_t * p = values_nibble + delta_idx * 3; // 3 = LLAMA_OUTLIER_SINGLE_BLOCK_BYTES
+                            ggml_bf16_t bf16;
+                            memcpy(&bf16, p, 2);
+                            if ((int)p[2] == j) {
+                                w_val += ggml_bf16_to_fp32(bf16);
+                            }
+                        } else if (is_nibble_val) {
                             const uint8_t byte = values_nibble[delta_idx * 16 + (j >> 1)];
                             const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
                             if (nibble & 0x08) {

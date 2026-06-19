@@ -347,6 +347,8 @@ bool llama_outlier_stream_cache::upload_entry(
         size_t val_bytes;
         if (entry.values_type == GGML_TYPE_Q8_0) {
             val_bytes = (size_t)n_blocks * 34;
+        } else if (entry.values_type == GGML_TYPE_I8 && values_ne0 == 3) {
+            val_bytes = (size_t)n_blocks * LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
         } else if (entry.values_type == GGML_TYPE_I8) {
             val_bytes = (size_t)n_blocks * 16;
         } else {
