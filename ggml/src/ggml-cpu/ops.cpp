@@ -4762,7 +4762,7 @@ void ggml_compute_forward_mul_mat_outlier_fused(
     const bool is_single_val = (values->type == GGML_TYPE_I8 && value_type_i32 == 4);
     const ggml_bf16_t * values_bf16   = (const ggml_bf16_t *) values->data;
     const block_q8_0   * values_q8    = (const block_q8_0 *) values->data;
-    const uint8_t      * values_nibble = (const uint8_t *) values->data;
+    const uint8_t      * values_raw = (const uint8_t *) values->data;
 
     // Build CSR lookup for rapid delta check
     // For each row, store sorted list of (block_col, delta_block_idx) pairs
@@ -4821,7 +4821,7 @@ void ggml_compute_forward_mul_mat_outlier_fused(
                     // Add delta if present
                     if (has_delta) {
                         if (is_single_val) {
-                            const uint8_t * p = values_nibble + delta_idx * 3; // 3 = LLAMA_OUTLIER_SINGLE_BLOCK_BYTES
+                            const uint8_t * p = values_raw + delta_idx * 3; // 3 = LLAMA_OUTLIER_SINGLE_BLOCK_BYTES
                             ggml_bf16_t bf16;
                             memcpy(&bf16, p, 2);
                             if ((int)p[2] == j) {

@@ -672,11 +672,14 @@ typedef struct {
 
 #define FUSED_BLOCK_SIZE 256
 
+// Fused Q4_0 matmul with BF16_SINGLE outlier delta correction.
+// Each outlier block stores one BF16 delta at a specific position within the block.
+// values: [3, n_outlier_blocks] — packed as {bf16_lo, bf16_hi, position}
 static __global__ void fused_outlier_q4_0_kernel(
         const block_q4_0_cuda * __restrict__ w_q4,      // [n_blocks_per_row, n_rows_out]
         const float *           __restrict__ x,          // [n_cols_x, n_tokens]
         const int32_t *         __restrict__ idx,        // [2, n_outlier_blocks]
-        const uint8_t *         __restrict__ values,     // [16, n_outlier_blocks] nibble-diff
+        const uint8_t *         __restrict__ values,     // [3, n_outlier_blocks] BF16_SINGLE packed
         float *                 __restrict__ dst,        // [n_rows_out, n_tokens]
         const int64_t n_rows_out,
         const int64_t n_cols_all,
@@ -721,6 +724,17 @@ static __global__ void fused_outlier_q4_0_kernel(
         }
         const bool has_delta = (delta_idx >= 0);
 
+        // Pre-load single-outlier delta if present (3 bytes per block)
+        float delta_val = 0.0f;
+        int   delta_pos = -1;
+        if (has_delta) {
+            const uint8_t * p = values + delta_idx * 3;
+            nv_bfloat16 bf16;
+            bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
+            delta_val = __bfloat162float(bf16);
+            delta_pos = (int)p[2];
+        }
+
         // Each thread handles elements_per_thread in this block
         for (int32_t j = tid; j < 32; j += block_size) {
             const int64_t col_global = col0 + j;
@@ -737,27 +751,9 @@ static __global__ void fused_outlier_q4_0_kernel(
             const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
             float w = d * ((float)(int)nibble - 8.0f);
 
-            // Add delta if present (nibble-diff format)
-            if (has_delta) {
-                const uint8_t dbyte = values[delta_idx * 16 + (j >> 1)];
-                const uint8_t dnibble = (j & 1) ? (dbyte >> 4) : (dbyte & 0x0F);
-                if (dnibble & 0x08) {
-                    float dv;
-                    if (value_type == 3) {
-                        switch (dnibble & 0x03) {
-                            case 0: dv = 0.002f; break;
-                            case 1: dv = 0.005f; break;
-                            case 2: dv = 0.02f;  break;
-                            case 3: dv = 0.05f;  break;
-                            default: dv = 0.0f; break;
-                        }
-                    } else {
-                        dv = (dnibble & 0x02) ? 0.001f : 0.01f;
-                        if (dnibble & 0x01) dv *= 2.0f;
-                    }
-                    if (!(dnibble & 0x04)) dv = -dv;
-                    w += dv;
-                }
+            // Add BF16_SINGLE delta at the outlier position
+            if (has_delta && j == delta_pos) {
+                w += delta_val;
             }
 
             const int64_t col_local = col_global - col_offset;
@@ -778,12 +774,13 @@ static __global__ void fused_outlier_q4_0_kernel(
     }
 }
 
-// Fallback kernel for generic Q8_0 or other types using ggml dequant API
+// Generic fused kernel for non-Q4_0 weight types (Q8_0, Q2_K, etc.)
+// Handles three value types: BF16 (32 BF16s per block), Q8_0, and BF16_SINGLE.
 static __global__ void fused_outlier_generic_kernel(
         const char *            __restrict__ w_data,     // quantized weight data
         const float *           __restrict__ x,
         const int32_t *         __restrict__ idx,
-        const uint8_t *         __restrict__ values,     // nibble-diff by default
+        const uint8_t *         __restrict__ values,     // per-block delta values
         float *                 __restrict__ dst,
         const int64_t n_rows_out,
         const int64_t n_cols_all,
@@ -807,6 +804,8 @@ static __global__ void fused_outlier_generic_kernel(
 
     const int tid = threadIdx.x;
     const int block_size = blockDim.x;
+    const bool is_single  = (value_type == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
+    const bool is_q8_0_val = (value_type == 1); // LLAMA_OUTLIER_VALUE_TYPE_Q8_0
     float sum = 0.0f;
 
     for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
@@ -816,17 +815,14 @@ static __global__ void fused_outlier_generic_kernel(
         // Dequantize this block on-the-fly (shared memory dequant buf)
         __shared__ float dequant_buf[32];
         if (tid < 32) {
-            // Simple dequant: read raw bytes, convert
             const char * block_ptr = w_data + weight_idx * weight_type_size;
-            // For Q8_0: 2 bytes d + 32 bytes qs = 34 bytes
-            // For simplicity, use half d to float conversion
             if (weight_type_size >= 34) {
                 const half * d_ptr = (const half *)block_ptr;
                 const char * qs = block_ptr + 2;
                 const float d = __half2float(*d_ptr);
                 dequant_buf[tid] = d * (float)qs[tid];
             } else {
-                // Q4_0 fallback: 2 bytes d + 16 bytes qs
+                // Q4_0 fallback
                 const half * d_ptr = (const half *)block_ptr;
                 const uint8_t * qs = (const uint8_t *)(block_ptr + 2);
                 const float d = __half2float(*d_ptr);
@@ -849,6 +845,17 @@ static __global__ void fused_outlier_generic_kernel(
         }
         const bool has_delta = (delta_idx >= 0);
 
+        // Pre-load BF16_SINGLE delta (single delta per block at a specific position)
+        float single_delta = 0.0f;
+        int   single_pos   = -1;
+        if (has_delta && is_single) {
+            const uint8_t * p = values + delta_idx * 3;
+            nv_bfloat16 bf16;
+            bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
+            single_delta = __bfloat162float(bf16);
+            single_pos   = (int)p[2];
+        }
+
         for (int32_t j = tid; j < 32; j += block_size) {
             const int64_t col_global = col0 + j;
             if (col_global < col_offset || col_global >= col_offset + n_cols_x) continue;
@@ -857,24 +864,17 @@ static __global__ void fused_outlier_generic_kernel(
             float w = dequant_buf[j];
 
             if (has_delta) {
-                const uint8_t dbyte = values[delta_idx * 16 + (j >> 1)];
-                const uint8_t dnibble = (j & 1) ? (dbyte >> 4) : (dbyte & 0x0F);
-                if (dnibble & 0x08) {
-                    float dv;
-                    if (value_type == 3) {
-                        switch (dnibble & 0x03) {
-                            case 0: dv = 0.002f; break;
-                            case 1: dv = 0.005f; break;
-                            case 2: dv = 0.02f;  break;
-                            case 3: dv = 0.05f;  break;
-                            default: dv = 0.0f; break;
-                        }
-                    } else {
-                        dv = (dnibble & 0x02) ? 0.001f : 0.01f;
-                        if (dnibble & 0x01) dv *= 2.0f;
+                if (is_single) {
+                    if (j == single_pos) {
+                        w += single_delta;
                     }
-                    if (!(dnibble & 0x04)) dv = -dv;
-                    w += dv;
+                } else if (is_q8_0_val) {
+                    const block_q8_0_cuda * vq8 = (const block_q8_0_cuda *)values;
+                    w += __half2float(vq8[delta_idx].d) * vq8[delta_idx].qs[j];
+                } else {
+                    // BF16 values: [32, n_outlier_blocks]
+                    const nv_bfloat16 * vbf16 = (const nv_bfloat16 *)values;
+                    w += __bfloat162float(vbf16[delta_idx * 32 + j]);
                 }
             }
 
@@ -931,9 +931,6 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     cudaStream_t stream = ctx.stream();
 
     // Build CSR layout from idx on GPU
-    // We need row_ptr and block_col on device for fast lookup
-    // Since the idx is already on GPU, we can build CSR on-the-fly using a small temp buffer
-    // For now, copy idx to host and build CSR there, then upload
     const int32_t * idx_d = (const int32_t *) idx->data;
 
     // Build CSR on host
@@ -976,13 +973,14 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     CUDA_CHECK(cudaMemcpyAsync(block_col_d, block_col_h.data(),
             n_outlier_blocks * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
 
-    const bool is_q4_0 = (w->type == GGML_TYPE_Q4_0);
-    const bool is_nibble = (values->type == GGML_TYPE_I8);
+    const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
+    const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
 
     dim3 block_dim(FUSED_BLOCK_SIZE, 1, 1);
     dim3 grid_dim((uint32_t) n_rows_out, (uint32_t) n_tokens, 1);
 
-    if (is_q4_0 && is_nibble) {
+    if (is_q4_0 && is_single) {
+        // Q4_0 weights with BF16_SINGLE deltas: use optimized kernel
         const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
         const float * x_d = (const float *) x->data;

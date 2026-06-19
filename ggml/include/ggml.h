@@ -1475,7 +1475,7 @@ extern "C" {
     // w:          [n_cols, n_rows_out], quantized weights (Q4_0, Q8_0, Q2_K, etc.)
     // x:          [n_cols, n_tokens], the activation input (F32)
     // idx:        [2, n_outlier_blocks], i32  (row, block_col per block)
-    // values:     [elem_bytes, n_outlier_blocks], bf16/Q8_0/I8 (nibble) delta values
+    // values:     [elem_bytes, n_outlier_blocks], bf16/Q8_0/BF16_SINGLE delta values
     // result:     [n_rows_out, n_tokens]
     //
     // The kernel dequantizes each Q block, checks for outlier delta via CSR lookup
