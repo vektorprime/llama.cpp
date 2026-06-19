@@ -622,7 +622,7 @@ llama_model_loader::llama_model_loader(
                         t.values_name.c_str(), ggml_type_name(vals->type)));
                 }
                 if (vals->type == GGML_TYPE_I8) {
-                    check_tensor_dims(t.values_name, {16, (int64_t)t.n_blocks}, true);
+                    check_tensor_dims(t.values_name, {(int64_t)vals->ne[0], (int64_t)t.n_blocks}, true);
                 } else {
                     check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 }
@@ -666,7 +666,7 @@ llama_model_loader::llama_model_loader(
                         t.values_name.c_str(), ggml_type_name(vals->type)));
                 }
                 if (vals->type == GGML_TYPE_I8) {
-                    check_tensor_dims(t.values_name, {16, (int64_t)t.n_blocks}, true);
+                    check_tensor_dims(t.values_name, {(int64_t)vals->ne[0], (int64_t)t.n_blocks}, true);
                 } else {
                     check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 }
@@ -711,7 +711,7 @@ llama_model_loader::llama_model_loader(
                         t.values_name.c_str(), ggml_type_name(vals->type)));
                 }
                 if (vals->type == GGML_TYPE_I8) {
-                    check_tensor_dims(t.values_name, {16, (int64_t)t.n_blocks}, true);
+                    check_tensor_dims(t.values_name, {(int64_t)vals->ne[0], (int64_t)t.n_blocks}, true);
                 } else {
                     check_tensor_dims(t.values_name, {32, (int64_t)t.n_blocks}, true);
                 }
