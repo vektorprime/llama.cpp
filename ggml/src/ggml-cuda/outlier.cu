@@ -735,7 +735,7 @@ static __global__ void fused_outlier_q4_0_kernel(
             has_delta = (delta_idx >= 0);
 
             // Pre-load single-outlier delta if present (3 bytes per block)
-            if (has_delta) {
+            if (has_delta && skip_deltas != 2) {
                 const uint8_t * p = values + values_idx * 3;
                 nv_bfloat16 bf16;
                 bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
