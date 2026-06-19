@@ -205,8 +205,6 @@ static void outlier_blocks_cuda(
 
     cudaStream_t stream = ctx.stream();
 
-    CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream));
-
     if (n_blocks == 0 || n_tokens == 0 || n_cols_x == 0) {
         return;
     }
@@ -284,9 +282,14 @@ void ggml_cuda_op_mul_mat_outlier_blocks(ggml_backend_cuda_context & ctx, ggml_t
     }
 
     const int32_t * idx_d = (const int32_t *) idx->data;
-    const void *    values_d = values->data;
-    const float *   x_d      = (const float *) x->data;
-    float *         dst_d    = (float *) dst->data;
+    const void     * values_d = values->data;
+    const float    * x_d   = (const float *) x->data;
+    float          * dst_d = (float *) dst->data;
+
+    // When dst is a view of the matmul output, skip memset to preserve matmul result
+    if (dst->view_src == nullptr) {
+        CUDA_CHECK(cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), ctx.stream()));
+    }
 
     outlier_blocks_cuda(ctx, idx_d, values_d, x_d, dst_d,
             n_blocks, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens,

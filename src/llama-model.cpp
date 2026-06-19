@@ -1318,6 +1318,20 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             }
         }
 
+        // Pack merged_runs into flat merged_idx_data for GPU upload
+        // Format: [4, n_merged_runs] i32 — row, start_block_col, count, values_start
+        {
+            const int64_t n_merged = (int64_t)info.merged_runs.size();
+            info.merged_idx_data.resize((size_t)(n_merged * 4));
+            for (int64_t i = 0; i < n_merged; i++) {
+                const auto & run = info.merged_runs[(size_t)i];
+                info.merged_idx_data[(size_t)(i * 4)]     = run.row;
+                info.merged_idx_data[(size_t)(i * 4 + 1)] = run.start_block_col;
+                info.merged_idx_data[(size_t)(i * 4 + 2)] = run.count;
+                info.merged_idx_data[(size_t)(i * 4 + 3)] = run.values_start;
+            }
+        }
+
         // Column reordering (Proposal 4.4): after building initial merge runs,
         // attempt to find a column permutation that improves merge ratio.
         // If successful, permute the weight tensor blocks, reorganize the idx,

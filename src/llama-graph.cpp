@@ -1152,20 +1152,57 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 ggml_tensor * gpu_values = ob->values;
 
                 if (gpu_idx && gpu_values) {
-                    // Build correction op using GPU sidecar tensors
-                    ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
-                            ctx0, gpu_idx, gpu_values, cur_perm,
-                            ob->n_rows_out, ob->n_cols);
-                    corr->op_params[2] = (int32_t)ob->value_type;
-                    if (ggml_custom_logs_enabled()) {
-                        fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
-                                w->name,
-                                (long long)res->ne[0], (long long)res->ne[1],
-                                (long long)corr->ne[0], (long long)corr->ne[1],
-                                (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
+                    // Use merged format when available (Proposal 4.1)
+                    ggml_tensor * gpu_merged_idx = ob->merged_idx;
+
+                    // Lazy-create merged GPU tensor from CPU data
+                    if (!gpu_merged_idx && !ob->merged_idx_data.empty()) {
+                        size_t n_merged = ob->merged_idx_data.size() / 4;
+                        struct ggml_init_params tmp_params = {
+                            ggml_tensor_overhead() * 3,
+                            NULL,
+                            true,
+                        };
+                        ggml_context * tmp_ctx = ggml_init(tmp_params);
+                        ggml_tensor * merged = ggml_new_tensor_2d(tmp_ctx, GGML_TYPE_I32, 4, (int64_t)n_merged);
+                        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(tmp_ctx, backend);
+                        if (buf) {
+                            ggml_backend_tensor_set(merged, ob->merged_idx_data.data(), 0,
+                                    n_merged * 4 * sizeof(int32_t));
+                            ob->merged_idx = merged;
+                            gpu_merged_idx = merged;
+                        }
+                        // NOTE: do NOT ggml_free(tmp_ctx) — merged tensor must outlive this scope
+                        (void)tmp_ctx;
                     }
-                    res = ggml_acc_inplace(ctx0, res, corr,
-                            res->nb[1], res->nb[2], res->nb[3], 0);
+
+                    if (gpu_merged_idx) {
+                        // Merged path: wider kernel launches, fewer grid.x dims
+                        ggml_tensor * corr = ggml_mul_mat_outlier_blocks_merged(
+                                ctx0, gpu_merged_idx, gpu_values, cur,
+                                ob->n_rows_out, ob->n_cols);
+                        corr->op_params[2] = (int32_t)ob->value_type;
+                        if (ggml_custom_logs_enabled()) {
+                            fprintf(stderr, "[delta-graph-merged] %s: correction op created (merged), n_merged_runs=%lld n_blocks=%lld\n",
+                                    w->name, (long long)gpu_merged_idx->ne[1], (long long)ob->n_blocks);
+                        }
+                        res = ggml_acc_inplace(ctx0, res, corr,
+                                res->nb[1], res->nb[2], res->nb[3], 0);
+                    } else {
+                        // Fall back to original unmerged kernel
+                        ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
+                                ctx0, gpu_idx, gpu_values, cur_perm,
+                                ob->n_rows_out, ob->n_cols);
+                        corr->op_params[2] = (int32_t)ob->value_type;
+                        if (ggml_custom_logs_enabled()) {
+                            fprintf(stderr, "[delta-graph] %s: correction op created (unmerged), res ne=[%lld,%lld], corr ne=[%lld,%lld]\n",
+                                    w->name,
+                                    (long long)res->ne[0], (long long)res->ne[1],
+                                    (long long)corr->ne[0], (long long)corr->ne[1]);
+                        }
+                        res = ggml_acc_inplace(ctx0, res, corr,
+                                res->nb[1], res->nb[2], res->nb[3], 0);
+                    }
                     if (ggml_custom_logs_enabled()) {
                         fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
                                 w->name, (long long)res->ne[0], (long long)res->ne[1]);

@@ -610,6 +610,8 @@ struct llama_model {
 
         // Merged contiguous runs for wider kernel launches (Proposal 4.1)
         std::vector<outlier_merged_run> merged_runs;
+        mutable ggml_tensor *      merged_idx = nullptr;  // [4, n_merged_runs] i32 GPU tensor (lazy-created)
+        std::vector<int32_t>       merged_idx_data;       // flat CPU copy of merged idx
 
         // Column permutation for clustering outlier blocks (Proposal 4.4)
         // Inverse permutation: column_perm[new_col_index] = original_col_index
