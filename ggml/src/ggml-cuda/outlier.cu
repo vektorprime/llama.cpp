@@ -762,8 +762,9 @@ static __global__ void fused_outlier_q4_0_kernel(
             const uint8_t nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
             float w = d * ((float)(int)nibble - 8.0f);
 
+            // [DEBUG] skip delta correction to isolate base matmul
             // Add BF16_SINGLE delta at the outlier position
-            if (has_delta && j == delta_pos && skip_deltas != 3) {
+            if (false && has_delta && j == delta_pos) {
                 w += delta_val;
             }
 
@@ -1041,6 +1042,15 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     static bool debug_dump = (getenv("HERMES_DEBUG_FUSED") != nullptr);
     if (debug_dump) {
         static int dump_count = 0;
+        static bool first = true;
+        if (first) {
+            first = false;
+            fprintf(stderr, "[fused-debug] values tensor: type=%d ne=[%lld,%lld] nb=[%zu,%zu]\n",
+                (int)values->type,
+                (long long)values->ne[0], (long long)values->ne[1],
+                values->nb[0], values->nb[1]);
+            fflush(stderr);
+        }
         if (dump_count < 5) {
             dump_count++;
             int64_t n_dump = std::min((int64_t)16, n_rows_out * n_tokens);
