@@ -692,7 +692,8 @@ static __global__ void fused_outlier_q4_0_kernel(
         const int64_t n_outlier_blocks,
         const int32_t *        __restrict__ row_ptr,     // [n_rows_out + 1] CSR prefix sum
         const int32_t *        __restrict__ block_col_csr, // [2, n_outlier_blocks] (col, orig_values_idx) pairs
-        const int32_t value_type) {                      // LLAMA_OUTLIER_VALUE_TYPE_*
+        const int32_t value_type,                     // LLAMA_OUTLIER_VALUE_TYPE_*
+        const int32_t skip_deltas) {                  // debug: 1 = skip delta correction
 
     const int64_t row   = blockIdx.x;
     const int64_t token = blockIdx.y;
@@ -713,15 +714,13 @@ static __global__ void fused_outlier_q4_0_kernel(
         const block_q4_0_cuda * q4block = &w_q4[weight_idx];
         const float d = __half2float(q4block->d);
 
-        // DEBUG: skip delta lookup to test base matmul only
-        bool debug_no_delta = (getenv("FUSED_NO_DELTA") != nullptr);
+        // CSR lookup: check if this block has a delta
+        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
         bool has_delta = false;
         float delta_val = 0.0f;
         int   delta_pos = -1;
 
-        if (!debug_no_delta) {
-            // CSR lookup: check if this block has a delta
-            // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
+        if (!skip_deltas) {
             int32_t delta_idx = -1;
             int32_t values_idx = -1;
             const int32_t r_start = row_ptr[row];
@@ -1002,6 +1001,7 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
     const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
+    static bool skip_deltas = (getenv("FUSED_NO_DELTA") != nullptr);
 
     dim3 block_dim(FUSED_BLOCK_SIZE, 1, 1);
     dim3 grid_dim((uint32_t) n_rows_out, (uint32_t) n_tokens, 1);
@@ -1016,7 +1016,7 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
                 w_q4_d, x_d, idx_d, values_d, dst_d,
                 n_rows_out, n_cols_all, n_cols_x, col_offset, x_stride,
                 n_tokens, n_blocks_per_row, n_outlier_blocks,
-                row_ptr_d, block_col_d, value_type_i32);
+                row_ptr_d, block_col_d, value_type_i32, skip_deltas ? 1 : 0);
     } else {
         const char * w_data_d = (const char *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
