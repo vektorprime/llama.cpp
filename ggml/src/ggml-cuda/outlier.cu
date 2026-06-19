@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <unordered_map>
 #include <vector>
 
 // Kernel: sparse BF16 outlier block correction for Q8_0_BF16_OUTLIER
@@ -895,6 +896,15 @@ static __global__ void fused_outlier_generic_kernel(
     }
 }
 
+// Cached CSR data per idx tensor (stable across graph captures).
+// idx tensor data is static after model load, so we build CSR once then reuse.
+struct CachedCSR {
+    int32_t * row_ptr_d   = nullptr;
+    int32_t * block_col_d = nullptr;
+};
+
+static std::unordered_map<const void *, CachedCSR> g_csr_cache;
+
 void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * w      = dst->src[0];
     const ggml_tensor * x      = dst->src[1];
@@ -930,48 +940,50 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     cudaStream_t stream = ctx.stream();
 
-    // Build CSR layout from idx on GPU
     const int32_t * idx_d = (const int32_t *) idx->data;
 
-    // Build CSR on host
-    std::vector<int32_t> row_ptr_h(n_rows_out + 1, 0);
-    std::vector<int32_t> block_col_h(n_outlier_blocks);
-    std::vector<int32_t> idx_h(n_outlier_blocks * 2);
+    // Build or retrieve cached CSR (idx data is static after model load)
+    CachedCSR & csr = g_csr_cache[idx_d];
+    if (!csr.row_ptr_d) {
+        // First call: build CSR on host once, then cache on GPU
+        std::vector<int32_t> row_ptr_h(n_rows_out + 1, 0);
+        std::vector<int32_t> block_col_h(n_outlier_blocks);
+        std::vector<int32_t> idx_h(n_outlier_blocks * 2);
 
-    CUDA_CHECK(cudaMemcpyAsync(idx_h.data(), idx_d,
-            n_outlier_blocks * 2 * sizeof(int32_t),
-            cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(cudaMemcpy(idx_h.data(), idx_d,
+                n_outlier_blocks * 2 * sizeof(int32_t),
+                cudaMemcpyDeviceToHost));
 
-    for (int64_t k = 0; k < n_outlier_blocks; k++) {
-        int32_t row = idx_h[k * 2];
-        if (row >= 0 && row < (int32_t)n_rows_out) {
-            row_ptr_h[row + 1]++;
+        for (int64_t k = 0; k < n_outlier_blocks; k++) {
+            int32_t row = idx_h[k * 2];
+            if (row >= 0 && row < (int32_t)n_rows_out) {
+                row_ptr_h[row + 1]++;
+            }
         }
-    }
-    for (int64_t r = 0; r < n_rows_out; r++) {
-        row_ptr_h[r + 1] += row_ptr_h[r];
-    }
-
-    std::vector<int32_t> row_cursor = row_ptr_h;
-    for (int64_t k = 0; k < n_outlier_blocks; k++) {
-        int32_t row = idx_h[k * 2];
-        int32_t bcol = idx_h[k * 2 + 1];
-        if (row >= 0 && row < (int32_t)n_rows_out) {
-            int32_t pos = row_cursor[row]++;
-            block_col_h[pos] = bcol;
+        for (int64_t r = 0; r < n_rows_out; r++) {
+            row_ptr_h[r + 1] += row_ptr_h[r];
         }
+
+        std::vector<int32_t> row_cursor = row_ptr_h;
+        for (int64_t k = 0; k < n_outlier_blocks; k++) {
+            int32_t row = idx_h[k * 2];
+            int32_t bcol = idx_h[k * 2 + 1];
+            if (row >= 0 && row < (int32_t)n_rows_out) {
+                int32_t pos = row_cursor[row]++;
+                block_col_h[pos] = bcol;
+            }
+        }
+
+        CUDA_CHECK(cudaMalloc(&csr.row_ptr_d, (n_rows_out + 1) * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(&csr.block_col_d, n_outlier_blocks * sizeof(int32_t)));
+        CUDA_CHECK(cudaMemcpy(csr.row_ptr_d, row_ptr_h.data(),
+                (n_rows_out + 1) * sizeof(int32_t), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(csr.block_col_d, block_col_h.data(),
+                n_outlier_blocks * sizeof(int32_t), cudaMemcpyHostToDevice));
     }
 
-    // Upload CSR to GPU
-    int32_t * row_ptr_d = nullptr;
-    int32_t * block_col_d = nullptr;
-    CUDA_CHECK(cudaMalloc(&row_ptr_d, (n_rows_out + 1) * sizeof(int32_t)));
-    CUDA_CHECK(cudaMalloc(&block_col_d, n_outlier_blocks * sizeof(int32_t)));
-    CUDA_CHECK(cudaMemcpyAsync(row_ptr_d, row_ptr_h.data(),
-            (n_rows_out + 1) * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(block_col_d, block_col_h.data(),
-            n_outlier_blocks * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+    int32_t * row_ptr_d   = csr.row_ptr_d;
+    int32_t * block_col_d = csr.block_col_d;
 
     const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
     const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
@@ -980,7 +992,6 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     dim3 grid_dim((uint32_t) n_rows_out, (uint32_t) n_tokens, 1);
 
     if (is_q4_0 && is_single) {
-        // Q4_0 weights with BF16_SINGLE deltas: use optimized kernel
         const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
         const float * x_d = (const float *) x->data;
@@ -1007,7 +1018,6 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     CUDA_CHECK(cudaGetLastError());
 
-    // Cleanup
-    CUDA_CHECK(cudaFree(row_ptr_d));
-    CUDA_CHECK(cudaFree(block_col_d));
+    // Note: row_ptr_d / block_col_d are cached, not freed here.
+    // They live for the lifetime of the idx tensor (entire process).
 }
