@@ -132,7 +132,7 @@ static __global__ void outlier_blocks_kernel_single(
     // Read packed values: 2 bytes BF16 delta + 1 byte position
     const uint8_t * p = values + block_idx * 3;
     nv_bfloat16 bf16;
-    bf16.__x = ((uint16_t)p[1] << 8) | p[0];
+    bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
     float delta = __bfloat162float(bf16);
     int   pos   = (int)p[2];
 
