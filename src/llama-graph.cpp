@@ -1152,12 +1152,15 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 ggml_tensor * gpu_values = ob->values;
 
                 if (gpu_idx && gpu_values) {
-                    // TEMP: force unmerged path to test correctness
-                    ggml_tensor * gpu_merged_idx = nullptr; // ob->merged_idx;
-                    (void)gpu_merged_idx;
+                    // Use merged format for BF16 and Q8_0 (not BF16_SINGLE)
+                    ggml_tensor * gpu_merged_idx = nullptr;
+                    if (ob->value_type != LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
+                        gpu_merged_idx = ob->merged_idx;
+                    }
 
-                    // Lazy-create merged GPU tensor from CPU data
-                    if (!gpu_merged_idx && !ob->merged_idx_data.empty()) {
+                    // Lazy-create merged GPU tensor from CPU data (BF16/Q8_0 only)
+                    if (!gpu_merged_idx && !ob->merged_idx_data.empty()
+                            && ob->value_type != LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
                         size_t n_merged = ob->merged_idx_data.size() / 4;
                         struct ggml_init_params tmp_params = {
                             ggml_tensor_overhead() * 3,

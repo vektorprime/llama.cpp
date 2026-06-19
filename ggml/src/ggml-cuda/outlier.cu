@@ -584,6 +584,10 @@ static void outlier_blocks_merged_cuda(
         outlier_blocks_kernel_q8_0_merged<<<grid_dim, block_dim, 0, stream>>>(
                 merged_idx_d, values_q8, x_d, dst_d,
                 n_merged_runs, n_cols_all, n_cols_x, col_offset, x_stride, n_rows_out, n_tokens);
+    } else if (values_type == GGML_TYPE_I8) {
+        // BF16_SINGLE (value_type_i32==4): not supported in merged path yet
+        // Fall through — output stays zero (caller should not have created merged op)
+        GGML_UNUSED(value_type_i32);
     } else {
         const nv_bfloat16 * values_bf16 = (const nv_bfloat16 *) values_d;
         outlier_blocks_kernel_bf16_merged<<<grid_dim, block_dim, 0, stream>>>(
