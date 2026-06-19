@@ -1117,20 +1117,8 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             ggml_tensor * gpu_idx    = nullptr;
             ggml_tensor * gpu_values = nullptr;
 
-            if (model.stream_outliers()) {
-                if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
-                    gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-                    gpu_values = model.outlier_cache.get_gpu_values(name);
-                }
-            } else {
-                gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-                gpu_values = model.outlier_cache.get_gpu_values(name);
-            }
-
-            if (!gpu_idx || !gpu_values) {
-                gpu_idx    = ob->idx;
-                gpu_values = ob->values;
-            }
+            gpu_idx    = ob->idx;
+            gpu_values = ob->values;
 
             if (gpu_idx && gpu_values) {
                 // Fused path: replace base matmul + correction with single fused op
@@ -1157,62 +1145,26 @@ ggml_tensor * llm_graph_context::build_lora_mm(
         res = ggml_mul_mat(ctx0, w, cur_perm);
 
         // Q8_0_BF16_OUTLIER: add sparse outlier correction for protected blocks
-        // Uses the streaming cache: sidecars are uploaded from CPU to GPU
-        // on-demand with a sliding window for predictive prefetch.
         if (w && model.has_outlier_blocks(w)) {
             const auto * ob = model.get_outlier_info(w);
             if (ob && ob->n_blocks > 0) {
-                const std::string & name = ob->name;
-                ggml_tensor * gpu_idx    = nullptr;
-                ggml_tensor * gpu_values = nullptr;
-
-                // Try the streaming cache first (ensure GPU upload if streaming enabled)
-                if (model.stream_outliers()) {
-                    if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
-                        gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-                        gpu_values = model.outlier_cache.get_gpu_values(name);
-                    }
-                } else {
-                    gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-                    gpu_values = model.outlier_cache.get_gpu_values(name);
-                }
-
-                // If not yet loaded, fall back to original GPU sidecar tensors
-                if (!gpu_idx || !gpu_values) {
-                    gpu_idx    = ob->idx;
-                    gpu_values = ob->values;
-                }
+                ggml_tensor * gpu_idx    = ob->idx;
+                ggml_tensor * gpu_values = ob->values;
 
                 if (gpu_idx && gpu_values) {
-                    // Use merged format when available (Proposal 4.1)
-                    ggml_tensor * gpu_merged_idx = model.outlier_cache.get_gpu_merged_idx(name);
-
-                    if (gpu_merged_idx) {
-                        // Use the cached merged idx from streaming cache
-                        ggml_tensor * corr = ggml_mul_mat_outlier_blocks_merged(
-                                ctx0, gpu_merged_idx, gpu_values, cur,
-                                ob->n_rows_out, ob->n_cols);
-                        corr->op_params[2] = (int32_t)ob->value_type;
-                        if (ggml_custom_logs_enabled()) {
-                            fprintf(stderr, "[delta-graph-merged] %s: correction op created (cached merged), n_merged_runs=%lld n_blocks=%lld\n",
-                                    w->name, (long long)gpu_merged_idx->ne[1], (long long)ob->n_blocks);
-                        }
-                        res = ggml_add(ctx0, res, corr);
-                    } else {
-                        // Fall back to original unmerged kernel
-                        ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
-                                ctx0, gpu_idx, gpu_values, cur_perm,
-                                ob->n_rows_out, ob->n_cols);
-                        corr->op_params[2] = (int32_t)ob->value_type;
-                        if (ggml_custom_logs_enabled()) {
-                            fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
-                                    w->name,
-                                    (long long)res->ne[0], (long long)res->ne[1],
-                                    (long long)corr->ne[0], (long long)corr->ne[1],
-                                    (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
-                        }
-                        res = ggml_add(ctx0, res, corr);
+                    // Build correction op using GPU sidecar tensors
+                    ggml_tensor * corr = ggml_mul_mat_outlier_blocks(
+                            ctx0, gpu_idx, gpu_values, cur_perm,
+                            ob->n_rows_out, ob->n_cols);
+                    corr->op_params[2] = (int32_t)ob->value_type;
+                    if (ggml_custom_logs_enabled()) {
+                        fprintf(stderr, "[delta-graph] %s: correction op created, res ne=[%lld,%lld], corr ne=[%lld,%lld], res nelems=%lld, corr nelems=%lld\n",
+                                w->name,
+                                (long long)res->ne[0], (long long)res->ne[1],
+                                (long long)corr->ne[0], (long long)corr->ne[1],
+                                (long long)ggml_nelements(res), (long long)ggml_nelements(corr));
                     }
+                    res = ggml_add(ctx0, res, corr);
                     if (ggml_custom_logs_enabled()) {
                         fprintf(stderr, "[delta-graph] %s: ggml_add called, result ne=[%lld,%lld]\n",
                                 w->name, (long long)res->ne[0], (long long)res->ne[1]);

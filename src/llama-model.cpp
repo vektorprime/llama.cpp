@@ -1747,275 +1747,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         }
     }
 
-    // Phase 1b: When streaming is enabled, find sidecar pairs from GGUF metadata
-    // (sidecar tensors were not loaded into GPU memory)
-    if (params.stream_outliers && ml) {
-        int n_sidecar_found = 0;
-        int n_sidecar_skipped = 0;
-        int n_parent_missing = 0;
-        int n_val_missing = 0;
-        int n_type_mismatch = 0;
-        int n_shape_mismatch = 0;
-        int n_block_mismatch = 0;
-        int n_csr_oom = 0;
-        int n_registered = 0;
-
-        for (const auto & [w_name, weight] : ml->weights_map) {
-            // Look for idx sidecar: name.outlier_idx
-            const size_t idx_suffix_len = 12; // ".outlier_idx"
-            if (w_name.size() <= idx_suffix_len ||
-                w_name.rfind(".outlier_idx") != w_name.size() - idx_suffix_len) {
-                continue;
-            }
-            n_sidecar_found++;
-            const std::string parent_name = w_name.substr(0, w_name.size() - idx_suffix_len);
-            const std::string values_name = parent_name + ".outlier_bf16";
-
-            // Find parent weight tensor in loaded tensors
-            auto it_parent = tensors_map.find(parent_name);
-            if (it_parent == tensors_map.end()) {
-                n_parent_missing++;
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': parent '%s' NOT in tensors_map (%zu entries)\n",
-                            w_name.c_str(), parent_name.c_str(), tensors_map.size());
-                    fflush(stderr);
-                }
-                continue;
-            }
-
-            // Skip if already registered via loaded sidecar tensors
-            if (outlier_info.count(it_parent->second)) {
-                n_sidecar_skipped++;
-                continue;
-            }
-
-            // Find values sidecar in weights_map
-            auto it_val = ml->weights_map.find(values_name);
-            if (it_val == ml->weights_map.end()) {
-                n_val_missing++;
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': values '%s' NOT in weights_map\n",
-                            w_name.c_str(), values_name.c_str());
-                    fflush(stderr);
-                }
-                continue;
-            }
-
-            const ggml_tensor * idx_meta = weight.tensor;
-            const ggml_tensor * val_meta = it_val->second.tensor;
-            if (!idx_meta || !val_meta) {
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': null meta tensor\n", w_name.c_str());
-                    fflush(stderr);
-                }
-                continue;
-            }
-
-            // Validate types
-            if (idx_meta->type != GGML_TYPE_I32) {
-                n_type_mismatch++;
-                continue;
-            }
-            if (val_meta->type != GGML_TYPE_BF16 && val_meta->type != GGML_TYPE_Q8_0 && val_meta->type != GGML_TYPE_I8) {
-                n_type_mismatch++;
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': val type=%s (expect BF16, Q8_0, or I8)\n",
-                            w_name.c_str(), ggml_type_name(val_meta->type));
-                    fflush(stderr);
-                }
-                continue;
-            }
-            if (idx_meta->ne[0] != 2 || (val_meta->ne[0] != 32 && !(val_meta->type == GGML_TYPE_I8 && val_meta->ne[0] == 16))) {
-                n_shape_mismatch++;
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': idx ne=[%lld,%lld] val ne=[%lld,%lld] (expect 2,32)\n",
-                            w_name.c_str(),
-                            (long long)idx_meta->ne[0], (long long)idx_meta->ne[1],
-                            (long long)val_meta->ne[0], (long long)val_meta->ne[1]);
-                    fflush(stderr);
-                }
-                continue;
-            }
-
-            const int64_t n_blocks = idx_meta->ne[1];
-            if (n_blocks != val_meta->ne[1]) {
-                n_block_mismatch++;
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': idx n_blocks=%lld val n_blocks=%lld\n",
-                            w_name.c_str(), (long long)n_blocks, (long long)val_meta->ne[1]);
-                    fflush(stderr);
-                }
-                continue;
-            }
-
-            ggml_tensor * parent_t = it_parent->second;
-
-            llama_outlier_block_info info;
-            info.name       = parent_name;
-            info.idx        = nullptr;   // no GPU tensor in streaming mode
-            info.values     = nullptr;
-            info.n_blocks   = n_blocks;
-            info.n_rows_out = parent_t->ne[1];
-            info.n_cols     = parent_t->ne[0];
-            info.value_type = val_meta->type == GGML_TYPE_Q8_0
-                ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 :
-                val_meta->type == GGML_TYPE_I8
-                ? LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF :
-                LLAMA_OUTLIER_VALUE_TYPE_BF16;
-
-            // Read idx data from GGUF for CSR layout
-            std::vector<int32_t> idx_buf_gguf(n_blocks * 2);
-            size_t idx_nbytes = (size_t)n_blocks * 2 * sizeof(int32_t);
-            if (ml->use_mmap) {
-                const auto & mapping = ml->mappings.at(weight.idx);
-                memcpy(idx_buf_gguf.data(), (uint8_t *)mapping->addr() + weight.offs, idx_nbytes);
-            } else {
-                const auto & file = ml->files.at(weight.idx);
-                file->seek(weight.offs, SEEK_SET);
-                file->read_raw(idx_buf_gguf.data(), idx_nbytes);
-            }
-            const int32_t * idx_data = idx_buf_gguf.data();
-
-            // Build CSR layout
-            info.row_ptr.resize(info.n_rows_out + 1, 0);
-            for (int64_t k = 0; k < n_blocks; k++) {
-                int32_t row = idx_data[k * 2];
-                if (row < 0 || row >= info.n_rows_out) {
-                    info.row_ptr.clear();
-                    break;
-                }
-                info.row_ptr[row + 1]++;
-            }
-            if (info.row_ptr.empty()) {
-                n_csr_oom++;
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[outlier-stream-phase1b] sidecar '%s': CSR row out of range (n_rows_out=%lld)\n",
-                            w_name.c_str(), (long long)info.n_rows_out);
-                    fflush(stderr);
-                }
-                continue;
-            }
-
-            for (int64_t r = 0; r < info.n_rows_out; r++) {
-                info.row_ptr[r + 1] += info.row_ptr[r];
-            }
-            info.block_col.resize(n_blocks, 0);
-            std::vector<int32_t> row_cursor = info.row_ptr;
-            for (int64_t k = 0; k < n_blocks; k++) {
-                int32_t row = idx_data[k * 2];
-                int32_t bcol = idx_data[k * 2 + 1];
-                if (bcol >= info.n_cols / 32) continue;
-                int32_t pos = row_cursor[row]++;
-                info.block_col[pos] = bcol;
-            }
-
-            outlier_info[parent_t] = std::move(info);
-
-            n_registered++;
-            LLAMA_LOG_INFO("[outlier-stream] %s: registered from GGUF (%lld blocks, %.1f%%)\n",
-                parent_name.c_str(), (long long)n_blocks,
-                (info.n_rows_out * info.n_cols / 32) > 0
-                    ? 100.0 * n_blocks / (info.n_rows_out * info.n_cols / 32) : 0.0);
-        }
-
-        LLAMA_LOG_INFO("[outlier-stream-phase1b] summary: sidecars=%d registered=%d parent_missing=%d val_missing=%d type_mismatch=%d shape_mismatch=%d block_mismatch=%d csr_oom=%d skipped=%d\n",
-                n_sidecar_found, n_registered, n_parent_missing, n_val_missing, n_type_mismatch, n_shape_mismatch, n_block_mismatch, n_csr_oom, n_sidecar_skipped);
-    }
-
-    // Populate outlier streaming cache with CPU copies of sidecar data.
-    // This enables predictive streaming from CPU→GPU during inference.
-    // When streaming is enabled and sidecar tensors aren't loaded in GPU memory,
-    // reads the data directly from the GGUF file via the model loader.
-    int n_cache_from_tensor = 0;
-    int n_cache_from_gguf = 0;
-    int n_cache_skip = 0;
-
-    if (ggml_custom_logs_enabled()) {
-        fprintf(stderr, "[delta-cache-pop] populating cache from %zu outlier_info entries, stream_outliers=%d ml=%p\n",
-                outlier_info.size(), (int)params.stream_outliers, (const void*)ml);
-        fflush(stderr);
-    }
-
-    for (auto & [tensor, info] : outlier_info) {
-        const int32_t * idx_data = nullptr;
-        std::vector<int32_t> idx_buf;
-        const uint8_t * val_data = nullptr;
-        std::vector<uint8_t> val_buf;
-
-        ggml_tensor * idx_t = info.idx;
-        ggml_tensor * val_t = info.values;
-
-        if (idx_t && val_t) {
-            // Legacy path: read from loaded tensors (CPU or GPU)
-            if (idx_t->buffer && ggml_backend_buffer_is_host(idx_t->buffer) && idx_t->data) {
-                idx_data = (const int32_t *) idx_t->data;
-            } else if (idx_t->buffer && idx_t->data) {
-                idx_buf.resize(info.n_blocks * 2);
-                ggml_backend_tensor_get(idx_t, idx_buf.data(), 0,
-                        info.n_blocks * 2 * sizeof(int32_t));
-                idx_data = idx_buf.data();
-            } else if (idx_t->data) {
-                idx_data = (const int32_t *) idx_t->data;
-            }
-
-            if (idx_data) {
-                size_t val_elem;
-                if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
-                    val_elem = (size_t)34;
-                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
-                    val_elem = (size_t)16;
-                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE) {
-                    val_elem = (size_t)LLAMA_OUTLIER_SINGLE_BLOCK_BYTES;
-                } else {
-                    val_elem = (size_t)(32 * sizeof(ggml_bf16_t));
-                }
-                size_t val_total = (size_t)info.n_blocks * val_elem;
-
-                if (val_t->buffer && ggml_backend_buffer_is_host(val_t->buffer) && val_t->data) {
-                    val_data = (const uint8_t *) val_t->data;
-                } else if (val_t->buffer && val_t->data) {
-                    val_buf.resize(val_total);
-                    ggml_backend_tensor_get(val_t, val_buf.data(), 0, val_total);
-                    val_data = val_buf.data();
-                } else if (val_t->data) {
-                    val_data = (const uint8_t *) val_t->data;
-                }
-            }
-            if (idx_data && val_data) n_cache_from_tensor++;
-        } else if (ml && params.stream_outliers) {
-            // Streaming path: read from GGUF file directly
-            const std::string idx_name    = info.name + ".outlier_idx";
-            const std::string values_name = info.name + ".outlier_bf16";
-
-            const auto * w_idx = ml->get_weight(idx_name.c_str());
-            const auto * w_val = ml->get_weight(values_name.c_str());
-
-            if (w_idx && w_val) {
-                size_t idx_nbytes = (size_t)info.n_blocks * 2 * sizeof(int32_t);
-                size_t val_nbytes;
-                if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
-                    val_nbytes = (size_t)info.n_blocks * 34;
-                } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
-                    val_nbytes = (size_t)info.n_blocks * 16;
-                } else {
-                    val_nbytes = (size_t)info.n_blocks * 32 * sizeof(ggml_bf16_t);
-                }
-
-                idx_buf.resize(info.n_blocks * 2);
-                val_buf.resize(val_nbytes);
-
-                if (ml->use_mmap) {
-                    const auto & idx_mapping = ml->mappings.at(w_idx->idx);
-                    memcpy(idx_buf.data(), (uint8_t *)idx_mapping->addr() + w_idx->offs, idx_nbytes);
-                    const auto & val_mapping = ml->mappings.at(w_val->idx);
-                    memcpy(val_buf.data(), (uint8_t *)val_mapping->addr() + w_val->offs, val_nbytes);
-                } else {
-                    const auto & idx_file = ml->files.at(w_idx->idx);
-                    idx_file->seek(w_idx->offs, SEEK_SET);
-                    idx_file->read_raw(idx_buf.data(), idx_nbytes);
-                    const auto & val_file = ml->files.at(w_val->idx);
-                    val_file->seek(w_val->offs, SEEK_SET);
-                    val_file->read_raw(val_buf.data(), val_nbytes);
+    // Summary
                 }
 
                 idx_data = idx_buf.data();
@@ -2052,20 +1784,6 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
             vt = GGML_TYPE_I8;
         } else {
-            vt = GGML_TYPE_BF16;
-        }
-
-        outlier_cache.add_entry(info.name, idx_data, val_data,
-                vt, info.n_blocks, info.n_rows_out, info.n_cols);
-    }
-
-    outlier_cache.finalize();
-
-    LLAMA_LOG_INFO("[outlier-stream] cache initialized: %d entries, %zu KB CPU, window=%d (from tensor=%d from gguf=%d skipped=%d)\n",
-            outlier_cache.total_entries(),
-            outlier_cache.total_cpu_bytes() / 1024,
-            outlier_cache.window_size,
-            n_cache_from_tensor, n_cache_from_gguf, n_cache_skip);
 
     // Summary
     int64_t total_blocks = 0;
@@ -2185,26 +1903,6 @@ void llama_model::patch_embedding_outliers() {
                 values_cpu = values_cpu_buf.data();
             } else if (info.values->data) {
                 values_cpu = (const uint8_t *) info.values->data;
-            }
-        } else {
-            // Streaming mode: sidecar values are in the outlier cache (CPU)
-            if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-patch]   streaming mode: looking up '%s' in cache (%zu entries)\n",
-                        info.name.c_str(), outlier_cache.entries.size());
-                fflush(stderr);
-            }
-            auto cache_it = outlier_cache.entries.find(info.name);
-            if (cache_it != outlier_cache.entries.end()) {
-                values_cpu = cache_it->second.values_data.data();
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[delta-patch]   cache hit: values_data.size=%zu n_blocks=%lld\n",
-                            cache_it->second.values_data.size(),
-                            (long long)cache_it->second.n_blocks);
-                    fflush(stderr);
-                }
-            } else if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-patch]   cache MISS for '%s'\n", info.name.c_str());
-                fflush(stderr);
             }
         }
 
@@ -2787,12 +2485,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // Create Q8_0_BF16_OUTLIER / Q4_0_BF16_OUTLIER sidecar tensors in each ggml context
     // where the parent weight exists. Sidecars must live in the same context as their
     // parent weight so the scheduler routes MUL_MAT_OUTLIER_BLOCKS to the correct backend.
-    // Skip host-transfer buffer types (e.g., CUDA_Host) — the CUDA backend cannot
-    // access them (supports_buft returns false), so the scheduler would fail to route
-    // the outlier op to a backend that can read the sidecar tensors.
-    // When --stream-outliers is set, sidecar tensors are managed by the streaming cache
-    // and are NOT allocated in GPU memory.
-    if (!params.stream_outliers) {
+    // Always allocate sidecar buffers in GPU memory (streaming removed).
+    {
         for (auto & [buft, ctx_ptr] : ml.ctx_map) {
             ggml_context * ctx = ctx_ptr.get();
 
@@ -3584,10 +3278,6 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
     // provide model reference to graph context for outlier block correction
     const_cast<llm_graph_params &>(params).model = this;
 
-    // Release latch from previous forward pass so cached outlier sidecar
-    // tensors can be evicted during this graph build.
-    outlier_cache.release_all_latches();
-
     std::unique_ptr<llm_graph_context> llm = build_arch_graph(params);
 
     // add on pooling layer
@@ -3630,9 +3320,7 @@ llama_model_params llama_model_default_params() {
         /*.check_tensors               =*/ false,
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
-        /*.no_alloc                    =*/ false,
-        /*.stream_outliers             =*/ false,
-        /*.fuse_outlier_matmul         =*/ false,
+                /*.fuse_outlier_matmul         =*/ false,
     };
 
     return result;
