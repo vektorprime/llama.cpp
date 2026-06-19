@@ -3517,6 +3517,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
         /*.q8_outlier_max_frac         =*/ 0.02f,
         /*.q8_outlier_store            =*/ LLAMA_Q8_OUTLIER_STORE_FULL,
         /*.q8_outlier_value_type       =*/ LLAMA_OUTLIER_VALUE_TYPE_BF16,
+        /*.q8_outlier_protect_blocks_file =*/ nullptr,
         /*.q8_outlier_report_path      =*/ nullptr,
         /*.q8_outlier_include_weights  =*/ nullptr,
         /*.q8_outlier_exclude_weights  =*/ nullptr,
