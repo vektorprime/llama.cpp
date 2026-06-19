@@ -1747,45 +1747,6 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         }
     }
 
-    // Summary
-                }
-
-                idx_data = idx_buf.data();
-                val_data = val_buf.data();
-                if (ggml_custom_logs_enabled()) {
-                    fprintf(stderr, "[delta-cache-pop] '%s': read from GGUF (%smapped) idx=%zuB val=%zuB n_blocks=%lld\n",
-                            info.name.c_str(),
-                            ml->use_mmap ? "mmapped" : "file ",
-                            idx_nbytes, val_nbytes, (long long)info.n_blocks);
-                    fflush(stderr);
-                }
-                n_cache_from_gguf++;
-            } else if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-cache-pop] '%s': get_weight failed (idx=%s=%p val=%s=%p)\n",
-                        info.name.c_str(),
-                        idx_name.c_str(), (const void*)w_idx,
-                        values_name.c_str(), (const void*)w_val);
-                fflush(stderr);
-            }
-        }
-
-        if (!idx_data || !val_data) {
-            n_cache_skip++;
-            if (ggml_custom_logs_enabled()) {
-                fprintf(stderr, "[delta-cache-pop] '%s': SKIP (no data)\n", info.name.c_str());
-                fflush(stderr);
-            }
-            continue;
-        }
-
-        ggml_type vt;
-        if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_Q8_0) {
-            vt = GGML_TYPE_Q8_0;
-        } else if (info.value_type == LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF) {
-            vt = GGML_TYPE_I8;
-        } else {
-
-    // Summary
     int64_t total_blocks = 0;
     int64_t total_base_blocks = 0;
     for (const auto & [_, info] : outlier_info) {
