@@ -416,6 +416,7 @@ extern "C" {
         LLAMA_OUTLIER_VALUE_TYPE_Q8_0            = 1,
         LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF     = 2,  // 4-bit custom diff encoding (Q4_0/Q8_0)
         LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF_Q2K = 3,  // 4-bit custom diff encoding (Q2_K)
+        LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE    = 4,  // single BF16 per block (outlier position + delta)
     };
 
     // model quantization parameters

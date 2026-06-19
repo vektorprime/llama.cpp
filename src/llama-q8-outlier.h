@@ -55,6 +55,9 @@ static constexpr const char * LLAMA_Q4_OUTLIER_VALUES_SUFFIX = ".outlier_bf16";
 // Nibble-diff encoding: 4 bits per weight, 32 weights = 16 bytes per block
 static constexpr int32_t LLAMA_OUTLIER_NIBBLE_BLOCK_BYTES = 16;
 
+// Single-outlier encoding: 2 bytes BF16 delta + 1 byte uint8 position = 3 bytes per block
+static constexpr int32_t LLAMA_OUTLIER_SINGLE_BLOCK_BYTES = 3;
+
 // Nibble-diff encoding: convert float diff to 4-bit nibble
 // Bit layout (MSB to LSB):
 //   bit 3: enable (1 = apply diff, 0 = skip)

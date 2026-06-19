@@ -1171,8 +1171,8 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: idx ne[0] must be 2\n", __func__, name.c_str());
             continue;
         }
-        if (values_tensor->ne[0] != 32 && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 16)) {
-            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32 (or 16 for nibble)\n", __func__, name.c_str());
+        if (values_tensor->ne[0] != 32 && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 16) && !(values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 3)) {
+            LLAMA_LOG_WARN("%s: skipping outlier sidecars for %s: values ne[0] must be 32 (or 16 for nibble, or 3 for single)\n", __func__, name.c_str());
             continue;
         }
 
@@ -1190,6 +1190,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
         info.n_rows_out = tensor->ne[1];
         info.n_cols     = tensor->ne[0];
         info.value_type = values_tensor->type == GGML_TYPE_Q8_0 ? LLAMA_OUTLIER_VALUE_TYPE_Q8_0 :
+                          values_tensor->type == GGML_TYPE_I8 && values_tensor->ne[0] == 3 ? LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE :
                           values_tensor->type == GGML_TYPE_I8  ? LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF :
                                                                   LLAMA_OUTLIER_VALUE_TYPE_BF16;
 

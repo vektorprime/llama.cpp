@@ -733,13 +733,18 @@ int llama_quantize(int argc, char ** argv) {
                 params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
                 params.q8_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
                 params.q2k_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16;
+            } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "bf16_single")) {
+                ++arg_idx;
+                params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE;
+                params.q8_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE;
+                params.q2k_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE;
             } else if (arg_idx < argc-1 && striequals(argv[arg_idx + 1], "nibble_diff")) {
                 ++arg_idx;
                 params.q4_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
                 params.q8_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
                 params.q2k_outlier_value_type = LLAMA_OUTLIER_VALUE_TYPE_NIBBLE_DIFF;
             } else {
-                fprintf(stderr, "%s: --outlier-value-type must be 'bf16', 'q8_0', or 'nibble_diff'\n", __func__);
+                fprintf(stderr, "%s: --outlier-value-type must be 'bf16', 'bf16_single', 'q8_0', or 'nibble_diff'\n", __func__);
                 usage(argv[0]);
             }
         } else if (strcmp(argv[arg_idx], "--custom-logs") == 0) {
