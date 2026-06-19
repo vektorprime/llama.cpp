@@ -1327,7 +1327,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
             int64_t n_block_cols = info.n_cols / 32;
             std::vector<int32_t> inv_perm = reorder_columns(info, n_blocks, n_block_cols);
 
-            if (!inv_perm.empty() && (int64_t)inv_perm.size() == n_block_cols) {
+            if (false && !inv_perm.empty() && (int64_t)inv_perm.size() == n_block_cols) {
                 // Permute the weight tensor blocks to match the new column order.
                 // Only handle quantized block types with block_size=32.
                 ggml_type wtype = tensor->type;
