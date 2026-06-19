@@ -1037,25 +1037,21 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             std::vector<float> host_dump(n_dump);
             CUDA_CHECK(cudaMemcpy(host_dump.data(), dst->data, n_dump * sizeof(float), cudaMemcpyDeviceToHost));
 
-            // Also dump first weight block and first activation
-            float w_first[32] = {};
-            float x_first[4] = {};
-            if (w->type == GGML_TYPE_Q4_0) {
-                const block_q4_0_cuda * b0 = (const block_q4_0_cuda *) w->data;
-                if (b0) {
-                    CUDA_CHECK(cudaMemcpy(&w_first, b0, sizeof(block_q4_0_cuda), cudaMemcpyDeviceToHost));
-                    float d = __half2float(b0->d);
-                    w_first[0] = d;  // store d
-                    for (int j = 0; j < 31; j++) {
-                        uint8_t byte = ((uint8_t*)&w_first)[j/2 + 2];  // qs starts at offset 2
-                        uint8_t nib = (j & 1) ? (byte >> 4) : (byte & 0x0F);
-                        w_first[j+1] = d * ((float)(int)nib - 8.0f);
-                    }
-                }
+            // Also dump first weight block raw bytes
+            uint8_t w_raw[18] = {};
+            if (w->type == GGML_TYPE_Q4_0 && w->data) {
+                CUDA_CHECK(cudaMemcpy(w_raw, w->data, 18, cudaMemcpyDeviceToHost));
             }
             std::vector<float> x_host(std::min((int64_t)4, n_cols_x));
             if (x->data) {
                 CUDA_CHECK(cudaMemcpy(x_host.data(), x->data, x_host.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            }
+
+            // Decode block: first 2 bytes = fp16 d, remaining 16 bytes = qs nibbles
+            uint16_t d_raw = ((uint16_t)w_raw[1] << 8) | w_raw[0];
+            float d_val = 0.0f;
+            if (w->type == GGML_TYPE_Q4_0 && w->data) {
+                half h; memcpy(&h, &d_raw, 2); d_val = __half2float(h);
             }
 
             fprintf(stderr, "[fused-debug] tensor=%s ne=[%lld,%lld] value_type=%d n_outlier=%lld n_cols_x=%lld first_vals=[",
@@ -1068,11 +1064,12 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
                 if (isnan(host_dump[i])) any_nan = true;
                 fprintf(stderr, "%s%g", i ? "," : "", host_dump[i]);
             }
-            fprintf(stderr, "] all_zero=%d any_nan=%d x0=%g w_d=%g w_type=%d\n",
+            fprintf(stderr, "] all_zero=%d any_nan=%d x0=%g w_d=%g w_type=%d w_qs0=%02x\n",
                     all_zero, any_nan,
                     x_host.empty() ? NAN : x_host[0],
-                    w_first[0],
-                    (int)w->type);
+                    d_val,
+                    (int)w->type,
+                    w_raw[2]);
             fflush(stderr);
         }
     }
