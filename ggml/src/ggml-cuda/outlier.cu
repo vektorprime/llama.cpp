@@ -763,7 +763,7 @@ static __global__ void fused_outlier_q4_0_kernel(
             float w = d * ((float)(int)nibble - 8.0f);
 
             // Add BF16_SINGLE delta at the outlier position
-            if (has_delta && j == delta_pos) {
+            if (has_delta && j == delta_pos && skip_deltas != 3) {
                 w += delta_val;
             }
 
