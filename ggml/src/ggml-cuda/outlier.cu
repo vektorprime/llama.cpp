@@ -691,7 +691,7 @@ static __global__ void fused_outlier_q4_0_kernel(
         const int64_t n_blocks_per_row,
         const int64_t n_outlier_blocks,
         const int32_t *        __restrict__ row_ptr,     // [n_rows_out + 1] CSR prefix sum
-        const int32_t *        __restrict__ block_col_csr, // [n_outlier_blocks] sorted block cols
+        const int32_t *        __restrict__ block_col_csr, // [2, n_outlier_blocks] (col, orig_values_idx) pairs
         const int32_t value_type) {                      // LLAMA_OUTLIER_VALUE_TYPE_*
 
     const int64_t row   = blockIdx.x;
@@ -714,12 +714,15 @@ static __global__ void fused_outlier_q4_0_kernel(
         const float d = __half2float(q4block->d);
 
         // CSR lookup: check if this block has a delta
+        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
         int32_t delta_idx = -1;
+        int32_t values_idx = -1;
         const int32_t r_start = row_ptr[row];
         const int32_t r_end   = row_ptr[row + 1];
         for (int32_t k = r_start; k < r_end; k++) {
-            if (block_col_csr[k] == (int32_t)bk) {
+            if (block_col_csr[k * 2] == (int32_t)bk) {
                 delta_idx = k;
+                values_idx = block_col_csr[k * 2 + 1];
                 break;
             }
         }
@@ -729,7 +732,7 @@ static __global__ void fused_outlier_q4_0_kernel(
         float delta_val = 0.0f;
         int   delta_pos = -1;
         if (has_delta) {
-            const uint8_t * p = values + delta_idx * 3;
+            const uint8_t * p = values + values_idx * 3;
             nv_bfloat16 bf16;
             bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
             delta_val = __bfloat162float(bf16);
@@ -835,12 +838,15 @@ static __global__ void fused_outlier_generic_kernel(
         __syncthreads();
 
         // CSR lookup for delta
+        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
         int32_t delta_idx = -1;
+        int32_t values_idx = -1;
         const int32_t r_start = row_ptr[row];
         const int32_t r_end   = row_ptr[row + 1];
         for (int32_t k = r_start; k < r_end; k++) {
-            if (block_col_csr[k] == (int32_t)bk) {
+            if (block_col_csr[k * 2] == (int32_t)bk) {
                 delta_idx = k;
+                values_idx = block_col_csr[k * 2 + 1];
                 break;
             }
         }
@@ -850,7 +856,7 @@ static __global__ void fused_outlier_generic_kernel(
         float single_delta = 0.0f;
         int   single_pos   = -1;
         if (has_delta && is_single) {
-            const uint8_t * p = values + delta_idx * 3;
+            const uint8_t * p = values + values_idx * 3;
             nv_bfloat16 bf16;
             bf16 = __ushort_as_bfloat16(((uint16_t)p[1] << 8) | p[0]);
             single_delta = __bfloat162float(bf16);
@@ -871,11 +877,11 @@ static __global__ void fused_outlier_generic_kernel(
                     }
                 } else if (is_q8_0_val) {
                     const block_q8_0_cuda * vq8 = (const block_q8_0_cuda *)values;
-                    w += __half2float(vq8[delta_idx].d) * vq8[delta_idx].qs[j];
+                    w += __half2float(vq8[values_idx].d) * vq8[values_idx].qs[j];
                 } else {
                     // BF16 values: [32, n_outlier_blocks]
                     const nv_bfloat16 * vbf16 = (const nv_bfloat16 *)values;
-                    w += __bfloat162float(vbf16[delta_idx * 32 + j]);
+                    w += __bfloat162float(vbf16[values_idx * 32 + j]);
                 }
             }
 
@@ -897,10 +903,11 @@ static __global__ void fused_outlier_generic_kernel(
 }
 
 // Cached CSR data per idx tensor (stable across graph captures).
-// idx tensor data is static after model load, so we build CSR once then reuse.
+// Stores [2, n_outlier_blocks]: block_col at offset 0, original_values_idx at offset 1.
+// This mapping is needed because CSR sorts by row, breaking the 1:1 idx→values correspondence.
 struct CachedCSR {
     int32_t * row_ptr_d   = nullptr;
-    int32_t * block_col_d = nullptr;
+    int32_t * block_col_d = nullptr;  // [2, n_outlier_blocks] — col+orig_idx pairs
 };
 
 static std::unordered_map<const void *, CachedCSR> g_csr_cache;
@@ -945,9 +952,10 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     // Build or retrieve cached CSR (idx data is static after model load)
     CachedCSR & csr = g_csr_cache[idx_d];
     if (!csr.row_ptr_d) {
-        // First call: build CSR on host once, then cache on GPU
+        // First call: build CSR on host once, then cache on GPU.
+        // CSR stores [2, n_blocks]: col + original_idx per entry.
         std::vector<int32_t> row_ptr_h(n_rows_out + 1, 0);
-        std::vector<int32_t> block_col_h(n_outlier_blocks);
+        std::vector<int32_t> block_col_h(n_outlier_blocks * 2);  // pairs: (col, orig_idx)
         std::vector<int32_t> idx_h(n_outlier_blocks * 2);
 
         CUDA_CHECK(cudaMemcpy(idx_h.data(), idx_d,
@@ -970,16 +978,17 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             int32_t bcol = idx_h[k * 2 + 1];
             if (row >= 0 && row < (int32_t)n_rows_out) {
                 int32_t pos = row_cursor[row]++;
-                block_col_h[pos] = bcol;
+                block_col_h[pos * 2]     = bcol;
+                block_col_h[pos * 2 + 1] = (int32_t)k;  // original values index
             }
         }
 
         CUDA_CHECK(cudaMalloc(&csr.row_ptr_d, (n_rows_out + 1) * sizeof(int32_t)));
-        CUDA_CHECK(cudaMalloc(&csr.block_col_d, n_outlier_blocks * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(&csr.block_col_d, n_outlier_blocks * 2 * sizeof(int32_t)));
         CUDA_CHECK(cudaMemcpy(csr.row_ptr_d, row_ptr_h.data(),
                 (n_rows_out + 1) * sizeof(int32_t), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(csr.block_col_d, block_col_h.data(),
-                n_outlier_blocks * sizeof(int32_t), cudaMemcpyHostToDevice));
+                n_outlier_blocks * 2 * sizeof(int32_t), cudaMemcpyHostToDevice));
     }
 
     int32_t * row_ptr_d   = csr.row_ptr_d;
