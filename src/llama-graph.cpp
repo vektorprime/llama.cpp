@@ -1117,12 +1117,12 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             ggml_tensor * gpu_idx    = nullptr;
             ggml_tensor * gpu_values = nullptr;
 
-            // Always try the streaming cache first; fall back to GPU tensors if not cached
-            if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
-                gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-                gpu_values = model.outlier_cache.get_gpu_values(name);
-            }
-            if (!gpu_idx || !gpu_values) {
+            if (model.stream_outliers()) {
+                if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
+                    gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+                    gpu_values = model.outlier_cache.get_gpu_values(name);
+                }
+            } else {
                 gpu_idx    = model.outlier_cache.get_gpu_idx(name);
                 gpu_values = model.outlier_cache.get_gpu_values(name);
             }
@@ -1166,12 +1166,13 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 ggml_tensor * gpu_idx    = nullptr;
                 ggml_tensor * gpu_values = nullptr;
 
-                // Always try the streaming cache first; fall back to GPU tensors if not cached
-                if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
-                    gpu_idx    = model.outlier_cache.get_gpu_idx(name);
-                    gpu_values = model.outlier_cache.get_gpu_values(name);
-                }
-                if (!gpu_idx || !gpu_values) {
+                // Try the streaming cache first (ensure GPU upload if streaming enabled)
+                if (model.stream_outliers()) {
+                    if (backend && model.outlier_cache.ensure_gpu(backend, name)) {
+                        gpu_idx    = model.outlier_cache.get_gpu_idx(name);
+                        gpu_values = model.outlier_cache.get_gpu_values(name);
+                    }
+                } else {
                     gpu_idx    = model.outlier_cache.get_gpu_idx(name);
                     gpu_values = model.outlier_cache.get_gpu_values(name);
                 }

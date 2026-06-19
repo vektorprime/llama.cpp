@@ -1749,7 +1749,7 @@ void llama_model::build_outlier_info(const llama_model_loader * ml) {
 
     // Phase 1b: When streaming is enabled, find sidecar pairs from GGUF metadata
     // (sidecar tensors were not loaded into GPU memory)
-    if (ml) {
+    if (params.stream_outliers && ml) {
         int n_sidecar_found = 0;
         int n_sidecar_skipped = 0;
         int n_parent_missing = 0;
@@ -3631,7 +3631,7 @@ llama_model_params llama_model_default_params() {
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
         /*.no_alloc                    =*/ false,
-        /*.stream_outliers             =*/ true,
+        /*.stream_outliers             =*/ false,
         /*.fuse_outlier_matmul         =*/ false,
     };
 
