@@ -1152,8 +1152,9 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 ggml_tensor * gpu_values = ob->values;
 
                 if (gpu_idx && gpu_values) {
-                    // Use merged format when available (Proposal 4.1)
-                    ggml_tensor * gpu_merged_idx = ob->merged_idx;
+                    // TEMP: force unmerged path to test correctness
+                    ggml_tensor * gpu_merged_idx = nullptr; // ob->merged_idx;
+                    (void)gpu_merged_idx;
 
                     // Lazy-create merged GPU tensor from CPU data
                     if (!gpu_merged_idx && !ob->merged_idx_data.empty()) {
