@@ -1031,22 +1031,48 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     static bool debug_dump = (getenv("HERMES_DEBUG_FUSED") != nullptr);
     if (debug_dump) {
         static int dump_count = 0;
-        if (dump_count < 3) {
+        if (dump_count < 5) {
             dump_count++;
             int64_t n_dump = std::min((int64_t)16, n_rows_out * n_tokens);
             std::vector<float> host_dump(n_dump);
             CUDA_CHECK(cudaMemcpy(host_dump.data(), dst->data, n_dump * sizeof(float), cudaMemcpyDeviceToHost));
-            fprintf(stderr, "[fused-debug] tensor=%s ne=[%lld,%lld] value_type=%d n_outlier=%lld first_vals=[",
+
+            // Also dump first weight block and first activation
+            float w_first[32] = {};
+            float x_first[4] = {};
+            if (w->type == GGML_TYPE_Q4_0) {
+                const block_q4_0_cuda * b0 = (const block_q4_0_cuda *) w->data;
+                if (b0) {
+                    CUDA_CHECK(cudaMemcpy(&w_first, b0, sizeof(block_q4_0_cuda), cudaMemcpyDeviceToHost));
+                    float d = __half2float(b0->d);
+                    w_first[0] = d;  // store d
+                    for (int j = 0; j < 31; j++) {
+                        uint8_t byte = ((uint8_t*)&w_first)[j/2 + 2];  // qs starts at offset 2
+                        uint8_t nib = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                        w_first[j+1] = d * ((float)(int)nib - 8.0f);
+                    }
+                }
+            }
+            std::vector<float> x_host(std::min((int64_t)4, n_cols_x));
+            if (x->data) {
+                CUDA_CHECK(cudaMemcpy(x_host.data(), x->data, x_host.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            }
+
+            fprintf(stderr, "[fused-debug] tensor=%s ne=[%lld,%lld] value_type=%d n_outlier=%lld n_cols_x=%lld first_vals=[",
                     w->name ? w->name : "(unnamed)",
                     (long long)n_rows_out, (long long)n_tokens,
-                    value_type_i32, (long long)n_outlier_blocks);
+                    value_type_i32, (long long)n_outlier_blocks, (long long)n_cols_x);
             bool all_zero = true, any_nan = false;
             for (int64_t i = 0; i < n_dump; i++) {
                 if (host_dump[i] != 0.0f) all_zero = false;
                 if (isnan(host_dump[i])) any_nan = true;
                 fprintf(stderr, "%s%g", i ? "," : "", host_dump[i]);
             }
-            fprintf(stderr, "] all_zero=%d any_nan=%d\n", all_zero, any_nan);
+            fprintf(stderr, "] all_zero=%d any_nan=%d x0=%g w_d=%g w_type=%d\n",
+                    all_zero, any_nan,
+                    x_host.empty() ? NAN : x_host[0],
+                    w_first[0],
+                    (int)w->type);
             fflush(stderr);
         }
     }
