@@ -1881,10 +1881,21 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
 
             const float * all_logits = num_batches > 1 ? logits.data() : llama_get_logits_ith(ctx, seq*n_ctx + first);
 
+            float * p_diff_start = p_diff_ptr;
             process_logits(n_vocab, all_logits, tokens.data() + start + seq*n_ctx + first, n_ctx - 1 - first,
                     workers, log_probs_uint16, kld, kld_ptr, p_diff_ptr);
-            p_diff_ptr += n_ctx - 1 - first;
-            kld_ptr    += n_ctx - 1 - first;
+            const int n_tok = n_ctx - 1 - first;
+            if (!params.analysis_csv.empty()) {
+                const int32_t * tok_ptr = tokens.data() + start + seq*n_ctx + first;
+                for (int t = 0; t < n_tok; t++) {
+                    token_analyses.push_back({
+                        (int32_t)i, (int32_t)seq, (int32_t)(first + t),
+                        tok_ptr[t], p_diff_start[t], kld_ptr[t]
+                    });
+                }
+            }
+            p_diff_ptr += n_tok;
+            kld_ptr    += n_tok;
 
             LOG("%4d", i + seq + 1);
 
@@ -1920,6 +1931,7 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
     llama_batch_free(batch);
     LOG("\n");
 
+    fprintf(stderr, "[ANALYSIS] csv=%s ta=%zu cnt=%zu\n", params.analysis_csv.c_str(), token_analyses.size(), (size_t)kld.count);
     if (kld.count < 100) return; // we do not wish to do statistics on so few values
 
     // Write per-token analysis CSV before sorting destroys index mapping
