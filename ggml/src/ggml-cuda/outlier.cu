@@ -1027,49 +1027,56 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     CUDA_CHECK(cudaGetLastError());
 
-    // Debug: dump first output elements to compare fused vs expected
+    // Debug: dump first output elements AND check for any non-zero
     static bool debug_dump = (getenv("HERMES_DEBUG_FUSED") != nullptr);
     if (debug_dump) {
         static int dump_count = 0;
         if (dump_count < 5) {
             dump_count++;
             int64_t n_dump = std::min((int64_t)16, n_rows_out * n_tokens);
+            int64_t total_elems = n_rows_out * n_tokens;
             std::vector<float> host_dump(n_dump);
             CUDA_CHECK(cudaMemcpy(host_dump.data(), dst->data, n_dump * sizeof(float), cudaMemcpyDeviceToHost));
+
+            // Check sparse sample: 100 random positions
+            int64_t n_sample = std::min((int64_t)100, total_elems);
+            std::vector<int64_t> sample_idx(n_sample);
+            std::vector<float> sample_vals(n_sample);
+            for (int64_t i = 0; i < n_sample; i++) {
+                sample_idx[i] = (i * total_elems) / n_sample;
+            }
+            for (int64_t i = 0; i < n_sample; i++) {
+                CUDA_CHECK(cudaMemcpy(&sample_vals[i],
+                    (float*)dst->data + sample_idx[i],
+                    sizeof(float), cudaMemcpyDeviceToHost));
+            }
+            int64_t nz_sample = 0;
+            for (int64_t i = 0; i < n_sample; i++) {
+                if (sample_vals[i] != 0.0f) nz_sample++;
+            }
 
             // Also dump first weight block raw bytes
             uint8_t w_raw[18] = {};
             if (w->type == GGML_TYPE_Q4_0 && w->data) {
                 CUDA_CHECK(cudaMemcpy(w_raw, w->data, 18, cudaMemcpyDeviceToHost));
             }
-            std::vector<float> x_host(std::min((int64_t)4, n_cols_x));
-            if (x->data) {
-                CUDA_CHECK(cudaMemcpy(x_host.data(), x->data, x_host.size() * sizeof(float), cudaMemcpyDeviceToHost));
-            }
 
-            // Decode block: first 2 bytes = fp16 d, remaining 16 bytes = qs nibbles
             uint16_t d_raw = ((uint16_t)w_raw[1] << 8) | w_raw[0];
             float d_val = 0.0f;
             if (w->type == GGML_TYPE_Q4_0 && w->data) {
                 half h; memcpy(&h, &d_raw, 2); d_val = __half2float(h);
             }
 
-            fprintf(stderr, "[fused-debug] tensor=%s ne=[%lld,%lld] value_type=%d n_outlier=%lld n_cols_x=%lld first_vals=[",
+            fprintf(stderr, "[fused-debug] %s ne=[%lld,%lld] vt=%d n_out=%lld nz_sample=%lld/%lld",
                     w->name ? w->name : "(unnamed)",
                     (long long)n_rows_out, (long long)n_tokens,
-                    value_type_i32, (long long)n_outlier_blocks, (long long)n_cols_x);
-            bool all_zero = true, any_nan = false;
+                    value_type_i32, (long long)n_outlier_blocks,
+                    (long long)nz_sample, (long long)n_sample);
+            fprintf(stderr, " first_vals=[");
             for (int64_t i = 0; i < n_dump; i++) {
-                if (host_dump[i] != 0.0f) all_zero = false;
-                if (isnan(host_dump[i])) any_nan = true;
                 fprintf(stderr, "%s%g", i ? "," : "", host_dump[i]);
             }
-            fprintf(stderr, "] all_zero=%d any_nan=%d x0=%g w_d=%g w_type=%d w_qs0=%02x\n",
-                    all_zero, any_nan,
-                    x_host.empty() ? NAN : x_host[0],
-                    d_val,
-                    (int)w->type,
-                    w_raw[2]);
+            fprintf(stderr, "] w_d=%g w_qs0=%02x\n", d_val, w_raw[2]);
             fflush(stderr);
         }
     }
