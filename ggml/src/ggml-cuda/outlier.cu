@@ -352,6 +352,9 @@ static __device__ __host__ inline int32_t next_pow2(int32_t v) {
     return v + 1;
 }
 
+// 8-token merge: each thread block processes 8 consecutive tokens
+#define OUTLIER_MERGE_TOKENS 8
+
 static __global__ void outlier_blocks_kernel_bf16_merged(
         const int32_t *     __restrict__ merged_idx,
         const nv_bfloat16 * __restrict__ values,
@@ -365,10 +368,10 @@ static __global__ void outlier_blocks_kernel_bf16_merged(
         const int64_t n_rows_out,
         const int64_t n_tokens) {
 
-    const int64_t run_idx  = blockIdx.x;
-    const int64_t token_idx = blockIdx.y;
+    const int64_t run_idx    = blockIdx.x;
+    const int64_t token_base = blockIdx.y * OUTLIER_MERGE_TOKENS;
 
-    if (run_idx >= n_merged_runs || token_idx >= n_tokens) {
+    if (run_idx >= n_merged_runs) {
         return;
     }
 
@@ -391,8 +394,23 @@ static __global__ void outlier_blocks_kernel_bf16_merged(
     const int tid = threadIdx.x;
     const int block_size = blockDim.x;
 
-    float sum = 0.0f;
+    // Pre-compute valid token indices and their x_stride offsets
+    int64_t token_idx[OUTLIER_MERGE_TOKENS];
+    int64_t token_x_offset[OUTLIER_MERGE_TOKENS];
+    int n_valid = 0;
+    for (int t = 0; t < OUTLIER_MERGE_TOKENS; t++) {
+        const int64_t ti = token_base + t;
+        if (ti >= n_tokens) break;
+        token_idx[t] = ti;
+        token_x_offset[t] = ti * x_stride;
+        n_valid++;
+    }
 
+    // Per-token sums, accumulated element by element
+    float sums[OUTLIER_MERGE_TOKENS] = {0.0f};
+
+    // Each thread handles its weight elements — read BF16 weight once,
+    // then multiply by activations for all tokens
     for (int32_t j = tid; j < total_elems; j += block_size) {
         const int32_t block_idx_in_run = j >> 5;
         const int32_t elem_in_block    = j & 31;
@@ -402,19 +420,29 @@ static __global__ void outlier_blocks_kernel_bf16_merged(
         if (col_global >= col_offset && col_global < col_offset + n_cols_x) {
             const float w = __bfloat162float(values[orig_block * 32 + elem_in_block]);
             const int64_t col_local = col_global - col_offset;
-            const float a = x[col_local + token_idx * x_stride];
-            sum += w * a;
+            #pragma unroll
+            for (int t = 0; t < OUTLIER_MERGE_TOKENS; t++) {
+                if (t >= n_valid) break;
+                const float a = __ldg(x + col_local + token_x_offset[t]);
+                sums[t] += w * a;
+            }
         }
     }
 
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        sum += __shfl_down_sync(0xffffffff, sum, offset);
-    }
+    // Per-token warp reduce + atomicAdd
+    for (int t = 0; t < n_valid; t++) {
+        float sum = sums[t];
 
-    if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
-        const int64_t dst_idx = row + token_idx * n_rows_out;
-        atomicAdd(dst + dst_idx, sum);
+        // Warp reduce
+#pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            sum += __shfl_down_sync(0xffffffff, sum, offset);
+        }
+
+        if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
+            const int64_t dst_idx = row + token_idx[t] * n_rows_out;
+            atomicAdd(dst + dst_idx, sum);
+        }
     }
 }
 
@@ -431,10 +459,10 @@ static __global__ void outlier_blocks_kernel_q8_0_merged(
         const int64_t n_rows_out,
         const int64_t n_tokens) {
 
-    const int64_t run_idx  = blockIdx.x;
-    const int64_t token_idx = blockIdx.y;
+    const int64_t run_idx    = blockIdx.x;
+    const int64_t token_base = blockIdx.y * OUTLIER_MERGE_TOKENS;
 
-    if (run_idx >= n_merged_runs || token_idx >= n_tokens) {
+    if (run_idx >= n_merged_runs) {
         return;
     }
 
@@ -457,8 +485,23 @@ static __global__ void outlier_blocks_kernel_q8_0_merged(
     const int tid = threadIdx.x;
     const int block_size = blockDim.x;
 
-    float sum = 0.0f;
+    // Pre-compute valid token indices and their x_stride offsets
+    int64_t token_idx[OUTLIER_MERGE_TOKENS];
+    int64_t token_x_offset[OUTLIER_MERGE_TOKENS];
+    int n_valid = 0;
+    for (int t = 0; t < OUTLIER_MERGE_TOKENS; t++) {
+        const int64_t ti = token_base + t;
+        if (ti >= n_tokens) break;
+        token_idx[t] = ti;
+        token_x_offset[t] = ti * x_stride;
+        n_valid++;
+    }
 
+    // Per-token sums, accumulated element by element
+    float sums[OUTLIER_MERGE_TOKENS] = {0.0f};
+
+    // Each thread handles its weight elements — decode Q8_0 weight once,
+    // then multiply by activations for all tokens
     for (int32_t j = tid; j < total_elems; j += block_size) {
         const int32_t block_idx_in_run = j >> 5;
         const int32_t elem_in_block    = j & 31;
@@ -470,19 +513,29 @@ static __global__ void outlier_blocks_kernel_q8_0_merged(
             const float d = __half2float(__ushort_as_half(q8block->d));
             const float w = d * (float)q8block->qs[elem_in_block];
             const int64_t col_local = col_global - col_offset;
-            const float a = x[col_local + token_idx * x_stride];
-            sum += w * a;
+            #pragma unroll
+            for (int t = 0; t < OUTLIER_MERGE_TOKENS; t++) {
+                if (t >= n_valid) break;
+                const float a = __ldg(x + col_local + token_x_offset[t]);
+                sums[t] += w * a;
+            }
         }
     }
 
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        sum += __shfl_down_sync(0xffffffff, sum, offset);
-    }
+    // Per-token warp reduce + atomicAdd
+    for (int t = 0; t < n_valid; t++) {
+        float sum = sums[t];
 
-    if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
-        const int64_t dst_idx = row + token_idx * n_rows_out;
-        atomicAdd(dst + dst_idx, sum);
+        // Warp reduce
+#pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            sum += __shfl_down_sync(0xffffffff, sum, offset);
+        }
+
+        if ((tid & 31) == 0 && row >= 0 && row < n_rows_out) {
+            const int64_t dst_idx = row + token_idx[t] * n_rows_out;
+            atomicAdd(dst + dst_idx, sum);
+        }
     }
 }
 
@@ -518,10 +571,10 @@ static void outlier_blocks_merged_cuda(
         fflush(stderr);
     }
 
-    // Use 1024 threads per block — handles up to 32 blocks per run without
-    // looping. Larger runs get handled by the per-thread loop.
-    dim3 block_dim(1024, 1, 1);
-    dim3 grid_dim((uint32_t) n_merged_runs, (uint32_t) n_tokens, 1);
+    // Use 32 threads per block — optimal for single-block merged runs (most common).
+    // Process OUTLIER_MERGE_TOKENS tokens per thread block.
+    dim3 block_dim(32, 1, 1);
+    dim3 grid_dim((uint32_t) n_merged_runs, (uint32_t)((n_tokens + OUTLIER_MERGE_TOKENS - 1) / OUTLIER_MERGE_TOKENS), 1);
 
     if (values_type == GGML_TYPE_Q8_0) {
         const block_q8_0_cuda * values_q8 = (const block_q8_0_cuda *) values_d;
