@@ -1,5 +1,6 @@
 #include "llama-outlier-stream.h"
 #include "llama-impl.h"
+#include "llama-q8-outlier.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
