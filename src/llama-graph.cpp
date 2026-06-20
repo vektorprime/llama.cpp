@@ -1106,10 +1106,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     // Determine if we should use the fused outlier matmul (Proposal 4.2)
-    // DISABLED: the fused path introduces buffer aliasing in the GGML graph allocator.
-    // The non-fused path (standard matmul + sparse correction + acc_inplace) works correctly.
-    // Re-enable after fixing graph allocator buffer reuse for 4-src ops.
-    const bool use_fused = false; // model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
+    const bool use_fused = model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
 
     ggml_tensor * res = nullptr;
 
@@ -1124,18 +1121,19 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             gpu_values = ob->values;
 
             if (gpu_idx && gpu_values) {
-                // Fused path: compute standard matmul first (allocates buffer),
-                // then compute fused matmul and copy result over standard matmul.
-                // Standard matmul buffer persists (same as non-fused pattern).
+                // Fused path (in-place via view, matches non-fused pattern):
+                // 1. Standard matmul: allocates buffer B (kept alive by view)
+                // 2. Fused op: writes result into B via src[4] pointer
+                // 3. Return a VIEW of B — keeps B alive until all consumers are done
                 ggml_tensor * res_base = ggml_mul_mat(ctx0, w, cur_perm);
-                ggml_tensor * fused_raw = ggml_mul_mat_outlier_fused(
+                ggml_tensor * fused = ggml_mul_mat_outlier_fused(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
-                fused_raw->op_params[2] = (int32_t)ob->value_type;
-
-                // Copy fused output over standard matmul output
-                // ggml_cpy writes to res_base->data in-place
-                res = ggml_cpy(ctx0, fused_raw, res_base);
+                fused->op_params[2] = (int32_t)ob->value_type;
+                // Tell handler: write output to res_base->data instead of fused->data
+                fused->src[4] = res_base;
+                // Return view of res_base — keeps buffer alive for downstream
+                res = ggml_view_tensor(ctx0, res_base);
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: res=%p name='%s' op=%s, res_base=%p, fused_raw=%p\n",
                             w->name, (void*)res, res->name, ggml_op_name(res->op),
