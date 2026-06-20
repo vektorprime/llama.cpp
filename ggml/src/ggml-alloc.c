@@ -15,8 +15,14 @@
 
 //#define GGML_ALLOCATOR_DEBUG
 
-//#define AT_PRINTF(...) GGML_LOG_DEBUG(__VA_ARGS__)
-#define AT_PRINTF(...)
+// Enable allocator trace when custom logs are active
+#include "ggml-impl.h"
+
+#define AT_PRINTF(...) do { \
+    if (ggml_custom_logs_enabled()) { \
+        fprintf(stderr, __VA_ARGS__); \
+    } \
+} while(0)
 
 // ops that return true for this function must not use restrict pointers for their backend implementations
 bool ggml_op_can_inplace(enum ggml_op op) {
