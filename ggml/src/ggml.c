@@ -3381,8 +3381,9 @@ struct ggml_tensor * ggml_mul_mat_outlier_blocks_merged(
 // ggml_mul_mat_outlier_fused
 //
 // Fused outlier-aware matmul (Proposal 4.2)
-// Replaces base matmul + sparse correction with a single fused pass.
+// Takes the standard matmul output as an in-place target.
 //
+// target -> [n_rows_out, n_tokens], standard matmul output (inplace target)
 // w      -> [n_cols, n_rows_out], quantized weights (Q4_0, Q8_0, Q2_K)
 // x      -> [n_cols, n_tokens]
 // idx    -> [2, n_blocks], i32 (row, block_col per block)
@@ -3390,12 +3391,15 @@ struct ggml_tensor * ggml_mul_mat_outlier_blocks_merged(
 // c      -> [n_rows_out, n_tokens]
 struct ggml_tensor * ggml_mul_mat_outlier_fused(
         struct ggml_context * ctx,
+        struct ggml_tensor  * target,
         struct ggml_tensor  * w,
         struct ggml_tensor  * x,
         struct ggml_tensor  * idx,
         struct ggml_tensor  * values,
         int64_t               n_rows_out,
         int64_t               n_cols) {
+    GGML_ASSERT(target->type == GGML_TYPE_F32);
+    GGML_ASSERT(target->ne[0] == n_rows_out);
     GGML_ASSERT(ggml_is_quantized(w->type));
     GGML_ASSERT(x->type == GGML_TYPE_F32);
     GGML_ASSERT(idx->type == GGML_TYPE_I32);
@@ -3406,7 +3410,6 @@ struct ggml_tensor * ggml_mul_mat_outlier_fused(
     GGML_ASSERT(x->ne[0] <= n_cols);
 
     const int64_t n_tokens = x->ne[1];
-    // Preserve batch dimensions like standard ggml_mul_mat does
     const int64_t ne[4] = { n_rows_out, n_tokens, x->ne[2], x->ne[3] };
     int n_dims = 2;
     if (x->ne[2] > 1 || x->ne[3] > 1) {
@@ -3415,10 +3418,11 @@ struct ggml_tensor * ggml_mul_mat_outlier_fused(
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, n_dims, ne);
 
     result->op     = GGML_OP_MUL_MAT_OUTLIER_FUSED;
-    result->src[0] = w;
-    result->src[1] = x;
-    result->src[2] = idx;
-    result->src[3] = values;
+    result->src[0] = target;
+    result->src[1] = w;
+    result->src[2] = x;
+    result->src[3] = idx;
+    result->src[4] = values;
 
     ggml_set_op_params_i32(result, 0, (int32_t) n_rows_out);
     ggml_set_op_params_i32(result, 1, (int32_t) n_cols);

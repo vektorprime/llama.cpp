@@ -48,6 +48,8 @@ bool ggml_op_can_inplace(enum ggml_op op) {
         case GGML_OP_RMS_NORM_BACK:
         case GGML_OP_SOFT_MAX:
         case GGML_OP_SOFT_MAX_BACK:
+        case GGML_OP_CPY:
+        case GGML_OP_MUL_MAT_OUTLIER_FUSED:
             return true;
 
         default:

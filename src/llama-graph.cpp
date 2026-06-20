@@ -1106,12 +1106,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     // Determine if we should use the fused outlier matmul (Proposal 4.2)
-    // DISABLED: the fused path introduces graph-level issues in GGML.
-    // See references/debug-fused-path-2025-06-21.md for full diagnostic log.
-    // To fix: the fused op needs to integrate into GGML's graph like
-    // ggml_mul_mat_outlier_blocks does — taking the standard matmul output
-    // as src[0] and writing in-place, with acc_inplace creating a VIEW.
-    const bool use_fused = false; // model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
+    const bool use_fused = model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
 
     ggml_tensor * res = nullptr;
 
@@ -1126,16 +1121,16 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             gpu_values = ob->values;
 
             if (gpu_idx && gpu_values) {
-                // Fused path: compute both standard matmul and fused matmul,
-                // then use ggml_cpy to copy fused output over standard matmul.
-                // The CPY result is a view of the standard matmul, which keeps
-                // its buffer alive (same mechanism as non-fused acc_inplace).
+                // Fused path: standard matmul + in-place fused correction.
+                // 1. Standard matmul allocates buffer B.
+                // 2. Fused op writes to B via inplace (src[0]=target, can_inplace=true).
+                // 3. Fused output is a VIEW of B, keeping B alive for downstream.
                 ggml_tensor * res_base = ggml_mul_mat(ctx0, w, cur_perm);
                 ggml_tensor * fused = ggml_mul_mat_outlier_fused(
-                        ctx0, w, cur_perm, gpu_idx, gpu_values,
+                        ctx0, res_base, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
                 fused->op_params[2] = (int32_t)ob->value_type;
-                res = ggml_cpy(ctx0, fused, res_base);
+                res = fused;  // fused output (view of res_base) replaces standard matmul
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: res=%p name='%s' op=%s, res_base=%p, fused=%p\n",
                             w->name, (void*)res, res->name, ggml_op_name(res->op),

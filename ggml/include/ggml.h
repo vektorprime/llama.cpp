@@ -1484,6 +1484,7 @@ extern "C" {
     // outlier-protected weights.
     GGML_API struct ggml_tensor * ggml_mul_mat_outlier_fused(
             struct ggml_context * ctx,
+            struct ggml_tensor  * target,
             struct ggml_tensor  * w,
             struct ggml_tensor  * x,
             struct ggml_tensor  * idx,

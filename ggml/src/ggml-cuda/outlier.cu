@@ -795,10 +795,11 @@ struct CachedCSR {
 static std::unordered_map<const void *, CachedCSR> g_csr_cache;
 
 void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    const ggml_tensor * w      = dst->src[0];
-    const ggml_tensor * x      = dst->src[1];
-    const ggml_tensor * idx    = dst->src[2];
-    const ggml_tensor * values = dst->src[3];
+    const ggml_tensor * target = dst->src[0];
+    const ggml_tensor * w      = dst->src[1];
+    const ggml_tensor * x      = dst->src[2];
+    const ggml_tensor * idx    = dst->src[3];
+    const ggml_tensor * values = dst->src[4];
 
     GGML_ASSERT(ggml_is_quantized(w->type));
     GGML_ASSERT(x->type == GGML_TYPE_F32);
