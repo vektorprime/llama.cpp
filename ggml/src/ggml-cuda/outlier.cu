@@ -897,9 +897,10 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
         // CPU reference: dequantize first row and compare with GPU output
         if (w->type == GGML_TYPE_Q4_0 && n_rows_out > 0 && n_blocks_per_row > 0
-                && n_blocks_per_row * 20 < 65536) {
+                && n_blocks_per_row * 18 < 65536) {
+            const int64_t block_bytes = (int64_t)ggml_type_size(GGML_TYPE_Q4_0); // 18
             // Copy all Q4_0 blocks for row 0 to host
-            int64_t n_copy = (int64_t)n_blocks_per_row * 20;
+            int64_t n_copy = (int64_t)n_blocks_per_row * block_bytes;
             std::vector<uint8_t> q4_row(n_copy);
             CUDA_CHECK(cudaMemcpy(q4_row.data(), w->data, n_copy, cudaMemcpyDeviceToHost));
 
@@ -913,10 +914,10 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             std::vector<float> w_cpu(n_blocks_per_row * 32);
             for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
                 half d_half;
-                memcpy(&d_half, q4_row.data() + bk * 20, 2);
+                memcpy(&d_half, q4_row.data() + bk * block_bytes, 2);
                 float d = __half2float(d_half);
                 for (int j = 0; j < 32; j++) {
-                    uint8_t byte = q4_row[bk * 20 + 2 + j/2];
+                    uint8_t byte = q4_row[bk * block_bytes + 2 + j/2];
                     int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
                     w_cpu[bk * 32 + j] = d * (nibble - 8);
                 }
