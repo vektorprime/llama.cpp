@@ -623,9 +623,6 @@ static __global__ void fused_outlier_q4_0_kernel(
 
     // First thread writes result
     if (tid == 0) {
-        if (row == 0 && token == 0) {
-            sum += 99.0f; // marker to verify kernel executes
-        }
         dst[row + token * n_rows_out] = sum;
     }
 }
@@ -847,17 +844,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     int32_t * row_ptr_d   = csr.row_ptr_d;
     int32_t * block_col_d = csr.block_col_d;
 
-    // Pre-fill output with NaN to verify kernel overwrites it
-    {
-        float nan_marker = NAN;
-        cudaMemcpyAsync(dst->data, &nan_marker, sizeof(float), cudaMemcpyHostToDevice, stream);
-    }
-
     const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
     const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
 
     dim3 block_dim(32, 1, 1);  // one warp — avoids race on output write
-    dim3 grid_dim((uint32_t) n_rows_out, (uint32_t) n_tokens, 1);
+    dim3 grid_dim(n_rows_out, n_tokens, 1);
 
     if (is_q4_0 && is_single) {
         const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
