@@ -621,8 +621,8 @@ static __global__ void fused_outlier_q4_0_kernel(
         sum += __shfl_down_sync(0xffffffff, sum, offset);
     }
 
-    // First thread of each warp writes result
-    if ((tid & 31) == 0) {
+    // First thread writes result
+    if (tid == 0) {
         dst[row + token * n_rows_out] = sum;
     }
 }
@@ -746,7 +746,7 @@ static __global__ void fused_outlier_generic_kernel(
         sum += __shfl_down_sync(0xffffffff, sum, offset);
     }
 
-    if ((tid & 31) == 0) {
+    if (tid == 0) {
         dst[row + token * n_rows_out] = sum;
     }
 }
@@ -847,7 +847,7 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
     const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
 
-    dim3 block_dim(FUSED_BLOCK_SIZE, 1, 1);
+    dim3 block_dim(32, 1, 1);  // one warp — avoids race on output write
     dim3 grid_dim((uint32_t) n_rows_out, (uint32_t) n_tokens, 1);
 
     if (is_q4_0 && is_single) {
