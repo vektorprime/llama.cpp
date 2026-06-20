@@ -1106,7 +1106,12 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     // Determine if we should use the fused outlier matmul (Proposal 4.2)
-    const bool use_fused = model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
+    // DISABLED: the fused path introduces graph-level issues in GGML.
+    // See references/debug-fused-path-2025-06-21.md for full diagnostic log.
+    // To fix: the fused op needs to integrate into GGML's graph like
+    // ggml_mul_mat_outlier_blocks does — taking the standard matmul output
+    // as src[0] and writing in-place, with acc_inplace creating a VIEW.
+    const bool use_fused = false; // model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
 
     ggml_tensor * res = nullptr;
 
