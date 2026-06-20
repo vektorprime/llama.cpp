@@ -585,35 +585,7 @@ static __global__ void fused_outlier_q4_0_kernel(
             }
         }
         has_delta = (delta_idx >= 0);
-
-        // DEBUG: for first tensor, dump CSR entries and delta values for row 0
-        static int csr_dump_count = 0;
-        if (has_delta && csr_dump_count < 1 && row == 0 && token == 0) {
-            // Only one thread prints
-            if (tid == 0) {
-                int32_t r0_start = row_ptr[0];
-                int32_t r0_end   = row_ptr[1];
-                int32_t n_entries = r0_end - r0_start;
-                // Print first 5 entries only
-                int32_t n_show = n_entries < 5 ? n_entries : 5;
-                for (int32_t i = 0; i < n_show; i++) {
-                    int32_t bcol = block_col_csr[(r0_start + i) * 2];
-                    int32_t vidx = block_col_csr[(r0_start + i) * 2 + 1];
-                    float dval = 0.0f;
-                    int dpos = -1;
-                    if (vidx >= 0 && vidx < (int32_t)n_outlier_blocks) {
-                        const uint8_t * vp = values + vidx * 3;
-                        nv_bfloat16 bf16;
-                        bf16 = __ushort_as_bfloat16(((uint16_t)vp[1] << 8) | vp[0]);
-                        dval = __bfloat162float(bf16);
-                        dpos = (int)vp[2];
-                    }
-                    printf("[fused-csr-dump] row=0 block=%d values_idx=%d delta=%.6e pos=%d\n",
-                        bcol, vidx, dval, dpos);
-                }
-                csr_dump_count++;
-            }
-        }
+        has_delta = false; // DEBUG: skip deltas
 
         // Pre-load single-outlier delta if present (3 bytes per block)
         if (has_delta && values_idx >= 0 && values_idx < (int32_t)n_outlier_blocks) {
@@ -1024,7 +996,27 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             std::vector<float> gpu_out(n_rows_check);
             CUDA_CHECK(cudaMemcpy(gpu_out.data(), dst->data, n_rows_check * sizeof(float), cudaMemcpyDeviceToHost));
 
-            float max_diff = 0;\n\n            // Also read CSR table to apply deltas in CPU reference\n            const bool has_csr = (row_ptr_d != nullptr && block_col_d != nullptr && values != nullptr);\n            std::vector<int32_t> row_ptr_h;\n            std::vector<int32_t> block_col_h;\n            std::vector<uint8_t> values_h;\n            if (has_csr) {\n                row_ptr_h.resize(n_rows_check + 1);\n                CUDA_CHECK(cudaMemcpy(row_ptr_h.data(), row_ptr_d,\n                    (n_rows_check + 1) * sizeof(int32_t), cudaMemcpyDeviceToHost));\n                // Calculate how many CSR entries we need to read\n                int32_t n_csr_entries = row_ptr_h[n_rows_check];\n                if (n_csr_entries > 0) {\n                    block_col_h.resize(n_csr_entries * 2);\n                    CUDA_CHECK(cudaMemcpy(block_col_h.data(), block_col_d,\n                        n_csr_entries * 2 * sizeof(int32_t), cudaMemcpyDeviceToHost));\n                    values_h.resize(n_csr_entries * 3);\n                    CUDA_CHECK(cudaMemcpy(values_h.data(), values->data,\n                        n_csr_entries * 3, cudaMemcpyDeviceToHost));\n                }\n            }\n\n            for (int64_t r = 0; r < n_rows_check; r++) {\n                std::vector<float> w_cpu(n_blocks_per_row * 32);\n                const uint8_t * row_data = w_data.data() + r * row_bytes;\n                for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {\n                    half d_half;\n                    memcpy(&d_half, row_data + bk * block_bytes, 2);\n                    float d = __half2float(d_half);\n                    for (int j = 0; j < 32; j++) {\n                        uint8_t byte = row_data[bk * block_bytes + 2 + j/2];\n                        int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);\n                        w_cpu[bk * 32 + j] = d * (nibble - 8);\n                    }\n                }\n\n                // Apply deltas from CSR (same as fused kernel)\n                if (has_csr && !block_col_h.empty()) {\n                    const int32_t r_start = row_ptr_h[r];\n                    const int32_t r_end   = row_ptr_h[r + 1];\n                    for (int32_t k = r_start; k < r_end; k++) {\n                        int32_t bcol = block_col_h[k * 2];\n                        int32_t vidx = block_col_h[k * 2 + 1];\n                        if (bcol >= 0 && bcol < (int32_t)n_blocks_per_row && vidx >= 0 && vidx < (int32_t)n_outlier_blocks) {\n                            const uint8_t * vp = values_h.data() + vidx * 3;\n                            nv_bfloat16 bf16;\n                            bf16 = __ushort_as_bfloat16(((uint16_t)vp[1] << 8) | vp[0]);\n                            float dval = __bfloat162float(bf16);\n                            int dpos = (int)vp[2];\n                            if (dpos >= 0 && dpos < 32) {\n                                w_cpu[bcol * 32 + dpos] += dval;\n                            }\n                        }\n                    }\n                }\n\n                float cpu_val = 0;\n                for (int64_t k = 0; k < n_blocks_per_row * 32 && k < n_cols_x; k++) {\n                    cpu_val += w_cpu[k] * x_data[k];\n                }\n                float diff = fabs(cpu_val - gpu_out[r]);\n                if (diff > max_diff) max_diff = diff;\n            }
+            float max_diff = 0;
+            for (int64_t r = 0; r < n_rows_check; r++) {
+                std::vector<float> w_cpu(n_blocks_per_row * 32);
+                const uint8_t * row_data = w_data.data() + r * row_bytes;
+                for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                    half d_half;
+                    memcpy(&d_half, row_data + bk * block_bytes, 2);
+                    float d = __half2float(d_half);
+                    for (int j = 0; j < 32; j++) {
+                        uint8_t byte = row_data[bk * block_bytes + 2 + j/2];
+                        int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                        w_cpu[bk * 32 + j] = d * (nibble - 8);
+                    }
+                }
+                float cpu_val = 0;
+                for (int64_t k = 0; k < n_blocks_per_row * 32 && k < n_cols_x; k++) {
+                    cpu_val += w_cpu[k] * x_data[k];
+                }
+                float diff = fabs(cpu_val - gpu_out[r]);
+                if (diff > max_diff) max_diff = diff;
+            }
             fprintf(stderr, "[fused-validate] %s: max_diff=%.2e across %lld rows (token 0 only)\n",
                 w->name ? w->name : "?", max_diff, (long long)n_rows_check);
             fflush(stderr);
