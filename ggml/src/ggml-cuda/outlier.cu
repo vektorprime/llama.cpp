@@ -847,6 +847,12 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     int32_t * row_ptr_d   = csr.row_ptr_d;
     int32_t * block_col_d = csr.block_col_d;
 
+    // Pre-fill output with NaN to verify kernel overwrites it
+    {
+        float nan_marker = NAN;
+        cudaMemcpyAsync(dst->data, &nan_marker, sizeof(float), cudaMemcpyHostToDevice, stream);
+    }
+
     const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
     const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
 
@@ -893,10 +899,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             if (vals[i] != 0.0f) nz++;
             if (isnan(vals[i])) nn++;
         }
-        fprintf(stderr, "[fused-sanity] %s ne=[%lld,%lld] nz=%d/%lld nan=%d\n",
+        fprintf(stderr, "[fused-sanity] %s ne=[%lld,%lld] nz=%d/%lld nan=%d vals=[%g,%g,%g]\n",
             w->name ? w->name : "?",
             (long long)n_rows_out, (long long)n_tokens,
-            nz, (long long)n_check, nn);
+            nz, (long long)n_check, nn,
+            vals[0], vals[1], vals[2]);
         fflush(stderr);
     }
 
