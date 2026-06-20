@@ -1121,18 +1121,18 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             gpu_values = ob->values;
 
             if (gpu_idx && gpu_values) {
-                // Fused path: replace base matmul + correction with single fused op
+                // Fused path: compute standard matmul first (allocates buffer),
+                // then compute fused matmul and copy result over standard matmul.
+                // Standard matmul buffer persists (same as non-fused pattern).
+                ggml_tensor * res_base = ggml_mul_mat(ctx0, w, cur_perm);
                 ggml_tensor * fused_raw = ggml_mul_mat_outlier_fused(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
                 fused_raw->op_params[2] = (int32_t)ob->value_type;
 
-                // Create a view of the fused output to keep its buffer alive.
-                // This mirrors the non-fused path where ggml_acc_inplace creates
-                // a view of the standard matmul output, preventing the allocator
-                // from reusing the buffer before downstream consumers read it.
-                // Use reshape_2d to preserve the [n_rows_out, n_tokens] shape.
-                res = ggml_reshape_2d(ctx0, fused_raw, fused_raw->ne[0], fused_raw->ne[1]);
+                // Copy fused output over standard matmul output
+                // ggml_cpy writes to res_base->data in-place
+                res = ggml_cpy(ctx0, fused_raw, res_base);
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
