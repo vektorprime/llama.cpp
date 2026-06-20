@@ -912,7 +912,8 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     // Quick sanity: verify fused output has non-zero values
     static int sanity_count = 0;
-    if (sanity_count < 3) {
+    bool run_sanity = (sanity_count < 3) || ggml_custom_logs_enabled();
+    if (run_sanity) {
         sanity_count++;
         // Synchronize to ensure kernel has completed
         cudaStreamSynchronize(stream);
