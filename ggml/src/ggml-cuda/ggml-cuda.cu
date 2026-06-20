@@ -3281,14 +3281,13 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
             const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
             const int mmvq_mmid_max = get_mmvq_mmid_max_batch(node->src[0]->type, cc);
             if (!ggml_is_quantized(node->src[0]->type) || node->ne[2] > mmvq_mmid_max) {
-                // under these conditions, the mul_mat_id operation will need to synchronize the stream, so we cannot use CUDA graphs
-                // TODO: figure out a way to enable for larger batch sizes, without hurting performance
-                // ref: https://github.com/ggml-org/llama.cpp/pull/18958
                 use_cuda_graph = false;
-#ifndef NDEBUG
-                GGML_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported node type\n", __func__);
-#endif
             }
+        }
+
+        // DEBUG: disable CUDA graphs for fused outlier op to test aliasing hypothesis
+        if (node->op == GGML_OP_MUL_MAT_OUTLIER_FUSED) {
+            use_cuda_graph = false;
         }
 
         if (!use_cuda_graph) {
