@@ -1131,7 +1131,8 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 // This mirrors the non-fused path where ggml_acc_inplace creates
                 // a view of the standard matmul output, preventing the allocator
                 // from reusing the buffer before downstream consumers read it.
-                res = ggml_view_1d(ctx0, fused_raw, ggml_nelements(fused_raw), 0);
+                // Use reshape_2d to preserve the [n_rows_out, n_tokens] shape.
+                res = ggml_reshape_2d(ctx0, fused_raw, fused_raw->ne[0], fused_raw->ne[1]);
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
