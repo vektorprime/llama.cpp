@@ -1122,10 +1122,16 @@ ggml_tensor * llm_graph_context::build_lora_mm(
 
             if (gpu_idx && gpu_values) {
                 // Fused path: replace base matmul + correction with single fused op
-                res = ggml_mul_mat_outlier_fused(
+                ggml_tensor * fused_raw = ggml_mul_mat_outlier_fused(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
-                res->op_params[2] = (int32_t)ob->value_type;
+                fused_raw->op_params[2] = (int32_t)ob->value_type;
+
+                // Create a view of the fused output to keep its buffer alive.
+                // This mirrors the non-fused path where ggml_acc_inplace creates
+                // a view of the standard matmul output, preventing the allocator
+                // from reusing the buffer before downstream consumers read it.
+                res = ggml_view_1d(ctx0, fused_raw, ggml_nelements(fused_raw), 0);
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
