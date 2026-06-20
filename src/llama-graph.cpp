@@ -1137,7 +1137,6 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                     fprintf(stderr, "[delta-graph-fused] %s: res=%p name='%s' op=%s, res_base=%p, fused_raw=%p\n",
                             w->name, (void*)res, res->name, ggml_op_name(res->op),
                             (void*)res_base, (void*)fused_raw);
-                if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
                 }
