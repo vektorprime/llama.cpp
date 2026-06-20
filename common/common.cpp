@@ -1598,6 +1598,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
 
+    cparams.loop_layer_start  = params.loop_layer_start;
+    cparams.loop_layer_stop   = params.loop_layer_stop;
+    cparams.loop_count        = params.loop_count;
+    cparams.custom_logs       = params.custom_logs;
+
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
 

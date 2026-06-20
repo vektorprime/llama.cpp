@@ -355,6 +355,9 @@ extern "C" {
     GGML_NORETURN GGML_ATTRIBUTE_FORMAT(3, 4)
     GGML_API void ggml_abort(const char * file, int line, const char * fmt, ...);
 
+    GGML_API void ggml_set_custom_logs(bool enable);
+    GGML_API bool ggml_custom_logs_enabled(void);
+
     enum ggml_status {
         GGML_STATUS_ALLOC_FAILED = -2,
         GGML_STATUS_FAILED = -1,

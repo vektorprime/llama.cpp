@@ -45,6 +45,11 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    int32_t loop_layer_start = -1; // first layer of the loop block (-1 = disabled)
+    int32_t loop_layer_stop  = -1; // last layer of the loop block, inclusive (-1 = disabled)
+    int32_t loop_count       =  1; // number of extra loop iterations
+    bool    custom_logs      = false; // enable debug logging
+
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;

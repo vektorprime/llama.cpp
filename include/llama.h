@@ -383,6 +383,12 @@ extern "C" {
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
 
+        // RYS (Repeat Your Self) layer looping parameters
+        int32_t loop_layer_start; // first layer of the loop block (-1 = disabled)
+        int32_t loop_layer_stop;  // last layer of the loop block, inclusive (-1 = disabled)
+        int32_t loop_count;       // number of extra loop iterations
+        bool    custom_logs;      // enable debug logging
+
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)
@@ -510,6 +516,8 @@ extern "C" {
             "use llama_model_free instead");
 
     LLAMA_API void llama_model_free(struct llama_model * model);
+
+    LLAMA_API void llama_set_custom_logs(bool enable);
 
     LLAMA_API struct llama_context * llama_init_from_model(
                      struct llama_model * model,

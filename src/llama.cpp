@@ -46,6 +46,10 @@ const char * llama_flash_attn_type_name(enum llama_flash_attn_type flash_attn_ty
     GGML_ABORT("fatal error");
 }
 
+void llama_set_custom_logs(bool enable) {
+    ggml_set_custom_logs(enable);
+}
+
 struct llama_sampler_chain_params llama_sampler_chain_default_params() {
     struct llama_sampler_chain_params result = {
         /*.no_perf =*/ true,

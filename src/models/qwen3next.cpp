@@ -120,7 +120,45 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
     ggml_tensor * inp_pos     = build_inp_pos();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
+    // Build layer schedule with optional looping (RYS: Repeat Your Self)
+    std::vector<int> layer_schedule;
     for (int il = 0; il < n_layer; ++il) {
+        layer_schedule.push_back(il);
+    }
+
+    // Insert loop iterations if configured
+    if (cparams.loop_count > 0 && cparams.loop_layer_start >= 0 && cparams.loop_layer_stop >= cparams.loop_layer_start) {
+        // Find the position after the last layer in the loop block (first occurrence)
+        int insert_after = -1;
+        for (size_t i = 0; i < layer_schedule.size(); ++i) {
+            if (layer_schedule[i] == cparams.loop_layer_stop) {
+                insert_after = (int) i;
+                break;
+            }
+        }
+        if (insert_after >= 0) {
+            for (int lc = 0; lc < cparams.loop_count; ++lc) {
+                std::vector<int> loop_layers;
+                for (int il = cparams.loop_layer_start; il <= cparams.loop_layer_stop; ++il) {
+                    loop_layers.push_back(il);
+                }
+                layer_schedule.insert(layer_schedule.begin() + insert_after + 1 + lc * (int) loop_layers.size(),
+                                      loop_layers.begin(), loop_layers.end());
+            }
+        }
+        LLAMA_LOG_INFO("%s: RYS layer looping enabled: layers %d-%d repeated %d times, "
+                       "effective layers: %zu (original: %ld)\n",
+                       __func__, cparams.loop_layer_start, cparams.loop_layer_stop,
+                       cparams.loop_count, layer_schedule.size(), n_layer);
+    } else if (cparams.custom_logs) {
+        LLAMA_LOG_INFO("%s: RYS layer looping disabled (loop_count=%d, loop_layer_start=%d, loop_layer_stop=%d)\n",
+                       __func__, cparams.loop_count, cparams.loop_layer_start, cparams.loop_layer_stop);
+    }
+
+    // Iterate over the layer schedule
+    for (size_t sched_idx = 0; sched_idx < layer_schedule.size(); ++sched_idx) {
+        const int il = layer_schedule[sched_idx];
+
         ggml_tensor * inpSA = inpL;
 
         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
@@ -137,7 +175,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (sched_idx == layer_schedule.size() - 1 && inp_out_ids) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }

@@ -2047,6 +2047,8 @@ int llama_perplexity(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+    llama_set_custom_logs(params.custom_logs);
+
     // load the model and apply lora adapter, if any
     auto llama_init = common_init_from_params(params);
 

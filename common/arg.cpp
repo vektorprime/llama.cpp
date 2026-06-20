@@ -1485,6 +1485,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_COMPLETION}));
     add_opt(common_arg(
+        {"--loop-layer-start"}, "N",
+        "first layer of the loop block (default: -1 = disabled)",
+        [](common_params & params, int value) {
+            params.loop_layer_start = value;
+        }
+    ));
+    add_opt(common_arg(
+        {"--loop-layer-stop"}, "N",
+        "last layer of the loop block, inclusive (default: -1 = disabled)",
+        [](common_params & params, int value) {
+            params.loop_layer_stop = value;
+        }
+    ));
+    add_opt(common_arg(
+        {"--loop-count"}, "N",
+        "number of extra loop iterations (default: 1)",
+        [](common_params & params, int value) {
+            params.loop_count = value;
+        }
+    ));
+    add_opt(common_arg(
+        {"--custom-logs"},
+        "enable debug logging for custom operations",
+        [](common_params & params) {
+            params.custom_logs = true;
+        }
+    ));
+    add_opt(common_arg(
         {"--prompt-cache"}, "FNAME",
         "file to cache prompt state for faster startup (default: none)",
         [](common_params & params, const std::string & value) {

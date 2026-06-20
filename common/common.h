@@ -445,6 +445,10 @@ struct common_params {
     int32_t grp_attn_n            =     1; // group-attention factor
     int32_t grp_attn_w            =   512; // group-attention width
     int32_t n_print               =    -1; // print token count every n tokens (-1 = disabled)
+    int32_t loop_layer_start      =    -1; // first layer of the loop block (-1 = disabled)
+    int32_t loop_layer_stop       =    -1; // last layer of the loop block, inclusive (-1 = disabled)
+    int32_t loop_count            =     1; // number of extra loop iterations
+    bool    custom_logs           = false; // enable debug logging
     float   rope_freq_base        =  0.0f; // RoPE base frequency
     float   rope_freq_scale       =  0.0f; // RoPE frequency scaling factor
     float   yarn_ext_factor       = -1.0f; // YaRN extrapolation mix factor

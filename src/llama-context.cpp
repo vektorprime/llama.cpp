@@ -71,6 +71,11 @@ llama_context::llama_context(
     cparams.no_perf                 = params.no_perf;
     cparams.warmup                  = false;
 
+    cparams.loop_layer_start = params.loop_layer_start;
+    cparams.loop_layer_stop  = params.loop_layer_stop;
+    cparams.loop_count       = params.loop_count;
+    cparams.custom_logs      = params.custom_logs;
+
     cparams.embeddings_layer_inp.resize(hparams.n_layer(), false);
     embd_layer_inp.resize(hparams.n_layer());
 
@@ -3475,6 +3480,10 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.loop_layer_start            =*/ -1,
+        /*.loop_layer_stop             =*/ -1,
+        /*.loop_count                  =*/ 1,
+        /*.custom_logs                 =*/ false,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,
