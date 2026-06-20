@@ -976,6 +976,51 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             (long long)dst->ne[0], (long long)dst->ne[1], (long long)dst->ne[2], (long long)dst->ne[3],
             dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3],
             (long long)n_tokens);
+
+        // Host-side validation: compare first 4 rows, token 0 with CPU ref
+        if (ggml_custom_logs_enabled() && w->type == GGML_TYPE_Q4_0 && n_rows_out > 0 && n_blocks_per_row > 0) {
+            const int64_t block_bytes = (int64_t)ggml_type_size(GGML_TYPE_Q4_0);
+            const int64_t row_bytes = (int64_t)n_blocks_per_row * block_bytes;
+            int64_t n_rows_check = std::min(n_rows_out, (int64_t)4);
+
+            // Read weights and first token's activation
+            std::vector<uint8_t> w_data(row_bytes * n_rows_check);
+            CUDA_CHECK(cudaMemcpy(w_data.data(), w->data, row_bytes * n_rows_check, cudaMemcpyDeviceToHost));
+
+            std::vector<float> x_data(n_cols_x);
+            if (n_cols_x > 0) {
+                CUDA_CHECK(cudaMemcpy(x_data.data(), x_d, n_cols_x * sizeof(float), cudaMemcpyDeviceToHost));
+            }
+
+            // Read GPU output (first n_rows_check values = token 0, rows 0..n_rows_check-1)
+            std::vector<float> gpu_out(n_rows_check);
+            CUDA_CHECK(cudaMemcpy(gpu_out.data(), dst->data, n_rows_check * sizeof(float), cudaMemcpyDeviceToHost));
+
+            float max_diff = 0;
+            for (int64_t r = 0; r < n_rows_check; r++) {
+                std::vector<float> w_cpu(n_blocks_per_row * 32);
+                const uint8_t * row_data = w_data.data() + r * row_bytes;
+                for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                    half d_half;
+                    memcpy(&d_half, row_data + bk * block_bytes, 2);
+                    float d = __half2float(d_half);
+                    for (int j = 0; j < 32; j++) {
+                        uint8_t byte = row_data[bk * block_bytes + 2 + j/2];
+                        int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                        w_cpu[bk * 32 + j] = d * (nibble - 8);
+                    }
+                }
+                float cpu_val = 0;
+                for (int64_t k = 0; k < n_blocks_per_row * 32 && k < n_cols_x; k++) {
+                    cpu_val += w_cpu[k] * x_data[k];
+                }
+                float diff = fabs(cpu_val - gpu_out[r]);
+                if (diff > max_diff) max_diff = diff;
+            }
+            fprintf(stderr, "[fused-validate] %s: max_diff=%.2e across %lld rows (token 0 only)\n",
+                w->name ? w->name : "?", max_diff, (long long)n_rows_check);
+            fflush(stderr);
+        }
         fflush(stderr);
     }
 
