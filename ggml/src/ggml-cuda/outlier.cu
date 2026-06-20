@@ -899,10 +899,16 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         cudaStreamSynchronize(stream);
 
         // Read more output: enough for row 0 token 0 and row 0 token 1
-        int64_t n_read = std::min(n_rows_out + 1, n_rows_out * n_tokens);
-        n_read = std::min(n_read, (int64_t)256);
+        int64_t n_read = std::min(n_rows_out + 2, n_rows_out * n_tokens);
+        n_read = std::min(n_read, (int64_t)8192);
         std::vector<float> vals(n_read);
         CUDA_CHECK(cudaMemcpy(vals.data(), dst->data, n_read * sizeof(float), cudaMemcpyDeviceToHost));
+
+        // Also directly read token 1, row 0 (at offset n_rows_out)
+        float val_tok1_row0 = NAN;
+        if (n_tokens > 1 && n_rows_out < n_rows_out * n_tokens) {
+            CUDA_CHECK(cudaMemcpy(&val_tok1_row0, (float*)dst->data + n_rows_out, sizeof(float), cudaMemcpyDeviceToHost));
+        }
 
         // CPU reference: compare row 0 and row 1, token 0 and token 1
         if (w->type == GGML_TYPE_Q4_0 && n_rows_out > 1 && n_tokens > 1 && n_blocks_per_row > 0
@@ -952,7 +958,7 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             }
 
             float gpu_00 = vals[0];
-            float gpu_01 = (n_rows_out < n_read) ? vals[n_rows_out] : NAN;
+            float gpu_01 = val_tok1_row0;
             float gpu_10 = (1 < n_read) ? vals[1] : NAN;
             float gpu_11 = (n_rows_out + 1 < n_read) ? vals[n_rows_out + 1] : NAN;
 
