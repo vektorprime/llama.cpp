@@ -226,7 +226,9 @@ bool llama_hparams::is_recr(uint32_t il) const {
         return is_recr_impl[il];
     }
 
-    GGML_ABORT("%s: il (%u) out of bounds (n_layer_all: %u)\n", __func__, il, n_layer_all);
+    // Allow out-of-range il for RYS duplicated-layer KV cache slots.
+    // These are always non-recurrent attention layers.
+    return false;
 }
 
 uint32_t llama_hparams::n_pos_per_embd() const {
@@ -238,7 +240,9 @@ bool llama_hparams::is_swa(uint32_t il) const {
         return is_swa_impl[il];
     }
 
-    GGML_ABORT("%s: il (%u) out of bounds (n_layer_all: %u)\n", __func__, il, n_layer_all);
+    // Allow out-of-range il for RYS duplicated-layer KV cache slots.
+    // These are never SWA layers.
+    return false;
 }
 
 bool llama_hparams::is_mla() const {

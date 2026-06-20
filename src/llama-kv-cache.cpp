@@ -1213,8 +1213,11 @@ void llama_kv_cache::add_kv_layer(const llama_model & model, int32_t il_src, int
     ggml_tensor * k = ggml_new_tensor_3d(ctx, type_k(), n_embd_k_gqa_cur, kv_size_cur, n_stream);
     ggml_tensor * v = ggml_new_tensor_3d(ctx, type_v(), n_embd_v_gqa_cur, kv_size_cur, n_stream);
 
-    ggml_format_name(k, "cache_k_l%d", il_kv);
-    ggml_format_name(v, "cache_v_l%d", il_kv);
+    // Use il_src in the tensor name so the tensor-split meta code parses a valid
+    // layer index for is_recr/is_swa checks, reference-tensor lookups, and split-state
+    // computation. Same name as the original ensures identical split layout.
+    ggml_format_name(k, "cache_k_l%d", il_src);
+    ggml_format_name(v, "cache_v_l%d", il_src);
 
     std::vector<ggml_tensor *> k_stream, v_stream;
     for (uint32_t s = 0; s < n_stream; ++s) {
