@@ -1126,7 +1126,6 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
                 res->op_params[2] = (int32_t)ob->value_type;
-                res = ggml_cont(ctx0, res);  // HYPOTHESIS: force contiguous to fix graph integration
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);

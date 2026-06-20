@@ -880,38 +880,46 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     const bool is_q4_0  = (w->type == GGML_TYPE_Q4_0);
     const bool is_single = (value_type_i32 == 4); // LLAMA_OUTLIER_VALUE_TYPE_BF16_SINGLE
 
+    const int64_t n_total_out = n_rows_out * n_tokens;
     dim3 block_dim(32, 1, 1);  // one warp — avoids race on output write
     dim3 grid_dim(n_rows_out, n_tokens, 1);
 
     const float * x_d = (const float *) x->data;
 
-    // HYPOTHESIS TEST: full device sync to flush all prior work
-    cudaDeviceSynchronize();
+    // APPROACH B: temp buffer to isolate kernel output from graph allocator aliasing.
+    // The graph allocator may alias dst->data with input buffers. Writing to a
+    // separate temp buffer, then copying to dst->data, prevents mid-kernel corruption.
+    float * tmp_d = nullptr;
+    CUDA_CHECK(cudaMalloc(&tmp_d, n_total_out * sizeof(float)));
 
     if (is_q4_0 && is_single) {
         const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
-        float * dst_d = (float *) dst->data;
 
         fused_outlier_q4_0_kernel<<<grid_dim, block_dim, 0, stream>>>(
-                w_q4_d, x_d, idx_d, values_d, dst_d,
+                w_q4_d, x_d, idx_d, values_d, tmp_d,
                 n_rows_out, n_cols_all, n_cols_x, col_offset, x_stride,
                 n_tokens, n_blocks_per_row, n_outlier_blocks,
                 row_ptr_d, block_col_d, value_type_i32);
     } else {
         const char * w_data_d = (const char *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
-        float * dst_d = (float *) dst->data;
         const int32_t w_type_size = (int32_t) ggml_type_size(w->type);
 
         fused_outlier_generic_kernel<<<grid_dim, block_dim, 0, stream>>>(
-                w_data_d, x_d, idx_d, values_d, dst_d,
+                w_data_d, x_d, idx_d, values_d, tmp_d,
                 n_rows_out, n_cols_all, n_cols_x, col_offset, x_stride,
                 n_tokens, n_blocks_per_row, n_outlier_blocks,
                 row_ptr_d, block_col_d, w_type_size, value_type_i32);
     }
 
     CUDA_CHECK(cudaGetLastError());
+
+    // Copy temp buffer → dst->data (preserves graph allocator buffer management)
+    float * dst_d = (float *) dst->data;
+    CUDA_CHECK(cudaMemcpyAsync(dst_d, tmp_d, n_total_out * sizeof(float),
+                               cudaMemcpyDeviceToDevice, stream));
+    CUDA_CHECK(cudaFreeAsync(tmp_d, stream));
 
     // Quick sanity: verify fused output has non-zero values
     static int sanity_count = 0;
