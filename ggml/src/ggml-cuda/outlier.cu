@@ -896,43 +896,61 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         int64_t n_check = std::min((int64_t)32, n_rows_out * n_tokens);
         CUDA_CHECK(cudaMemcpy(vals, dst->data, n_check * sizeof(float), cudaMemcpyDeviceToHost));
 
-        // CPU reference: dequantize first row and compare with GPU output
-        if (w->type == GGML_TYPE_Q4_0 && n_rows_out > 0 && n_blocks_per_row > 0
+        // CPU reference: compare row 0 and row 1, token 0 and token 1
+        if (w->type == GGML_TYPE_Q4_0 && n_rows_out > 1 && n_tokens > 1 && n_blocks_per_row > 0
                 && n_blocks_per_row * 18 < 65536) {
             const int64_t block_bytes = (int64_t)ggml_type_size(GGML_TYPE_Q4_0); // 18
-            // Copy all Q4_0 blocks for row 0 to host
-            int64_t n_copy = (int64_t)n_blocks_per_row * block_bytes;
-            std::vector<uint8_t> q4_row(n_copy);
-            CUDA_CHECK(cudaMemcpy(q4_row.data(), w->data, n_copy, cudaMemcpyDeviceToHost));
+            const int64_t row_bytes = (int64_t)n_blocks_per_row * block_bytes;
 
-            // Copy first token's activation to host
-            std::vector<float> x_buf(n_cols_x, 0.0f);
-            if (n_tokens > 0 && n_cols_x > 0) {
+            // Copy all Q4_0 blocks for row 0 and row 1 to host
+            int64_t n_copy = row_bytes * 2;
+            std::vector<uint8_t> q4_rows(n_copy);
+            CUDA_CHECK(cudaMemcpy(q4_rows.data(), w->data, n_copy, cudaMemcpyDeviceToHost));
+
+            // Copy token 0 and token 1 activations to host
+            std::vector<float> x_buf(n_cols_x * 2, 0.0f);
+            if (n_cols_x > 0 && x_stride >= n_cols_x) {
                 CUDA_CHECK(cudaMemcpy(x_buf.data(), x_d, n_cols_x * sizeof(float), cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemcpy(x_buf.data() + n_cols_x, x_d + x_stride, n_cols_x * sizeof(float), cudaMemcpyDeviceToHost));
             }
 
-            // Dequantize entire row 0 on CPU
-            std::vector<float> w_cpu(n_blocks_per_row * 32);
-            for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
-                half d_half;
-                memcpy(&d_half, q4_row.data() + bk * block_bytes, 2);
-                float d = __half2float(d_half);
-                for (int j = 0; j < 32; j++) {
-                    uint8_t byte = q4_row[bk * block_bytes + 2 + j/2];
-                    int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
-                    w_cpu[bk * 32 + j] = d * (nibble - 8);
+            auto dequant_row = [&](int row, float * w_out) {
+                const uint8_t * row_data = q4_rows.data() + row * row_bytes;
+                for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                    half d_half;
+                    memcpy(&d_half, row_data + bk * block_bytes, 2);
+                    float d = __half2float(d_half);
+                    for (int j = 0; j < 32; j++) {
+                        uint8_t byte = row_data[bk * block_bytes + 2 + j/2];
+                        int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                        w_out[bk * 32 + j] = d * (nibble - 8);
+                    }
                 }
-            }
+            };
 
-            // CPU dot product for row 0, token 0
-            float cpu_dot = 0.0f;
+            std::vector<float> w0(n_blocks_per_row * 32);
+            std::vector<float> w1(n_blocks_per_row * 32);
+            dequant_row(0, w0.data());
+            dequant_row(1, w1.data());
+
+            float cpu_00 = 0, cpu_01 = 0, cpu_10 = 0, cpu_11 = 0;
+            const float * x0 = x_buf.data();
+            const float * x1 = x_buf.data() + n_cols_x;
             for (int64_t k = 0; k < n_blocks_per_row * 32 && k < n_cols_x; k++) {
-                cpu_dot += w_cpu[k] * x_buf[k];
+                cpu_00 += w0[k] * x0[k];
+                cpu_01 += w0[k] * x1[k];
+                cpu_10 += w1[k] * x0[k];
+                cpu_11 += w1[k] * x1[k];
             }
 
-            fprintf(stderr, "[fused-ref] %s: n_blocks_per_row=%lld cpu_dot=%.6f gpu_out=%.6f diff=%.2e\n",
-                w->name ? w->name : "?", (long long)n_blocks_per_row,
-                cpu_dot, vals[0], fabs(cpu_dot - vals[0]));
+            float gpu_00 = vals[0];
+            float gpu_01 = (n_rows_out < (int64_t)n_check) ? NAN : vals[n_rows_out];
+            float gpu_10 = vals[1];
+            float gpu_11 = (n_rows_out + 1 < (int64_t)n_check) ? NAN : vals[n_rows_out + 1];
+
+            fprintf(stderr, "[fused-ref] %s: cpu(0,0)=%.4f gpu=%.4f | cpu(0,1)=%.4f gpu=%.4f | cpu(1,0)=%.4f gpu=%.4f | cpu(1,1)=%.4f gpu=%.4f\n",
+                w->name ? w->name : "?",
+                cpu_00, gpu_00, cpu_01, gpu_01, cpu_10, gpu_10, cpu_11, gpu_11);
             fflush(stderr);
         }
 
