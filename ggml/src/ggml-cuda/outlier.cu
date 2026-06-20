@@ -623,6 +623,9 @@ static __global__ void fused_outlier_q4_0_kernel(
 
     // First thread writes result
     if (tid == 0) {
+        if (row == 0 && token == 0) {
+            sum += 99.0f; // marker to verify kernel executes
+        }
         dst[row + token * n_rows_out] = sum;
     }
 }
