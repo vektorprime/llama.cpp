@@ -2326,6 +2326,11 @@ ggml_tensor * llm_graph_context::build_attn(
 
     const int attn_cache_il = (cache_il >= 0) ? cache_il : il;
 
+    if (cparams.custom_logs && attn_cache_il != il) {
+        LLAMA_LOG_INFO("%s: REMAPPED path: il=%d cache_il=%d attn_cache_il=%d\n",
+                       __func__, il, cache_il, attn_cache_il);
+    }
+
     if (inp->self_k_rot) {
         q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot);
         k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot);

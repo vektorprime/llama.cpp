@@ -183,6 +183,15 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         LLAMA_LOG_INFO("%s: RYS layer looping enabled: layers %d-%d repeated %d times, effective layers: %zu (original: %d)\n",
                        __func__, cparams.loop_layer_start, cparams.loop_layer_stop,
                        cparams.loop_count, layer_schedule.size(), (int) n_layer);
+        if (cparams.custom_logs) {
+            LLAMA_LOG_INFO("%s:   schedule size=%zu insert_after=%d loop_block_size=%d\n",
+                           __func__, layer_schedule.size(), insert_after,
+                           cparams.loop_layer_stop - cparams.loop_layer_start + 1);
+            for (int il = cparams.loop_layer_start; il <= cparams.loop_layer_stop && il < (int)n_layer; ++il) {
+                LLAMA_LOG_INFO("%s:   loop layer il=%d is %s\n", __func__, il,
+                               hparams.is_recr(il) ? "recurrent (GDN)" : "attention (self-attn)");
+            }
+        }
     } else if (cparams.custom_logs) {
         LLAMA_LOG_INFO("%s: RYS layer looping disabled (loop_count=%d, loop_layer_start=%d, loop_layer_stop=%d)\n",
                        __func__, cparams.loop_count, cparams.loop_layer_start, cparams.loop_layer_stop);
@@ -190,15 +199,31 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     // Pre-compute extra KV cache keys for duplicated attention layers.
     // Must match the il_kv assignment in llama_model::create_memory.
-    std::unordered_map<int, int> il_to_extra_kv;
+    // il_to_extra_kv[il] = vector of il_kv values, one per repeated occurrence.
+    std::unordered_map<int, std::vector<int>> il_to_extra_kv;
     if (cparams.loop_count > 0 && cparams.loop_layer_start >= 0 && cparams.loop_layer_stop >= cparams.loop_layer_start) {
         int il_kv = (int) hparams.n_layer_all;
         for (int il = cparams.loop_layer_start; il <= cparams.loop_layer_stop; il++) {
             if (il < (int) n_layer && !hparams.is_recr(il)) {
-                il_to_extra_kv[il] = il_kv;
-                il_kv++;
+                for (int lc = 0; lc < cparams.loop_count; lc++) {
+                    il_to_extra_kv[il].push_back(il_kv);
+                    il_kv++;
             }
         }
+        if (cparams.custom_logs && !il_to_extra_kv.empty()) {
+            const int extra_slots = il_kv - (int)hparams.n_layer_all;
+            LLAMA_LOG_INFO("%s: il_to_extra_kv map (%zu attention layers, %d total extra slots, n_layer_all=%u):\n",
+                           __func__, il_to_extra_kv.size(), extra_slots, hparams.n_layer_all);
+            for (const auto & [il, kv_list] : il_to_extra_kv) {
+                std::string vals;
+                for (size_t j = 0; j < kv_list.size(); ++j) {
+                    if (j > 0) vals += ", ";
+                    vals += std::to_string(kv_list[j]);
+                }
+                LLAMA_LOG_INFO("%s:   il=%d -> il_kv=[%s]\n", __func__, il, vals.c_str());
+            }
+        }
+    }
     }
 
     // Iterate over the layer schedule
@@ -207,6 +232,12 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     for (size_t sched_idx = 0; sched_idx < layer_schedule.size(); ++sched_idx) {
         const int il = layer_schedule[sched_idx];
         const int occ = layer_occ[il]++;
+
+        if (cparams.custom_logs) {
+            LLAMA_LOG_INFO("%s: sched_idx=%zu il=%d occ=%d type=%s\n",
+                           __func__, sched_idx, il, occ,
+                           hparams.is_recr(il) ? "recr" : "attn");
+        }
 
         res->t_layer_inp[il] = inpL;
 
@@ -227,8 +258,15 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
             if (occ > 0) {
                 auto it = il_to_extra_kv.find(il);
                 if (it != il_to_extra_kv.end()) {
-                    cache_il = it->second;
+                    int occ_idx = occ - 1;
+                    if (occ_idx < (int) it->second.size()) {
+                        cache_il = it->second[occ_idx];
+                    }
                 }
+            }
+            if (cparams.custom_logs) {
+                LLAMA_LOG_INFO("%s:   attn cache_il=%d (il=%d occ=%d remapped=%d)\n",
+                               __func__, cache_il, il, occ, cache_il != il);
             }
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il, cache_il);
         }
