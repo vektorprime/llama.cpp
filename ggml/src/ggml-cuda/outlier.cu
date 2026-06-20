@@ -559,13 +559,6 @@ static __global__ void fused_outlier_q4_0_kernel(
     const int tid = threadIdx.x;
     const int block_size = blockDim.x;
 
-    // DEBUG: check if token=1 blocks execute
-    if (row == 0 && token == 1 && tid == 0) {
-        printf("[fused-tok1] n_blocks_per_row=%lld n_cols_x=%lld x_stride=%lld x[0]=%.4f x[stride]=%.4f\n",
-            (long long)n_blocks_per_row, (long long)n_cols_x, (long long)x_stride,
-            x[0], x[x_stride]);
-    }
-
     float sum = 0.0f;
 
     for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
@@ -575,7 +568,7 @@ static __global__ void fused_outlier_q4_0_kernel(
         const float d = __half2float(q4block->d);
 
         // CSR lookup: check if this block has a delta
-        const bool SKIP_DELTAS = true; // DEBUG: isolate delta correctness
+        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
         bool has_delta = false;
         float delta_val = 0.0f;
         int   delta_pos = -1;
@@ -592,7 +585,6 @@ static __global__ void fused_outlier_q4_0_kernel(
             }
         }
         has_delta = (delta_idx >= 0);
-        if (SKIP_DELTAS) has_delta = false;
 
         // Pre-load single-outlier delta if present (3 bytes per block)
         if (has_delta && values_idx >= 0 && values_idx < (int32_t)n_outlier_blocks) {
