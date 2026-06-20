@@ -1106,7 +1106,10 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     // Determine if we should use the fused outlier matmul (Proposal 4.2)
-    const bool use_fused = model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
+    // DISABLED: the fused path introduces buffer aliasing in the GGML graph allocator.
+    // The non-fused path (standard matmul + sparse correction + acc_inplace) works correctly.
+    // Re-enable after fixing graph allocator buffer reuse for 4-src ops.
+    const bool use_fused = false; // model.fuse_outlier_matmul() && w && model.has_outlier_blocks(w);
 
     ggml_tensor * res = nullptr;
 
