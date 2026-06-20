@@ -52,7 +52,12 @@ uint32_t llama_hparams::n_head(uint32_t il) const {
         return n_head_arr[il];
     }
 
-    GGML_ABORT("fatal error");
+    // RYS duplicated-layer KV cache slots: return max head count (safe for sizing)
+    uint32_t max_val = 0;
+    for (uint32_t i = 0; i < n_layer_all; i++) {
+        max_val = std::max(max_val, n_head_arr[i]);
+    }
+    return max_val;
 }
 
 uint32_t llama_hparams::n_head_kv(uint32_t il) const {
@@ -60,7 +65,12 @@ uint32_t llama_hparams::n_head_kv(uint32_t il) const {
         return n_head_kv_arr[il];
     }
 
-    GGML_ABORT("fatal error");
+    // RYS duplicated-layer KV cache slots: return max KV head count
+    uint32_t max_val = 0;
+    for (uint32_t i = 0; i < n_layer_all; i++) {
+        max_val = std::max(max_val, n_head_kv_arr[i]);
+    }
+    return max_val;
 }
 
 uint32_t llama_hparams::n_ff(uint32_t il) const {
@@ -68,7 +78,12 @@ uint32_t llama_hparams::n_ff(uint32_t il) const {
         return n_ff_arr[il];
     }
 
-    GGML_ABORT("fatal error");
+    // RYS duplicated-layer KV cache slots: return max FF dim
+    uint32_t max_val = 0;
+    for (uint32_t i = 0; i < n_layer_all; i++) {
+        max_val = std::max(max_val, n_ff_arr[i]);
+    }
+    return max_val;
 }
 
 uint32_t llama_hparams::n_gqa(uint32_t il) const {
@@ -87,7 +102,8 @@ uint32_t llama_hparams::n_rot(uint32_t il) const {
         return is_swa(il) ? n_rot_swa : n_rot_full;
     }
 
-    GGML_ABORT("fatal error");
+    // RYS duplicated-layer KV cache slots: return full rotation dim
+    return n_rot_full;
 }
 
 uint32_t llama_hparams::n_embd_inp() const {
@@ -117,7 +133,8 @@ uint32_t llama_hparams::n_embd_head_k(uint32_t il) const {
         return is_swa(il) ? n_embd_head_k_swa : n_embd_head_k_full;
     }
 
-    GGML_ABORT("fatal error");
+    // RYS duplicated-layer KV cache slots: return full head dim (non-SWA)
+    return n_embd_head_k_full;
 }
 
 uint32_t llama_hparams::n_embd_head_v(uint32_t il) const {
@@ -125,7 +142,8 @@ uint32_t llama_hparams::n_embd_head_v(uint32_t il) const {
         return is_swa(il) ? n_embd_head_v_swa : n_embd_head_v_full;
     }
 
-    GGML_ABORT("fatal error");
+    // RYS duplicated-layer KV cache slots: return full head dim (non-SWA)
+    return n_embd_head_v_full;
 }
 
 uint32_t llama_hparams::n_embd_k_gqa(uint32_t il) const {

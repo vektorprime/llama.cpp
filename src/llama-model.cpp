@@ -1904,6 +1904,10 @@ void llama_model::print_info() const {
 }
 
 ggml_backend_dev_t llama_model::dev_layer(int il) const {
+    // Clamp to valid range for RYS extra KV cache slots (which use synthetic il values)
+    if ((uint32_t) il >= hparams.n_layer_all && !pimpl->dev_layer.empty()) {
+        return pimpl->dev_layer[0].dev;
+    }
     return pimpl->dev_layer.at(il).dev;
 }
 
@@ -1989,15 +1993,18 @@ ggml_tensor * llama_model::get_rope_factors(const llama_cparams & cparams, int i
     const uint32_t n_ctx_seq = cparams.n_ctx_seq;
 
     // choose long/short freq factors based on the context size
-    if (layers[il].rope_freqs != nullptr) {
-        return layers[il].rope_freqs;
+    // Clamp il for RYS extra KV cache slots
+    const uint32_t il_clamped = il < hparams.n_layer_all ? il : (hparams.n_layer_all - 1);
+
+    if (layers[il_clamped].rope_freqs != nullptr) {
+        return layers[il_clamped].rope_freqs;
     }
 
     if (n_ctx_seq > hparams.n_ctx_orig_yarn) {
-        return layers[il].rope_long;
+        return layers[il_clamped].rope_long;
     }
 
-    return layers[il].rope_short;
+    return layers[il_clamped].rope_short;
 }
 
 llama_memory_i * llama_model::create_memory(const llama_memory_params & params, const llama_cparams & cparams) const {
