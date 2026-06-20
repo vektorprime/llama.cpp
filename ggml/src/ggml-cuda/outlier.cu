@@ -559,10 +559,11 @@ static __global__ void fused_outlier_q4_0_kernel(
     const int tid = threadIdx.x;
     const int block_size = blockDim.x;
 
-    // DEBUG: token 1 assertion
+    // DEBUG: check if token=1 blocks execute
     if (row == 0 && token == 1 && tid == 0) {
-        dst[row + token * n_rows_out] = 12345.0f;
-        return;
+        printf("[fused-tok1] n_blocks_per_row=%lld n_cols_x=%lld x_stride=%lld x[0]=%.4f x[stride]=%.4f\n",
+            (long long)n_blocks_per_row, (long long)n_cols_x, (long long)x_stride,
+            x[0], x[x_stride]);
     }
 
     float sum = 0.0f;
@@ -897,10 +898,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         // Synchronize to ensure kernel has completed
         cudaStreamSynchronize(stream);
 
-        // Check first 32 output elements
-        float vals[32];
-        int64_t n_check = std::min((int64_t)32, n_rows_out * n_tokens);
-        CUDA_CHECK(cudaMemcpy(vals, dst->data, n_check * sizeof(float), cudaMemcpyDeviceToHost));
+        // Read more output: enough for row 0 token 0 and row 0 token 1
+        int64_t n_read = std::min(n_rows_out + 1, n_rows_out * n_tokens);
+        n_read = std::min(n_read, (int64_t)256);
+        std::vector<float> vals(n_read);
+        CUDA_CHECK(cudaMemcpy(vals.data(), dst->data, n_read * sizeof(float), cudaMemcpyDeviceToHost));
 
         // CPU reference: compare row 0 and row 1, token 0 and token 1
         if (w->type == GGML_TYPE_Q4_0 && n_rows_out > 1 && n_tokens > 1 && n_blocks_per_row > 0
@@ -950,9 +952,9 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             }
 
             float gpu_00 = vals[0];
-            float gpu_01 = (n_rows_out < (int64_t)n_check) ? NAN : vals[n_rows_out];
-            float gpu_10 = vals[1];
-            float gpu_11 = (n_rows_out + 1 < (int64_t)n_check) ? NAN : vals[n_rows_out + 1];
+            float gpu_01 = (n_rows_out < n_read) ? vals[n_rows_out] : NAN;
+            float gpu_10 = (1 < n_read) ? vals[1] : NAN;
+            float gpu_11 = (n_rows_out + 1 < n_read) ? vals[n_rows_out + 1] : NAN;
 
             fprintf(stderr, "[fused-ref] %s: cpu(0,0)=%.4f gpu=%.4f | cpu(0,1)=%.4f gpu=%.4f | cpu(1,0)=%.4f gpu=%.4f | cpu(1,1)=%.4f gpu=%.4f\n",
                 w->name ? w->name : "?",
@@ -965,10 +967,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         }
 
         int nz = 0, nn = 0;
-        for (int64_t i = 0; i < n_check; i++) {
+        for (int64_t i = 0; i < n_read && i < 32; i++) {
             if (vals[i] != 0.0f) nz++;
             if (isnan(vals[i])) nn++;
         }
+        int64_t n_check = std::min(n_read, (int64_t)32);
         fprintf(stderr, "[fused-sanity] %s ne=[%lld,%lld] nz=%d/%lld nan=%d vals=[%g,%g,%g] stride=%lld n_cols_x=%lld n_tokens=%lld\n",
             w->name ? w->name : "?",
             (long long)n_rows_out, (long long)n_tokens,
