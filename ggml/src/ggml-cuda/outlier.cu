@@ -877,16 +877,23 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     CUDA_CHECK(cudaGetLastError());
 
-    // Quick sanity: verify fused output is not all zeros by checking first element
+    // Quick sanity: verify fused output has non-zero values
     static int sanity_count = 0;
     if (sanity_count < 2) {
         sanity_count++;
-        float first_val = 0.0f;
-        CUDA_CHECK(cudaMemcpy(&first_val, dst->data, sizeof(float), cudaMemcpyDeviceToHost));
-        bool is_nan = isnan(first_val);
-        fprintf(stderr, "[fused-sanity] %s first_val=%g isnan=%d n_rows=%lld n_tokens=%lld\n",
-            w->name ? w->name : "?", first_val, is_nan,
-            (long long)n_rows_out, (long long)n_tokens);
+        // Check first 32 output elements (entire first row)
+        float vals[32];
+        int64_t n_check = std::min((int64_t)32, n_rows_out * n_tokens);
+        CUDA_CHECK(cudaMemcpy(vals, dst->data, n_check * sizeof(float), cudaMemcpyDeviceToHost));
+        int nz = 0, nn = 0;
+        for (int64_t i = 0; i < n_check; i++) {
+            if (vals[i] != 0.0f) nz++;
+            if (isnan(vals[i])) nn++;
+        }
+        fprintf(stderr, "[fused-sanity] %s ne=[%lld,%lld] nz=%d/%lld nan=%d\n",
+            w->name ? w->name : "?",
+            (long long)n_rows_out, (long long)n_tokens,
+            nz, (long long)n_check, nn);
         fflush(stderr);
     }
 
