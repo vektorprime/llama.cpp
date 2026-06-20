@@ -921,10 +921,9 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
                                cudaMemcpyDeviceToDevice, stream));
     CUDA_CHECK(cudaFreeAsync(tmp_d, stream));
 
-    // Quick sanity: verify fused output has non-zero values
-    static int sanity_count = 0;
-    bool run_sanity = (sanity_count < 3) || ggml_custom_logs_enabled();
-    if (run_sanity) {
+    // Quick sanity: verify fused output has non-zero values (only with --custom-logs)
+    if (ggml_custom_logs_enabled()) {
+        static int sanity_count = 0;
         sanity_count++;
         // Synchronize to ensure kernel has completed
         cudaStreamSynchronize(stream);
@@ -1219,8 +1218,8 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         fflush(stderr);
     }
 
-    // SENTINEL TEST: detect post-handler buffer corruption
-    {
+    // SENTINEL TEST: detect post-handler buffer corruption (only with --custom-logs)
+    if (ggml_custom_logs_enabled()) {
         static void * prev_dst_data = nullptr;
         static int64_t prev_n_elements = 0;
         static float prev_sentinel_val = 0;
