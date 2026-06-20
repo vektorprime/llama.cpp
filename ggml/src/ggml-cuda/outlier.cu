@@ -508,6 +508,12 @@ void ggml_cuda_op_mul_mat_outlier_blocks_merged(ggml_backend_cuda_context & ctx,
 // Each thread block loops over all blocks in its assigned row.
 // ============================================================================
 
+// Q8_0 block layout for direct access in kernel
+typedef struct {
+    uint16_t d;
+    char qs[32];
+} block_q8_0_cuda;
+
 // Q4_0 block layout for direct access in kernel
 typedef struct {
     half  d;
