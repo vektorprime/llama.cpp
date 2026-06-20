@@ -1121,19 +1121,20 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             gpu_values = ob->values;
 
             if (gpu_idx && gpu_values) {
-                // Fused path (in-place via view, matches non-fused pattern):
-                // 1. Standard matmul: allocates buffer B (kept alive by view)
-                // 2. Fused op: writes result into B via src[4] pointer
-                // 3. Return a VIEW of B — keeps B alive until all consumers are done
+                // Fused path (in-place via acc_inplace, matches non-fused pattern):
+                // 1. Standard matmul: allocates buffer B (computed but wasted)
+                // 2. Fused op: computes full result (matmul + deltas)
+                // 3. Scale standard matmul to 0, then acc fused → standard matmul
+                //    The VIEW from acc_inplace keeps buffer B alive.
                 ggml_tensor * res_base = ggml_mul_mat(ctx0, w, cur_perm);
                 ggml_tensor * fused = ggml_mul_mat_outlier_fused(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
                 fused->op_params[2] = (int32_t)ob->value_type;
-                // Tell handler: write output to res_base->data instead of fused->data
-                fused->src[4] = res_base;
-                // Return view of res_base — keeps buffer alive for downstream
-                res = ggml_view_tensor(ctx0, res_base);
+                // Zero out res_base (waste standard matmul), then accumulate fused
+                res_base = ggml_scale_inplace(ctx0, res_base, 0.0f);
+                res = ggml_acc_inplace(ctx0, res_base, fused,
+                        res_base->nb[1], res_base->nb[2], res_base->nb[3], 0);
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: res=%p name='%s' op=%s, res_base=%p, fused=%p\n",
                             w->name, (void*)res, res->name, ggml_op_name(res->op),

@@ -915,11 +915,8 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     CUDA_CHECK(cudaGetLastError());
 
-    // Copy temp buffer → the real output target
-    // If src[4] is set, write to src[4]->data (the standard matmul output that
-    // downstream consumers read from). Otherwise write to dst->data directly.
-    ggml_tensor * write_target = (dst->src[4] != nullptr) ? dst->src[4] : dst;
-    float * dst_d = (float *) write_target->data;
+    // Copy temp buffer → dst->data (preserves graph allocator buffer management)
+    float * dst_d = (float *) dst->data;
     CUDA_CHECK(cudaMemcpyAsync(dst_d, tmp_d, n_total_out * sizeof(float),
                                cudaMemcpyDeviceToDevice, stream));
     CUDA_CHECK(cudaFreeAsync(tmp_d, stream));
