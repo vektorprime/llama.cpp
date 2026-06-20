@@ -885,6 +885,9 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     const float * x_d = (const float *) x->data;
 
+    // HYPOTHESIS TEST: full device sync to flush all prior work
+    cudaDeviceSynchronize();
+
     if (is_q4_0 && is_single) {
         const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
