@@ -1038,67 +1038,81 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     CUDA_CHECK(cudaGetLastError());
 
-    // Debug: dump first output elements AND check for any non-zero
+    // Debug: CPU reference computation to verify fused kernel
     static bool debug_dump = (getenv("HERMES_DEBUG_FUSED") != nullptr);
     if (debug_dump) {
         static int dump_count = 0;
-        static bool first = true;
-        if (first) {
-            first = false;
-            fprintf(stderr, "[fused-debug] values tensor: type=%d ne=[%lld,%lld] nb=[%zu,%zu]\n",
-                (int)values->type,
-                (long long)values->ne[0], (long long)values->ne[1],
-                values->nb[0], values->nb[1]);
-            fflush(stderr);
-        }
-        if (dump_count < 5) {
+        if (dump_count < 3) {
             dump_count++;
-            int64_t n_dump = std::min((int64_t)16, n_rows_out * n_tokens);
-            int64_t total_elems = n_rows_out * n_tokens;
-            std::vector<float> host_dump(n_dump);
-            CUDA_CHECK(cudaMemcpy(host_dump.data(), dst->data, n_dump * sizeof(float), cudaMemcpyDeviceToHost));
 
-            // Check sparse sample: 100 random positions
-            int64_t n_sample = std::min((int64_t)100, total_elems);
-            std::vector<int64_t> sample_idx(n_sample);
-            std::vector<float> sample_vals(n_sample);
-            for (int64_t i = 0; i < n_sample; i++) {
-                sample_idx[i] = (i * total_elems) / n_sample;
-            }
-            for (int64_t i = 0; i < n_sample; i++) {
-                CUDA_CHECK(cudaMemcpy(&sample_vals[i],
-                    (float*)dst->data + sample_idx[i],
-                    sizeof(float), cudaMemcpyDeviceToHost));
-            }
-            int64_t nz_sample = 0;
-            for (int64_t i = 0; i < n_sample; i++) {
-                if (sample_vals[i] != 0.0f) nz_sample++;
-            }
+            // Only verify Q4_0 tensors
+            if (w->type == GGML_TYPE_Q4_0 && n_tokens >= 1) {
+                int64_t n_rows_ref = std::min(n_rows_out, (int64_t)4);
+                int64_t n_tok_ref  = std::min(n_tokens,   (int64_t)1);
 
-            // Also dump first weight block raw bytes
-            uint8_t w_raw[18] = {};
-            if (w->type == GGML_TYPE_Q4_0 && w->data) {
-                CUDA_CHECK(cudaMemcpy(w_raw, w->data, 18, cudaMemcpyDeviceToHost));
-            }
+                // Copy GPU output to host
+                std::vector<float> gpu_out(n_rows_ref * n_tok_ref);
+                CUDA_CHECK(cudaMemcpy(gpu_out.data(), dst->data,
+                    n_rows_ref * n_tok_ref * sizeof(float), cudaMemcpyDeviceToHost));
 
-            uint16_t d_raw = ((uint16_t)w_raw[1] << 8) | w_raw[0];
-            float d_val = 0.0f;
-            if (w->type == GGML_TYPE_Q4_0 && w->data) {
-                half h; memcpy(&h, &d_raw, 2); d_val = __half2float(h);
-            }
+                // Copy weights to host (up to 8 blocks)
+                int64_t n_blocks_copy = std::min(n_blocks_per_row * n_rows_ref, (int64_t)8);
+                std::vector<uint8_t> w_host(n_blocks_copy * 18);
+                if (w->data) {
+                    CUDA_CHECK(cudaMemcpy(w_host.data(), w->data,
+                        n_blocks_copy * 18, cudaMemcpyDeviceToHost));
+                }
 
-            fprintf(stderr, "[fused-debug] %s ne=[%lld,%lld] vt=%d n_out=%lld nz_sample=%lld/%lld nca=%lld nbpr=%lld",
-                    w->name ? w->name : "(unnamed)",
+                // Copy activations to host
+                int64_t x_needed = std::min(n_cols_x, (int64_t)(n_blocks_per_row * 32));
+                std::vector<float> x_host(x_needed * n_tok_ref);
+                if (x->data) {
+                    CUDA_CHECK(cudaMemcpy(x_host.data(), x->data,
+                        x_needed * n_tok_ref * sizeof(float), cudaMemcpyDeviceToHost));
+                }
+
+                // Compute reference on CPU
+                fprintf(stderr, "[fused-ref] %s ne=[%lld,%lld] nca=%lld nbpr=%lld col_off=%lld x_stride=%lld\n",
+                    w->name ? w->name : "?",
                     (long long)n_rows_out, (long long)n_tokens,
-                    value_type_i32, (long long)n_outlier_blocks,
-                    (long long)nz_sample, (long long)n_sample,
-                    (long long)n_cols_all, (long long)n_blocks_per_row);
-            fprintf(stderr, " first_vals=[");
-            for (int64_t i = 0; i < n_dump; i++) {
-                fprintf(stderr, "%s%g", i ? "," : "", host_dump[i]);
+                    (long long)n_cols_all, (long long)n_blocks_per_row,
+                    (long long)col_offset, (long long)x_stride);
+
+                for (int64_t r = 0; r < n_rows_ref; r++) {
+                    for (int64_t t = 0; t < n_tok_ref; t++) {
+                        float cpu_sum = 0.0f;
+                        for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                            int64_t wi = r * n_blocks_per_row + bk;
+                            if (wi >= n_blocks_copy) break;
+                            const uint8_t * blk = &w_host[wi * 18];
+                            uint16_t d_raw = ((uint16_t)blk[1] << 8) | blk[0];
+                            half h; memcpy(&h, &d_raw, 2);
+                            float d = __half2float(h);
+                            for (int j = 0; j < 32; j++) {
+                                int64_t cg = bk * 32 + j;
+                                if (cg < col_offset || cg >= col_offset + n_cols_x) continue;
+                                if (cg >= n_cols_all) continue;
+                                const uint8_t * qs = blk + 2;
+                                uint8_t byte = qs[j >> 1];
+                                uint8_t nib = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                                float w_val = d * ((float)(int)nib - 8.0f);
+                                int64_t cl = cg - col_offset;
+                                if (cl >= x_needed) break;
+                                float a = x_host[cl + t * x_stride];
+                                cpu_sum += w_val * a;
+                            }
+                        }
+                        int64_t out_idx = r + t * n_rows_ref;
+                        float gpu_val = gpu_out[out_idx];
+                        float diff = cpu_sum - gpu_val;
+                        if (fabsf(diff) > 1e-5f || fabsf(cpu_sum) > 1e-5f) {
+                            fprintf(stderr, "[fused-ref]   [%lld,%lld] cpu=%g gpu=%g diff=%g\n",
+                                (long long)r, (long long)t, cpu_sum, gpu_val, diff);
+                        }
+                    }
+                }
+                fflush(stderr);
             }
-            fprintf(stderr, "] w_d=%g w_ne0=%lld\n", d_val, (long long)w->ne[0]);
-            fflush(stderr);
         }
     }
 
