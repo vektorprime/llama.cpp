@@ -1211,6 +1211,48 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         fflush(stderr);
     }
 
+    // SENTINEL TEST: detect post-handler buffer corruption
+    {
+        static void * prev_dst_data = nullptr;
+        static int64_t prev_n_elements = 0;
+        static float prev_sentinel_val = 0;
+        static const char * prev_name = nullptr;
+        static int sentinel_generation = 0;
+
+        if (prev_dst_data && prev_n_elements > 0) {
+            // Read back the sentinel from the previous tensor's last element
+            float readback = NAN;
+            size_t offset = (prev_n_elements - 1) * sizeof(float);
+            cudaMemcpy(&readback, (const char*)prev_dst_data + offset, sizeof(float),
+                       cudaMemcpyDeviceToHost);
+            if (fabs(readback - prev_sentinel_val) > 1e-10) {
+                fprintf(stderr, "[SENTINEL-CORRUPTED] gen=%d prev=%s: sentinel overwritten! "
+                       "expected=%.6f got=%.6f → BUFFER ALIASING CONFIRMED\n",
+                       sentinel_generation - 1, prev_name ? prev_name : "?",
+                       prev_sentinel_val, readback);
+            } else {
+                fprintf(stderr, "[sentinel-ok] gen=%d prev=%s: sentinel intact (%.6f)\n",
+                       sentinel_generation - 1, prev_name ? prev_name : "?",
+                       readback);
+            }
+        }
+
+        // Write a new sentinel to the current output tensor's last element
+        if (ggml_nelements(dst) > 0) {
+            prev_dst_data = dst->data;
+            prev_n_elements = ggml_nelements(dst);
+            prev_name = w->name;
+            sentinel_generation++;
+            prev_sentinel_val = 12345.6789f + (float)sentinel_generation * 0.001f;
+            size_t offset = (prev_n_elements - 1) * sizeof(float);
+            cudaMemcpy((char*)dst->data + offset, &prev_sentinel_val, sizeof(float),
+                       cudaMemcpyHostToDevice);
+            fprintf(stderr, "[sentinel-set] gen=%d %s: set %.6f at element %lld/%lld\n",
+                   sentinel_generation, prev_name ? prev_name : "?",
+                   prev_sentinel_val, (long long)(prev_n_elements - 1), (long long)prev_n_elements);
+        }
+    }
+
     // Note: row_ptr_d / block_col_d are cached, not freed here.
     // They live for the lifetime of the idx tensor (entire process).
 }
