@@ -585,6 +585,7 @@ static __global__ void fused_outlier_q4_0_kernel(
             }
         }
         has_delta = (delta_idx >= 0);
+        has_delta = false; // DEBUG: skip deltas
 
         // Pre-load single-outlier delta if present (3 bytes per block)
         if (has_delta && values_idx >= 0 && values_idx < (int32_t)n_outlier_blocks) {
