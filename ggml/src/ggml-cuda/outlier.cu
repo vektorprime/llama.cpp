@@ -568,13 +568,11 @@ static __global__ void fused_outlier_q4_0_kernel(
         const float d = __half2float(q4block->d);
 
         // CSR lookup: check if this block has a delta
-        // SKIP_DELTAS: temporary debug — set to true to isolate base Q4_0
-        const bool SKIP_DELTAS = true;
+        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
         bool has_delta = false;
         float delta_val = 0.0f;
         int   delta_pos = -1;
 
-        if (!SKIP_DELTAS) {
         int32_t delta_idx = -1;
         int32_t values_idx = -1;
         const int32_t r_start = row_ptr[row];
@@ -596,7 +594,6 @@ static __global__ void fused_outlier_q4_0_kernel(
             delta_val = __bfloat162float(bf16);
             delta_pos = (int)p[2];
         }
-        } // !SKIP_DELTAS
 
         for (int32_t j = tid; j < 32; j += block_size) {
             const int64_t col_global = col0 + j;
