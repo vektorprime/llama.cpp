@@ -784,7 +784,7 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     const int64_t n_cols_all      = ggml_get_op_params_i32(dst, 1);
     const int32_t value_type_i32   = ggml_get_op_params_i32(dst, 2);
     const int64_t n_outlier_blocks = idx->ne[1];
-    const int64_t n_tokens         = x->ne[1];
+    const int64_t n_tokens         = x->ne[1] * x->ne[2] * x->ne[3]; // total across batch dims
     const int64_t n_cols_x         = x->ne[0];
     const int64_t x_stride         = x->nb[1] / (int64_t)sizeof(float);
     const int64_t n_blocks_per_row = n_cols_all / 32;
@@ -797,7 +797,7 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     }
 
     GGML_ASSERT(dst->ne[0] == n_rows_out);
-    GGML_ASSERT(dst->ne[1] == n_tokens);
+    GGML_ASSERT(ggml_nelements(dst) == n_rows_out * n_tokens);  // n_tokens includes batch dims
     GGML_ASSERT(n_cols_x <= n_cols_all);
 
     cudaStream_t stream = ctx.stream();

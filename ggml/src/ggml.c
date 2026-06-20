@@ -3406,8 +3406,13 @@ struct ggml_tensor * ggml_mul_mat_outlier_fused(
     GGML_ASSERT(x->ne[0] <= n_cols);
 
     const int64_t n_tokens = x->ne[1];
-    const int64_t ne[4] = { n_rows_out, n_tokens, 1, 1 };
-    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 2, ne);
+    // Preserve batch dimensions like standard ggml_mul_mat does
+    const int64_t ne[4] = { n_rows_out, n_tokens, x->ne[2], x->ne[3] };
+    int n_dims = 2;
+    if (x->ne[2] > 1 || x->ne[3] > 1) {
+        n_dims = (x->ne[3] > 1) ? 4 : ((x->ne[2] > 1) ? 3 : 2);
+    }
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, n_dims, ne);
 
     result->op     = GGML_OP_MUL_MAT_OUTLIER_FUSED;
     result->src[0] = w;
