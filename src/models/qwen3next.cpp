@@ -146,8 +146,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
                                       loop_layers.begin(), loop_layers.end());
             }
         }
-        LLAMA_LOG_INFO("%s: RYS layer looping enabled: layers %d-%d repeated %d times, "
-                       "effective layers: %zu (original: %ld)\n",
+        LLAMA_LOG_INFO("%s: RYS layer looping enabled: layers %d-%d repeated %d times, effective layers: %zu (original: %d)\n",
                        __func__, cparams.loop_layer_start, cparams.loop_layer_stop,
                        cparams.loop_count, layer_schedule.size(), n_layer);
     } else if (cparams.custom_logs) {
