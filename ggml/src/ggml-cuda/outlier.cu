@@ -879,8 +879,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
 
     // Quick sanity: verify fused output has non-zero values
     static int sanity_count = 0;
-    if (sanity_count < 2) {
+    if (sanity_count < 3) {
         sanity_count++;
+        // Synchronize to ensure kernel has completed
+        cudaStreamSynchronize(stream);
+
         // Check first 32 output elements (entire first row)
         float vals[32];
         int64_t n_check = std::min((int64_t)32, n_rows_out * n_tokens);
