@@ -8,6 +8,18 @@
 #include <unordered_map>
 #include <vector>
 
+// Q8_0 block layout for direct access in kernel
+typedef struct {
+    uint16_t d;
+    char qs[32];
+} block_q8_0_cuda;
+
+// Q4_0 block layout for direct access in kernel
+typedef struct {
+    half  d;
+    uint8_t qs[16];
+} block_q4_0_cuda;
+
 // Kernel: sparse BF16 outlier block correction for Q8_0_BF16_OUTLIER
 //
 // For each outlier block, compute:
@@ -507,18 +519,6 @@ void ggml_cuda_op_mul_mat_outlier_blocks_merged(ggml_backend_cuda_context & ctx,
 // Block: 256 threads
 // Each thread block loops over all blocks in its assigned row.
 // ============================================================================
-
-// Q8_0 block layout for direct access in kernel
-typedef struct {
-    uint16_t d;
-    char qs[32];
-} block_q8_0_cuda;
-
-// Q4_0 block layout for direct access in kernel
-typedef struct {
-    half  d;
-    uint8_t qs[16];
-} block_q4_0_cuda;
 
 #define FUSED_BLOCK_SIZE 256
 
