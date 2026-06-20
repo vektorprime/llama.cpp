@@ -2063,6 +2063,12 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 } else if (llm_arch_is_hybrid(arch) && !mtp_on_hybrid_qwen35) {
                     // The main difference between hybrid architectures is the
                     // layer filters, so pick the right one here
+                    const bool is_qwen35_rys =
+                        (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE) &&
+                        cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP &&
+                        cparams.loop_count > 0 &&
+                        cparams.loop_layer_start >= 0 &&
+                        cparams.loop_layer_stop >= cparams.loop_layer_start;
                     llama_memory_hybrid::layer_filter_cb filter_attn = nullptr;
                     llama_memory_hybrid::layer_filter_cb filter_recr = nullptr;
                     if (arch == LLM_ARCH_FALCON_H1) {
@@ -2123,6 +2129,24 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
                             /* filter_recr       */ std::move(filter_recr));
+
+                        // Expand KV cache for duplicated attention layers (RYS)
+                        if (is_qwen35_rys) {
+                            auto * mem_hybrid = static_cast<llama_memory_hybrid *>(res);
+                            auto * kv_cache   = mem_hybrid->get_mem_attn();
+
+                            const int n_layer_trunk = (int) hparams.n_layer();
+                            int il_kv = (int) hparams.n_layer_all;
+
+                            for (int il = cparams.loop_layer_start; il <= cparams.loop_layer_stop; il++) {
+                                if (il < n_layer_trunk && !hparams.is_recr(il)) {
+                                    for (int lc = 0; lc < cparams.loop_count; lc++) {
+                                        kv_cache->add_kv_layer(*this, il, il_kv);
+                                        il_kv++;
+                                    }
+                                }
+                            }
+                        }
                     }
                 } else {
                     llama_kv_cache::layer_filter_cb filter = nullptr;

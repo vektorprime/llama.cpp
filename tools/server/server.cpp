@@ -89,6 +89,8 @@ int llama_server(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+    llama_set_custom_logs(params.custom_logs);
+
     // router server never loads a model and must not touch the GPU
     const bool is_router_server = params.model.path.empty()
                                && params.model.hf_repo.empty();

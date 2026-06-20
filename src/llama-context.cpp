@@ -3568,6 +3568,17 @@ llama_context * llama_init_from_model(
 
     try {
         auto * ctx = new llama_context(*model, params);
+
+        // Log RYS (Repeat Your Self) layer looping configuration
+        if (params.loop_count > 0 && params.loop_layer_start >= 0 && params.loop_layer_stop >= params.loop_layer_start) {
+            LLAMA_LOG_INFO("%s: RYS layer looping: layers %d-%d repeated %dx (model has %d layers)\n",
+                           __func__,
+                           params.loop_layer_start,
+                           params.loop_layer_stop,
+                           params.loop_count,
+                           static_cast<int>(model->hparams.n_layer()));
+        }
+
         return ctx;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: failed to initialize the context: %s\n", __func__, err.what());

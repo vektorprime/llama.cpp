@@ -161,6 +161,18 @@ public:
     ggml_type type_k() const;
     ggml_type type_v() const;
 
+    // Add a KV cache layer for a duplicated attention layer (RYS)
+    // il_src: original layer index (for dimensions and device placement)
+    // il_kv:  virtual layer index used as KV cache key
+    void add_kv_layer(const llama_model & model, int32_t il_src, int32_t il_kv);
+
+    // Get K/V views using `cache_il` for slot lookup but `dim_il` for hparams dimensions
+    ggml_tensor * get_k_remapped(ggml_context * ctx, int32_t cache_il, int32_t dim_il, uint32_t n_kv, const slot_info & sinfo) const;
+    ggml_tensor * get_v_remapped(ggml_context * ctx, int32_t cache_il, int32_t dim_il, uint32_t n_kv, const slot_info & sinfo) const;
+
+    // Get the number of layers in the map (for checking if cache_il exists)
+    bool has_cache_key(int32_t il) const;
+
     //
     // graph_build API
     //
@@ -376,6 +388,10 @@ public:
     //   - v_idxs [n_tokens] or [n_tokens*n_embd_v_gqa] depending if V cache is transposed
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const;
+
+    // Remapped KV cache access: use cache_il for slot lookup, dim_il for hparams dimensions
+    ggml_tensor * get_k_remapped(ggml_context * ctx, int32_t cache_il, int32_t dim_il) const;
+    ggml_tensor * get_v_remapped(ggml_context * ctx, int32_t cache_il, int32_t dim_il) const;
 
     // create destination indices for each head of the current batch for where it would be written in the KV cache
     // the indices address the global KV cache (not per stream) - this is not relevant for the user of this API, but

@@ -148,7 +148,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
         }
         LLAMA_LOG_INFO("%s: RYS layer looping enabled: layers %d-%d repeated %d times, effective layers: %zu (original: %d)\n",
                        __func__, cparams.loop_layer_start, cparams.loop_layer_stop,
-                       cparams.loop_count, layer_schedule.size(), n_layer);
+                       cparams.loop_count, layer_schedule.size(), (int) n_layer);
     } else if (cparams.custom_logs) {
         LLAMA_LOG_INFO("%s: RYS layer looping disabled (loop_count=%d, loop_layer_start=%d, loop_layer_stop=%d)\n",
                        __func__, cparams.loop_count, cparams.loop_layer_start, cparams.loop_layer_stop);

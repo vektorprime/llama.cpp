@@ -182,15 +182,31 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         }
         LLAMA_LOG_INFO("%s: RYS layer looping enabled: layers %d-%d repeated %d times, effective layers: %zu (original: %d)\n",
                        __func__, cparams.loop_layer_start, cparams.loop_layer_stop,
-                       cparams.loop_count, layer_schedule.size(), n_layer);
+                       cparams.loop_count, layer_schedule.size(), (int) n_layer);
     } else if (cparams.custom_logs) {
         LLAMA_LOG_INFO("%s: RYS layer looping disabled (loop_count=%d, loop_layer_start=%d, loop_layer_stop=%d)\n",
                        __func__, cparams.loop_count, cparams.loop_layer_start, cparams.loop_layer_stop);
     }
 
+    // Pre-compute extra KV cache keys for duplicated attention layers.
+    // Must match the il_kv assignment in llama_model::create_memory.
+    std::unordered_map<int, int> il_to_extra_kv;
+    if (cparams.loop_count > 0 && cparams.loop_layer_start >= 0 && cparams.loop_layer_stop >= cparams.loop_layer_start) {
+        int il_kv = (int) hparams.n_layer_all;
+        for (int il = cparams.loop_layer_start; il <= cparams.loop_layer_stop; il++) {
+            if (il < (int) n_layer && !hparams.is_recr(il)) {
+                il_to_extra_kv[il] = il_kv;
+                il_kv++;
+            }
+        }
+    }
+
     // Iterate over the layer schedule
+    std::unordered_map<int, int> layer_occ; // track occurrences for KV cache routing
+
     for (size_t sched_idx = 0; sched_idx < layer_schedule.size(); ++sched_idx) {
         const int il = layer_schedule[sched_idx];
+        const int occ = layer_occ[il]++;
 
         res->t_layer_inp[il] = inpL;
 
@@ -206,8 +222,15 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
             // Linear attention layer (gated delta net)
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
         } else {
-            // Full attention layer
-            cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+            // Full attention layer - route duplicated layers to separate KV cache slots
+            int cache_il = il;
+            if (occ > 0) {
+                auto it = il_to_extra_kv.find(il);
+                if (it != il_to_extra_kv.end()) {
+                    cache_il = it->second;
+                }
+            }
+            cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il, cache_il);
         }
 
         if (sched_idx == layer_schedule.size() - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {
@@ -295,7 +318,8 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
         ggml_tensor *             cur,
         ggml_tensor *             inp_pos,
         int *                     sections,
-        int                       il) {
+        int                       il,
+        int                       cache_il) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
 
@@ -356,7 +380,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
 
     cur = build_attn(inp,
                 nullptr, nullptr, nullptr,
-                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il, cache_il);
     cb(cur, "attn_pregate", il);
 
     ggml_tensor * gate_sigmoid = ggml_sigmoid(ctx0, gate);

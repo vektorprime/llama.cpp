@@ -30,12 +30,15 @@ for il in 36..63: process normally
 Total effective layers: 64 + 12 = 76
 
 ## Target Model: Qwen3.6 27B
-- Architecture: `qwen3next` (LLM_ARCH_QWEN3NEXT)
-- Layers: 64
+- Architecture: `qwen35` (LLM_ARCH_QWEN35)
+- Layers: 64 trunk + 1 MTP = 65 total (hparams.n_layer_all=65, hparams.n_layer()=64)
 - Hidden Dim: 5120
+- FFN: Dense (not MoE), intermediate dim 17408
 - Attention: Gated DeltaNet (linear attn, recurrent) alternating with Gated Attention
   - Pattern: 3x(Gated DeltaNet -> FFN) -> 1x(Gated Attention -> FFN), repeated 16 times
   - Every 4th layer is full attention, others are linear attention
+- RoPE: MRoPE (multi-dimensional), rope_sections=[11,11,10]
+- MTP: supports speculative decoding via graph_mtp (qwen3_next)
 - Loop target: layers 24 to 35 (inclusive) -- 12 layers repeated once = 12 extra layer computations
 
 ## RYS Paper Summary (Qwen3.5-27B Pareto)
@@ -60,8 +63,9 @@ common_params (common/common.h)
   -> llama_context_params (include/llama.h)
     -> llama_cparams (src/llama-cparams.h)
       -> llm_graph_params (src/llama-graph.h)
-        -> model graph builder (src/models/qwen3next.cpp)
+        -> model graph builder (src/models/qwen35.cpp)
 ```
+Note: The arch tag in the GGUF file is `qwen35` (not `qwen3next`). Qwen3.6 27B is a dense model based on Qwen3.5, using the qwen35 architecture in llama.cpp. The qwen3next architecture is for Qwen3Next MoE models (e.g., 80B-A3B).
 
 ### Files Modified
 | File | Change |
@@ -75,7 +79,8 @@ common_params (common/common.h)
 | common/common.cpp | Wire common_params -> llama_context_params |
 | src/llama-cparams.h | Add RYS fields |
 | src/llama-context.cpp | Wire cparams from context_params + defaults |
-| src/models/qwen3next.cpp | Layer schedule with loop iterations |
+| src/models/qwen35.cpp | Layer schedule with loop iterations (trunk graph; MTP graph_mtp unaffected) |
+| src/models/qwen3next.cpp | Layer schedule with loop iterations (for MoE qwen3next models) |
 | tools/cli/cli.cpp | Wire llama_set_custom_logs |
 | tools/perplexity/perplexity.cpp | Wire llama_set_custom_logs |
 
@@ -98,8 +103,12 @@ No implementations for other hardware backends (Vulkan, Metal, SYCL, etc.).
 | custom_logs infra (ggml) | Done | Global flag in ggml.c, wrapper in llama.cpp |
 | CLI params (common) | Done | --loop-layer-start/stop/count, --custom-logs |
 | Data flow wiring | Done | common -> llama.h -> cparams -> graph builder |
-| Layer scheduling (qwen3next) | Done | layer_schedule vector with loop insertions |
+| Layer scheduling (qwen35 + qwen3next) | Done | layer_schedule vector with loop insertions |
+| RYS startup log (llama_init_from_model) | Done | Logs RYS params on context init for all tools |
 | custom_logs in llama-cli | Done | llama_set_custom_logs after backend_init |
 | custom_logs in llama-perplexity | Done | llama_set_custom_logs after backend_init |
-| Build on 10.0.0.188 | Pending | Remote build with CUDA |
-| Validation test | Pending | Test with Qwen3.6 27B, loop 24-35 |
+| Build on 10.0.0.188 | Done | CUDA Release build, 2x RTX 3080, sm_86 |
+| Validation test | Done | model counts to 100 correctly with 76 effective layers |
+| MTP compatibility verification | Done | graph_mtp unaffected; t_h_nextn includes looped layers |
+| KV cache expansion for dup layers | Done | add_kv_layer + remapped get_k/get_v via cache_il in build_attn |
+| custom_logs in llama-server | Done | llama_set_custom_logs wired in server.cpp |
