@@ -890,10 +890,50 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
         // Synchronize to ensure kernel has completed
         cudaStreamSynchronize(stream);
 
-        // Check first 32 output elements (entire first row)
+        // Check first 32 output elements
         float vals[32];
         int64_t n_check = std::min((int64_t)32, n_rows_out * n_tokens);
         CUDA_CHECK(cudaMemcpy(vals, dst->data, n_check * sizeof(float), cudaMemcpyDeviceToHost));
+
+        // CPU reference: dequantize first row and compare with GPU output
+        if (w->type == GGML_TYPE_Q4_0 && n_rows_out > 0 && n_blocks_per_row > 0
+                && n_blocks_per_row * 20 < 65536) {
+            // Copy all Q4_0 blocks for row 0 to host
+            int64_t n_copy = (int64_t)n_blocks_per_row * 20;
+            std::vector<uint8_t> q4_row(n_copy);
+            CUDA_CHECK(cudaMemcpy(q4_row.data(), w->data, n_copy, cudaMemcpyDeviceToHost));
+
+            // Copy first token's activation to host
+            std::vector<float> x_buf(n_cols_x, 0.0f);
+            if (n_tokens > 0 && n_cols_x > 0) {
+                CUDA_CHECK(cudaMemcpy(x_buf.data(), x_d, n_cols_x * sizeof(float), cudaMemcpyDeviceToHost));
+            }
+
+            // Dequantize entire row 0 on CPU
+            std::vector<float> w_cpu(n_blocks_per_row * 32);
+            for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                half d_half;
+                memcpy(&d_half, q4_row.data() + bk * 20, 2);
+                float d = __half2float(d_half);
+                for (int j = 0; j < 32; j++) {
+                    uint8_t byte = q4_row[bk * 20 + 2 + j/2];
+                    int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                    w_cpu[bk * 32 + j] = d * (nibble - 8);
+                }
+            }
+
+            // CPU dot product for row 0, token 0
+            float cpu_dot = 0.0f;
+            for (int64_t k = 0; k < n_blocks_per_row * 32 && k < n_cols_x; k++) {
+                cpu_dot += w_cpu[k] * x_buf[k];
+            }
+
+            fprintf(stderr, "[fused-ref] %s: n_blocks_per_row=%lld cpu_dot=%.6f gpu_out=%.6f diff=%.2e\n",
+                w->name ? w->name : "?", (long long)n_blocks_per_row,
+                cpu_dot, vals[0], fabs(cpu_dot - vals[0]));
+            fflush(stderr);
+        }
+
         int nz = 0, nn = 0;
         for (int64_t i = 0; i < n_check; i++) {
             if (vals[i] != 0.0f) nz++;
