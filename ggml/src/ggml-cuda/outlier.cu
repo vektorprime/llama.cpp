@@ -220,6 +220,9 @@ static void ggml_cuda_op_mul_mat_outlier_blocks_impl(
         return;
     }
 
+    // Zero output: kernel uses atomicAdd, so dst must start at zero
+    cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream);
+
     dim3 block_dim(OUTLIER_BLOCK_SIZE, 1, 1);
     dim3 grid_dim((uint32_t) n_blocks, (uint32_t) n_tokens, 1);
 
@@ -443,6 +446,9 @@ static void ggml_cuda_op_mul_mat_outlier_blocks_merged_impl(
     }
 
     GGML_UNUSED(n_blocks_total);
+
+    // Zero output: kernel uses atomicAdd, so dst must start at zero
+    cudaMemsetAsync(dst_d, 0, n_rows_out * n_tokens * sizeof(float), stream);
 
     if (ggml_custom_logs_enabled()) {
         fprintf(stderr, "[delta-cuda-merged] kernel launch: n_merged_runs=%lld n_tokens=%lld values_type=%s\n",
