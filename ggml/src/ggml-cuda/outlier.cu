@@ -951,6 +951,10 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             fprintf(stderr, "[fused-ref] %s: cpu(0,0)=%.4f gpu=%.4f | cpu(0,1)=%.4f gpu=%.4f | cpu(1,0)=%.4f gpu=%.4f | cpu(1,1)=%.4f gpu=%.4f\n",
                 w->name ? w->name : "?",
                 cpu_00, gpu_00, cpu_01, gpu_01, cpu_10, gpu_10, cpu_11, gpu_11);
+            // Print first activation values for both tokens
+            fprintf(stderr, "[fused-act] %s: x[0]=%.4f x[1]=%.4f x[2]=%.4f x[%lld]=%.4f x[%lld]=%.4f\n",
+                w->name ? w->name : "?", x0[0], x0[1], x0[2],
+                (long long)x_stride, x1[0], (long long)(x_stride+1), x1[1]);
             fflush(stderr);
         }
 
