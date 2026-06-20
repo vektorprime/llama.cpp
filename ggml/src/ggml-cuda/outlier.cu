@@ -971,13 +971,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             if (isnan(vals[i])) nn++;
         }
         int64_t n_check = std::min(n_read, (int64_t)32);
-        fprintf(stderr, "[fused-sanity] %s ne=[%lld,%lld] nz=%d/%lld nan=%d vals=[%g,%g,%g] stride=%lld n_cols_x=%lld n_tokens=%lld\n",
+        fprintf(stderr, "[fused-sanity] %s ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] n_tokens=%lld\n",
             w->name ? w->name : "?",
-            (long long)n_rows_out, (long long)n_tokens,
-            nz, (long long)n_check, nn,
-            vals[0], vals[1], vals[2],
-            (long long)x_stride, (long long)n_cols_x,
-            (long long)x->ne[1]);  // actual activation n_tokens
+            (long long)dst->ne[0], (long long)dst->ne[1], (long long)dst->ne[2], (long long)dst->ne[3],
+            dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3],
+            (long long)n_tokens);
         fflush(stderr);
     }
 
