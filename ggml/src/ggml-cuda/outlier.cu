@@ -568,7 +568,7 @@ static __global__ void fused_outlier_q4_0_kernel(
         const float d = __half2float(q4block->d);
 
         // CSR lookup: check if this block has a delta
-        // CSR is [2, n_outlier_blocks] pairs: (block_col, original_values_idx)
+        const bool SKIP_DELTAS = true; // DEBUG: isolate delta correctness
         bool has_delta = false;
         float delta_val = 0.0f;
         int   delta_pos = -1;
@@ -585,6 +585,7 @@ static __global__ void fused_outlier_q4_0_kernel(
             }
         }
         has_delta = (delta_idx >= 0);
+        if (SKIP_DELTAS) has_delta = false;
 
         // Pre-load single-outlier delta if present (3 bytes per block)
         if (has_delta && values_idx >= 0 && values_idx < (int32_t)n_outlier_blocks) {
