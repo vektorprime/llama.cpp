@@ -1121,20 +1121,16 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             gpu_values = ob->values;
 
             if (gpu_idx && gpu_values) {
-                // Fused path (in-place via acc_inplace, matches non-fused pattern):
-                // 1. Standard matmul: allocates buffer B (computed but wasted)
-                // 2. Fused op: computes full result (matmul + deltas)
-                // 3. Scale standard matmul to 0, then acc fused → standard matmul
-                //    The VIEW from acc_inplace keeps buffer B alive.
+                // Fused path: compute both standard matmul and fused matmul,
+                // then use ggml_cpy to copy fused output over standard matmul.
+                // The CPY result is a view of the standard matmul, which keeps
+                // its buffer alive (same mechanism as non-fused acc_inplace).
                 ggml_tensor * res_base = ggml_mul_mat(ctx0, w, cur_perm);
                 ggml_tensor * fused = ggml_mul_mat_outlier_fused(
                         ctx0, w, cur_perm, gpu_idx, gpu_values,
                         ob->n_rows_out, ob->n_cols);
                 fused->op_params[2] = (int32_t)ob->value_type;
-                // Zero out res_base (waste standard matmul), then accumulate fused
-                res_base = ggml_scale_inplace(ctx0, res_base, 0.0f);
-                res = ggml_acc_inplace(ctx0, res_base, fused,
-                        res_base->nb[1], res_base->nb[2], res_base->nb[3], 0);
+                res = ggml_cpy(ctx0, fused, res_base);
                 if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: res=%p name='%s' op=%s, res_base=%p, fused=%p\n",
                             w->name, (void*)res, res->name, ggml_op_name(res->op),
