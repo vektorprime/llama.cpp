@@ -1007,8 +1007,122 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
             dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3],
             (long long)n_tokens);
 
-        // Host-side validation: compare first 4 rows, token 0 with CPU ref
-        if (ggml_custom_logs_enabled() && w->type == GGML_TYPE_Q4_0 && n_rows_out > 0 && n_blocks_per_row > 0) {
+        // COMPREHENSIVE validation: check ALL rows and ALL tokens for the first fused tensor
+        static int validate_count = 0;
+        if (!ggml_custom_logs_enabled()) {
+            // skip — only run with --custom-logs
+        } else if (validate_count == 0 && w->type == GGML_TYPE_Q4_0 && n_rows_out > 0 && n_blocks_per_row > 0) {
+            validate_count = 1;
+            const int64_t block_bytes = (int64_t)ggml_type_size(GGML_TYPE_Q4_0);
+            const int64_t row_bytes = (int64_t)n_blocks_per_row * block_bytes;
+
+            // Limit to smaller tensors: skip huge ones (would be too slow)
+            if (n_rows_out * n_tokens <= 200000 && n_blocks_per_row * 18 < 65536) {
+                fprintf(stderr, "[fused-fullvalidate] %s: comparing ALL %lld rows x %lld tokens...\n",
+                    w->name ? w->name : "?", (long long)n_rows_out, (long long)n_tokens);
+
+                // Read full output tensor
+                int64_t n_total = n_rows_out * n_tokens;
+                std::vector<float> gpu_full(n_total);
+                CUDA_CHECK(cudaMemcpy(gpu_full.data(), dst->data, n_total * sizeof(float), cudaMemcpyDeviceToHost));
+
+                // Read all row weights
+                std::vector<uint8_t> w_full(row_bytes * n_rows_out);
+                CUDA_CHECK(cudaMemcpy(w_full.data(), w->data, row_bytes * n_rows_out, cudaMemcpyDeviceToHost));
+
+                // Read all token activations
+                std::vector<float> x_full(n_cols_x * n_tokens, 0.0f);
+                for (int64_t t = 0; t < n_tokens; t++) {
+                    if (t == 0 && n_cols_x > 0) {
+                        CUDA_CHECK(cudaMemcpy(x_full.data(), x_d, n_cols_x * sizeof(float), cudaMemcpyDeviceToHost));
+                    } else if (n_cols_x > 0) {
+                        CUDA_CHECK(cudaMemcpy(x_full.data() + t * n_cols_x, x_d + t * x_stride,
+                            n_cols_x * sizeof(float), cudaMemcpyDeviceToHost));
+                    }
+                }
+
+                // Read CSR for deltas
+                std::vector<int32_t> row_ptr_h(n_rows_out + 1);
+                std::vector<int32_t> block_col_h;
+                std::vector<uint8_t> values_h;
+                const bool has_csr = (row_ptr_d && block_col_d && values && n_outlier_blocks > 0);
+                if (has_csr) {
+                    CUDA_CHECK(cudaMemcpy(row_ptr_h.data(), row_ptr_d,
+                        (n_rows_out + 1) * sizeof(int32_t), cudaMemcpyDeviceToHost));
+                    int32_t n_csr = row_ptr_h[n_rows_out];
+                    if (n_csr > 0) {
+                        block_col_h.resize(n_csr * 2);
+                        CUDA_CHECK(cudaMemcpy(block_col_h.data(), block_col_d,
+                            n_csr * 2 * sizeof(int32_t), cudaMemcpyDeviceToHost));
+                        values_h.resize(n_csr * 3);
+                        CUDA_CHECK(cudaMemcpy(values_h.data(), values->data,
+                            n_csr * 3, cudaMemcpyDeviceToHost));
+                    }
+                }
+
+                double max_diff = 0;
+                int64_t worst_row = -1, worst_token = -1;
+                float worst_gpu = 0, worst_cpu = 0;
+
+                for (int64_t r = 0; r < n_rows_out; r++) {
+                    std::vector<float> w_cpu(n_blocks_per_row * 32);
+                    const uint8_t * row_data = w_full.data() + r * row_bytes;
+                    for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
+                        half d_half;
+                        memcpy(&d_half, row_data + bk * block_bytes, 2);
+                        float d = __half2float(d_half);
+                        for (int j = 0; j < 32; j++) {
+                            uint8_t byte = row_data[bk * block_bytes + 2 + j/2];
+                            int nibble = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+                            w_cpu[bk * 32 + j] = d * (nibble - 8);
+                        }
+                    }
+
+                    // Apply deltas
+                    if (has_csr && !block_col_h.empty()) {
+                        const int32_t r_start = row_ptr_h[r];
+                        const int32_t r_end   = row_ptr_h[r + 1];
+                        for (int32_t k = r_start; k < r_end; k++) {
+                            int32_t bcol = block_col_h[k * 2];
+                            int32_t vidx = block_col_h[k * 2 + 1];
+                            if (bcol >= 0 && bcol < (int32_t)n_blocks_per_row
+                                    && vidx >= 0 && vidx < (int32_t)n_outlier_blocks) {
+                                const uint8_t * vp = values_h.data() + vidx * 3;
+                                nv_bfloat16 bf16 = __ushort_as_bfloat16(((uint16_t)vp[1] << 8) | vp[0]);
+                                float dval = __bfloat162float(bf16);
+                                int dpos = (int)vp[2];
+                                if (dpos >= 0 && dpos < 32)
+                                    w_cpu[bcol * 32 + dpos] += dval;
+                            }
+                        }
+                    }
+
+                    for (int64_t t = 0; t < n_tokens; t++) {
+                        float cpu_val = 0;
+                        const float * x_tok = x_full.data() + t * n_cols_x;
+                        for (int64_t k = 0; k < n_blocks_per_row * 32 && k < n_cols_x; k++) {
+                            cpu_val += w_cpu[k] * x_tok[k];
+                        }
+                        float gpu_val = gpu_full[r + t * n_rows_out];
+                        double diff = fabs((double)cpu_val - (double)gpu_val);
+                        if (diff > max_diff) {
+                            max_diff = diff;
+                            worst_row = r; worst_token = t;
+                            worst_gpu = gpu_val; worst_cpu = cpu_val;
+                        }
+                    }
+                }
+
+                fprintf(stderr, "[fused-fullvalidate] %s: max_diff=%.6e (row=%lld tok=%lld gpu=%.6f cpu=%.6f) across %lld elements\n",
+                    w->name ? w->name : "?", max_diff,
+                    (long long)worst_row, (long long)worst_token, worst_gpu, worst_cpu,
+                    (long long)(n_rows_out * n_tokens));
+                fflush(stderr);
+            }
+        }
+
+        // Quick sanity: verify fused output has non-zero values
+        if (sanity_count < 3) {
             const int64_t block_bytes = (int64_t)ggml_type_size(GGML_TYPE_Q4_0);
             const int64_t row_bytes = (int64_t)n_blocks_per_row * block_bytes;
             int64_t n_rows_check = std::min(n_rows_out, (int64_t)4);
