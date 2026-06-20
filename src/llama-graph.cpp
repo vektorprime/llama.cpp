@@ -1134,6 +1134,10 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 // ggml_cpy writes to res_base->data in-place
                 res = ggml_cpy(ctx0, fused_raw, res_base);
                 if (ggml_custom_logs_enabled()) {
+                    fprintf(stderr, "[delta-graph-fused] %s: res=%p name='%s' op=%s, res_base=%p, fused_raw=%p\n",
+                            w->name, (void*)res, res->name, ggml_op_name(res->op),
+                            (void*)res_base, (void*)fused_raw);
+                if (ggml_custom_logs_enabled()) {
                     fprintf(stderr, "[delta-graph-fused] %s: FUSED outlier matmul, n_blocks=%lld n_rows=%lld n_cols=%lld\n",
                             w->name, (long long)ob->n_blocks, (long long)ob->n_rows_out, (long long)ob->n_cols);
                 }
@@ -1262,6 +1266,19 @@ ggml_tensor * llm_graph_context::build_lora_mm(
 
     if (w_s) {
         res = ggml_mul(ctx0, res, w_s);
+    }
+
+    if (ggml_custom_logs_enabled()) {
+        fprintf(stderr, "[build_lora_mm-return] %s: res=%p name='%s' op=%s ne=[%lld,%lld,%lld,%lld]\n",
+            w->name, (void*)res, res->name,
+            ggml_op_name(res->op),
+            (long long)res->ne[0], (long long)res->ne[1],
+            (long long)res->ne[2], (long long)res->ne[3]);
+        if (res->view_src) {
+            fprintf(stderr, "[build_lora_mm-return] %s: view_src=%p name='%s'\n",
+                w->name, (void*)res->view_src, res->view_src->name);
+        }
+        fflush(stderr);
     }
 
     return res;
