@@ -856,10 +856,11 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     dim3 block_dim(32, 1, 1);  // one warp — avoids race on output write
     dim3 grid_dim(n_rows_out, n_tokens, 1);
 
+    const float * x_d = (const float *) x->data;
+
     if (is_q4_0 && is_single) {
         const block_q4_0_cuda * w_q4_d = (const block_q4_0_cuda *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
-        const float * x_d = (const float *) x->data;
         float * dst_d = (float *) dst->data;
 
         fused_outlier_q4_0_kernel<<<grid_dim, block_dim, 0, stream>>>(
@@ -870,7 +871,6 @@ void ggml_cuda_op_mul_mat_outlier_fused(ggml_backend_cuda_context & ctx, ggml_te
     } else {
         const char * w_data_d = (const char *) w->data;
         const uint8_t * values_d = (const uint8_t *) values->data;
-        const float * x_d = (const float *) x->data;
         float * dst_d = (float *) dst->data;
         const int32_t w_type_size = (int32_t) ggml_type_size(w->type);
 
