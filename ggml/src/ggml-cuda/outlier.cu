@@ -559,6 +559,12 @@ static __global__ void fused_outlier_q4_0_kernel(
     const int tid = threadIdx.x;
     const int block_size = blockDim.x;
 
+    // DEBUG: token 1 assertion
+    if (row == 0 && token == 1 && tid == 0) {
+        dst[row + token * n_rows_out] = 12345.0f;
+        return;
+    }
+
     float sum = 0.0f;
 
     for (int64_t bk = 0; bk < n_blocks_per_row; bk++) {
