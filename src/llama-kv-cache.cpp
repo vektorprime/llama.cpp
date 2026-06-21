@@ -1197,8 +1197,16 @@ void llama_kv_cache::add_kv_layer(const llama_model & model, int32_t il_src, int
     const uint32_t n_embd_v_gqa_cur = hparams.n_embd_v_gqa(il_src);
     const uint32_t kv_size_cur       = get_size();
 
-    auto * dev  = model.dev_layer(il_src);
-    auto * buft = ggml_backend_dev_buffer_type(dev);
+    // Use the buffer type of the existing cache layer for il_src so the extra
+    // tensor lands on the same device and avoids meta-buffer split complications.
+    auto it = map_layer_ids.find(il_src);
+    ggml_backend_buffer_type_t buft = nullptr;
+    if (it != map_layer_ids.end()) {
+        buft = ggml_backend_buffer_get_type(layers[it->second].k->buffer);
+    } else {
+        auto * dev  = model.dev_layer(il_src);
+        buft = ggml_backend_dev_buffer_type(dev);
+    }
 
     ggml_init_params params = {
         /*.mem_size   =*/ ggml_tensor_overhead() * 2 * (1 + n_stream),

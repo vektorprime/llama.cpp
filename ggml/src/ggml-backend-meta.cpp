@@ -1187,7 +1187,14 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
                     }
                 }
                 if (!split_internal_offset) {
-                    t_ij->view_offs = t_ij->view_offs * ne[split_dim]/tensor->ne[split_dim];
+                    // Scale the view offset using the source tensor's split ratio,
+                    // not the view's split ratio. When the view and source have different
+                    // split axes (e.g., view split on heads, source split on embedding dim),
+                    // the scaling ratios differ.
+                    GGML_ASSERT(tensor->view_src->ne[split_dim_view_src] > 0);
+                    const size_t src_ne_local = t_ij->view_src->ne[split_dim_view_src];
+                    const size_t src_ne_full  = tensor->view_src->ne[split_dim_view_src];
+                    t_ij->view_offs = t_ij->view_offs * src_ne_local / src_ne_full;
                 }
             }
         }
