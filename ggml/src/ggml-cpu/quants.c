@@ -14,6 +14,8 @@
 #include <stdlib.h> // for qsort
 #include <stdio.h>  // for GGML_ASSERT
 
+
+extern bool g_scale_q4_k;  // defined in ggml-quants.c
 #define GROUP_MAX_EPS 1e-15f
 #define GROUP_MAX_EPS_IQ3_XXS 1e-8f
 #define GROUP_MAX_EPS_IQ2_S 1e-8f
@@ -676,10 +678,25 @@ void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
         const  int8_t * GGML_RESTRICT q8 = y[i].qs;
         memset(aux32, 0, 8*sizeof(int32_t));
         int8_t * GGML_RESTRICT a = aux8;
+        const uint8_t * q4_orig = x[i].qs;  // save for zero-nibble correction
         for (int j = 0; j < QK_K/64; ++j) {
-            for (int l = 0; l < 32; ++l) a[l] = (int8_t)(q4[l] & 0xF);
+            if (g_scale_q4_k) {
+                for (int l = 0; l < 32; ++l) {
+                    uint8_t nib = q4[l] & 0xF;
+                    a[l] = nib ? (int8_t)nib : (int8_t)1;
+                }
+            } else {
+                for (int l = 0; l < 32; ++l) a[l] = (int8_t)(q4[l] & 0xF);
+            }
             a += 32;
-            for (int l = 0; l < 32; ++l) a[l] = (int8_t)(q4[l]  >> 4);
+            if (g_scale_q4_k) {
+                for (int l = 0; l < 32; ++l) {
+                    uint8_t nib = q4[l] >> 4;
+                    a[l] = nib ? (int8_t)nib : (int8_t)1;
+                }
+            } else {
+                for (int l = 0; l < 32; ++l) a[l] = (int8_t)(q4[l] >> 4);
+            }
             a += 32; q4 += 32;
         }
         memcpy(utmp, x[i].scales, 12);
@@ -712,6 +729,30 @@ void ggml_vec_dot_q4_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
         for (int l = 0; l < 8; ++l) sums[l] += d * aux32[l];
         const float dmin = GGML_CPU_FP16_TO_FP32(x[i].dmin) * y[i].d;
         sumf -= dmin * sumi;
+
+        // Scale Q4_K correction: add back min for zero-nibble elements
+        if (g_scale_q4_k) {
+            const int8_t * q8_c = y[i].qs;
+            int is_c = 0;
+            for (int s = 0; s < QK_K/32; ++s) {
+                int sum_zero = 0;
+                const int q4_byte_off = (s/2) * 32;
+                const bool use_high = s & 1;
+                for (int l = 0; l < 32; ++l) {
+                    uint8_t nib = use_high ? (q4_orig[q4_byte_off + l] >> 4)
+                                           : (q4_orig[q4_byte_off + l] & 0xF);
+                    if (nib == 0) sum_zero += q8_c[s*32 + l];
+                }
+                if (sum_zero != 0) {
+                    sumf += dmin * mins[is_c] * (float)sum_zero;
+                    // sign-aware: unpack gave +d*sc*q8; if min>0 flip to -d*sc*q8
+                    if (mins[is_c] > 0) {
+                        sumf -= 2.0f * d * scales[is_c] * (float)sum_zero;
+                    }
+                }
+                is_c++;
+            }
+        }
     }
     for (int l = 0; l < 8; ++l) sumf += sums[l];
     *s = sumf;
@@ -792,6 +833,8 @@ void ggml_vec_dot_q5_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
         for (int l = 0; l < 8; ++l) sums[l] += d * aux32[l];
         const float dmin = GGML_CPU_FP16_TO_FP32(x[i].dmin) * y[i].d;
         sumf -= dmin * sumi;
+
+
     }
     for (int l = 0; l < 8; ++l) sumf += sums[l];
     *s = sumf;

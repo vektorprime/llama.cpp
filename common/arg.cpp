@@ -4122,6 +4122,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
+    add_opt(common_arg(
+        {"--scale-q4-k"},
+        {"--no-scale-q4-k"},
+        "enable Scale Q4_K mode: when nibble == 0, output scale value instead of -min*m (default: false)",
+        [](common_params & params, bool value) {
+            params.scale_q4_k = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_PERPLEXITY}));
+
+
     return ctx_arg;
 }
 

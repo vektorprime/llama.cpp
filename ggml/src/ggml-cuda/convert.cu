@@ -1,3 +1,6 @@
+// Scale Q4_K mode flag (host-settable via cudaMemcpyToSymbol)
+__device__ __constant__ bool g_cuda_scale_q4_k = false;  // defined here, extern in vecdotq.cuh
+
 #include "convert.cuh"
 #include "dequantize.cuh"
 
@@ -226,8 +229,15 @@ static __global__ void dequantize_block_q4_K(const void * __restrict__ vx, dst_t
     get_scale_min_k4(is + 1, x[i].scales, sc, m);
     const float d2 = dall * sc; const float m2 = dmin * m;
     for (int l = 0; l < n; ++l) {
-        y[l + 0] = d1 * (q[l] & 0xF) - m1;
-        y[l +32] = d2 * (q[l] >>  4) - m2;
+        const int n0 = q[l] & 0xF;
+        const int n1 = q[l] >> 4;
+        if (g_cuda_scale_q4_k) {
+            y[l + 0] = n0 ? (d1 * n0 - m1) : ((m1 > 0.0f) ? -d1 : d1);
+            y[l +32] = n1 ? (d2 * n1 - m2) : ((m2 > 0.0f) ? -d2 : d2);
+        } else {
+            y[l + 0] = d1 * n0 - m1;
+            y[l +32] = d2 * n1 - m2;
+        }
     }
 }
 
@@ -544,6 +554,13 @@ static void dequantize_row_q4_K_cuda(const void * vx, dst_t * y, const int64_t k
     const int nb = k / QK_K;
     dequantize_block_q4_K<<<nb, 32, 0, stream>>>(vx, y);
 }
+
+// Host-side setter for scale Q4_K mode
+GGML_BACKEND_API void ggml_cuda_set_scale_q4_k(bool val) {
+    cudaMemcpyToSymbol(g_cuda_scale_q4_k, &val, sizeof(bool));
+}
+
+
 
 template<typename dst_t>
 static void dequantize_row_q5_K_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {

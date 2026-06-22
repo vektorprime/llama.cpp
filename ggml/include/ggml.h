@@ -2780,6 +2780,10 @@ extern "C" {
     GGML_API void ggml_quantize_init(enum ggml_type type);
     GGML_API void ggml_quantize_free(void);
 
+    // Scale Q4_K mode
+    GGML_API void ggml_set_scale_q4_k(bool val);
+    GGML_API bool ggml_get_scale_q4_k(void);
+
     // some quantization type cannot be used without an importance matrix
     GGML_API bool ggml_quantize_requires_imatrix(enum ggml_type type);
 

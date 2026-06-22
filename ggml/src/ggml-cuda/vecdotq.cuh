@@ -498,6 +498,21 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmq(
     return d3*d8 * sumi;
 }
 
+
+// Scale Q4_K helper: sum q8 values where nibble == 0
+static __device__ int sum_q8_at_zero_nibbles(const int nib_packed, const int q8_packed) {
+    int sum = 0;
+    if ((nib_packed & 0xF) == 0) sum += (q8_packed & 0xFF);
+    if (((nib_packed >> 8) & 0xF) == 0) sum += ((q8_packed >> 8) & 0xFF);
+    if (((nib_packed >> 16) & 0xF) == 0) sum += ((q8_packed >> 16) & 0xFF);
+    if (((nib_packed >> 24) & 0xF) == 0) sum += ((q8_packed >> 24) & 0xFF);
+    return sum;
+}
+
+
+// Reference to g_cuda_scale_q4_k defined in convert.cu
+extern __device__ __constant__ bool g_cuda_scale_q4_k;
+
 #define VDR_Q4_K_Q8_1_MMVQ 2
 #define VDR_Q4_K_Q8_1_MMQ  8
 
@@ -522,8 +537,24 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
     }
 
     const float2 dm4f = __half22float2(dm4);
+    float result = dm4f.x*sumf_d - dm4f.y*sumf_m;
 
-    return dm4f.x*sumf_d - dm4f.y*sumf_m;
+    // Scale Q4_K correction: zero nibbles contribute d*sc instead of -dmin*m
+    if (g_cuda_scale_q4_k) {
+#pragma unroll
+        for (int ci = 0; ci < QR4_K; ++ci) {
+            const int v0i = (v[0] >> (4*ci)) & 0x0F0F0F0F;
+            const int v1i = (v[1] >> (4*ci)) & 0x0F0F0F0F;
+            int sum_zero = sum_q8_at_zero_nibbles(v0i, u[2*ci+0]);
+            sum_zero    += sum_q8_at_zero_nibbles(v1i, u[2*ci+1]);
+            if (sum_zero > 0) {
+                // sign-aware: zero nibble -> sign(-m)*d*sc; +dmin*m cancels the std min term
+                const float sscale = (m[ci] > 0) ? -dm4f.x*sc[ci] : dm4f.x*sc[ci];
+                result += d8[ci] * (float)sum_zero * (sscale + dm4f.y*m[ci]);
+            }
+        }
+    }
+    return result;
 }
 
 // contiguous v/x + u/y values
@@ -550,8 +581,24 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
     }
 
     const float2 dm4f = __half22float2(dm4);
+    float result = dm4f.x*sumf_d - dm4f.y*sumf_m;
 
-    return dm4f.x*sumf_d - dm4f.y*sumf_m;
+    // Scale Q4_K correction: zero nibbles contribute d*sc instead of -dmin*m
+    if (g_cuda_scale_q4_k) {
+        for (int ci = 0; ci < QR4_K*VDR_Q4_K_Q8_1_MMQ/QI8_1; ++ci) {
+            const float2 ds8f = __half22float2(ds8[ci]);
+            int sum_zero = 0;
+            for (int cj = 0; cj < QI8_1; ++cj) {
+                sum_zero += sum_q8_at_zero_nibbles(
+                    (v[cj] >> (4*ci)) & 0x0F0F0F0F, u[ci*QI8_1 + cj]);
+            }
+            if (sum_zero > 0) {
+                const float sscale = (m[ci] > 0) ? -dm4f.x*sc[ci] : dm4f.x*sc[ci];
+                result += ds8f.x * (float)sum_zero * (sscale + dm4f.y*m[ci]);
+            }
+        }
+    }
+    return result;
 }
 
 #define VDR_Q5_K_Q8_1_MMVQ 2

@@ -10,6 +10,8 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+
+#include "ggml-cuda.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -1153,6 +1155,12 @@ private:
         }
 
         llama_init = common_init_from_params(params_base);
+
+        // Set Scale Q4_K mode before any inference
+        ggml_set_scale_q4_k(params_base.scale_q4_k);
+#ifdef GGML_USE_CUDA
+        ggml_cuda_set_scale_q4_k(params_base.scale_q4_k);
+#endif
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();

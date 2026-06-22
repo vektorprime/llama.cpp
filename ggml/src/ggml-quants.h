@@ -110,3 +110,7 @@ GGML_API void iq3xs_free_impl(int grid_size);
 #ifdef __cplusplus
 }
 #endif
+
+// Scale Q4_K mode
+void ggml_set_scale_q4_k(bool val);
+bool ggml_get_scale_q4_k(void);

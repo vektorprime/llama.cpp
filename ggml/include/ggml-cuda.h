@@ -48,3 +48,6 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 #ifdef  __cplusplus
 }
 #endif
+
+// Scale Q4_K mode: set the flag that CUDA kernels check
+GGML_BACKEND_API void ggml_cuda_set_scale_q4_k(bool val);

@@ -1468,6 +1468,12 @@ void quantize_row_q4_K_ref(const float * GGML_RESTRICT x, block_q4_K * GGML_REST
     }
 }
 
+
+// Scale Q4_K: if true, nibble 0 -> scale value instead of -min
+bool g_scale_q4_k = false;  // non-static: shared with ggml-cpu via extern
+void ggml_set_scale_q4_k(bool val) { g_scale_q4_k = val; }
+bool ggml_get_scale_q4_k(void) { return g_scale_q4_k; }
+
 void dequantize_row_q4_K(const block_q4_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int nb = k / QK_K;
@@ -1485,8 +1491,23 @@ void dequantize_row_q4_K(const block_q4_K * GGML_RESTRICT x, float * GGML_RESTRI
             const float d1 = d * sc; const float m1 = min * m;
             get_scale_min_k4(is + 1, x[i].scales, &sc, &m);
             const float d2 = d * sc; const float m2 = min * m;
-            for (int l = 0; l < 32; ++l) *y++ = d1 * (q[l] & 0xF) - m1;
-            for (int l = 0; l < 32; ++l) *y++ = d2 * (q[l]  >> 4) - m2;
+            // Scale Q4_K: nibble 0 -> scale value (d*sc), else normal formula
+            if (g_scale_q4_k) {
+                // sign-aware: nibble 0 approximates -m1, so sign the scale by -m1 direction
+                const float s1 = (m1 > 0.0f) ? -d1 : d1;
+                const float s2 = (m2 > 0.0f) ? -d2 : d2;
+                for (int l = 0; l < 32; ++l) {
+                    const uint8_t nib = q[l] & 0xF;
+                    *y++ = nib ? (d1 * nib - m1) : s1;
+                }
+                for (int l = 0; l < 32; ++l) {
+                    const uint8_t nib = q[l] >> 4;
+                    *y++ = nib ? (d2 * nib - m2) : s2;
+                }
+            } else {
+                for (int l = 0; l < 32; ++l) *y++ = d1 * (q[l] & 0xF) - m1;
+                for (int l = 0; l < 32; ++l) *y++ = d2 * (q[l] >> 4) - m2;
+            }
             q += 32; is += 2;
         }
     }

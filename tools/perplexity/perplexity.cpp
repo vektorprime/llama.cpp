@@ -4,6 +4,8 @@
 #include "log.h"
 #include "llama.h"
 
+#include "ggml-cuda.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -2049,6 +2051,12 @@ int llama_perplexity(int argc, char ** argv) {
 
     // load the model and apply lora adapter, if any
     auto llama_init = common_init_from_params(params);
+
+    // Set Scale Q4_K mode before any inference
+    ggml_set_scale_q4_k(params.scale_q4_k);
+#ifdef GGML_USE_CUDA
+    ggml_cuda_set_scale_q4_k(params.scale_q4_k);
+#endif
 
     auto * model = llama_init->model();
     auto * ctx   = llama_init->context();
