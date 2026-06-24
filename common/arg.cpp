@@ -3224,6 +3224,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--slot-eviction-guard"},
+        string_format("don't evict a warm slot's cache when a cold slot is free and the best match keeps less than --slot-keep-threshold of that slot; route the request to a cold slot instead (server, automatic slot selection only) (default: %s)", params.slot_eviction_guard ? "enabled" : "disabled"),
+        [](common_params & params) {
+            params.slot_eviction_guard = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--slot-keep-threshold"}, "F",
+        string_format("with --slot-eviction-guard, min fraction of a slot's cached tokens that must survive a prefix match before the slot is reused; below this a free cold slot is preferred (default: %.2f)", params.slot_keep_thold),
+        [](common_params & params, const std::string & value) {
+            params.slot_keep_thold = std::stof(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--lora-init-without-apply"},
         string_format("load LoRA adapters without applying them (apply later via POST /lora-adapters) (default: %s)", params.lora_init_without_apply ? "enabled" : "disabled"),
         [](common_params & params) {

@@ -927,6 +927,10 @@ private:
     // Necessary similarity of prompt for slot selection
     float slot_prompt_similarity = 0.0f;
 
+    // eviction guard: avoid evicting a warm slot when a cold slot is free
+    bool  slot_eviction_guard = false;
+    float slot_keep_thold     = 0.5f;
+
     std::string model_name; // name of the loaded model, to be used by API
     std::set<std::string> model_aliases; // additional names for the model
     std::set<std::string> model_tags;    // informational tags
@@ -1302,6 +1306,10 @@ private:
         // Necessary similarity of prompt for slot selection
         slot_prompt_similarity = params_base.slot_prompt_similarity;
 
+        // eviction guard: avoid evicting a warm slot when a cold slot is free
+        slot_eviction_guard = params_base.slot_eviction_guard;
+        slot_keep_thold     = params_base.slot_keep_thold;
+
         // setup slots
         SRV_INF("initializing slots, n_slots = %d\n", params_base.n_parallel);
 
@@ -1583,6 +1591,9 @@ private:
         if (slot_prompt_similarity != 0.0f) {
             float sim_best = 0;
 
+            // a free (empty) slot to fall back to instead of evicting a warm one
+            server_slot * cold_slot = nullptr;
+
             for (server_slot & slot : slots) {
                 if (task.id_slot != -1 && slot.id != task.id_slot) {
                     continue;
@@ -1595,8 +1606,11 @@ private:
 
                 const auto & tokens = slot.prompt.tokens;
 
-                // skip the slot if it does not contains cached tokens
+                // remember the first free slot as a fallback for the eviction guard
                 if (tokens.empty()) {
+                    if (cold_slot == nullptr) {
+                        cold_slot = &slot;
+                    }
                     continue;
                 }
 
@@ -1614,14 +1628,29 @@ private:
             if (ret != nullptr) {
                 const float f_keep = (sim_best*task.tokens.size()) / ret->prompt.tokens.size();
 
-                if (task.id_slot == -1) {
-                    SLT_INF(*ret, "selected slot by LCP similarity, sim_best = %.3f (> %.3f thold), f_keep = %.3f\n",
-                            sim_best, slot_prompt_similarity, f_keep);
-                }
+                // eviction guard (automatic slot selection only): reusing the best-match slot would
+                // discard most of its cache (low f_keep). if a free cold slot exists, use it instead so
+                // a warm slot (e.g. a long-running main agent) stays cached while a diverging request
+                // (e.g. a sub-agent with a different system prompt) lands on its own slot. this avoids
+                // KV-cache ping-pong between the two and the full re-prefill it causes.
+                if (slot_eviction_guard && task.id_slot == -1 && f_keep < slot_keep_thold && cold_slot != nullptr) {
+                    SLT_INF(*cold_slot, "eviction guard: not evicting slot %d (f_keep = %.3f < %.3f), routing to cold slot\n",
+                            ret->id, f_keep, slot_keep_thold);
 
-                // if we are about to lose a large portion of the existing context - save it in the prompt cache
-                if (f_keep < 0.5f) {
+                    ret = cold_slot;
+
+                    // let the prompt cache restore this request's prior cache into the cold slot, if any
                     update_cache = true;
+                } else {
+                    if (task.id_slot == -1) {
+                        SLT_INF(*ret, "selected slot by LCP similarity, sim_best = %.3f (> %.3f thold), f_keep = %.3f\n",
+                                sim_best, slot_prompt_similarity, f_keep);
+                    }
+
+                    // if we are about to lose a large portion of the existing context - save it in the prompt cache
+                    if (f_keep < 0.5f) {
+                        update_cache = true;
+                    }
                 }
             }
         }

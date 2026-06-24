@@ -658,6 +658,9 @@ struct common_params {
 
     float slot_prompt_similarity = 0.1f;
 
+    bool  slot_eviction_guard = false; // don't evict a warm slot for a low-keep match if a cold slot is free
+    float slot_keep_thold     = 0.5f;  // min fraction of a slot's cache that must survive a match before reuse
+
     // batched-bench params
     bool is_pp_shared   = false;
     bool is_tg_separate = false;
