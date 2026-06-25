@@ -1978,6 +1978,19 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 float * embd_nextn_out = embd_nextn.data + offset*n_embd;
 
                 GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_nextn.size);
+
+                {
+                    static bool mtp_debug = getenv("LLAMA_CUSTOM_LOGS") ? true : false;
+                    if (mtp_debug) {
+                        LLAMA_LOG_INFO("%s: [MTP-PP-D2H] ubatch D2H copy: n_rows=%lld n_embd=%u bytes=%lld "
+                                       "offset=%lld ctx_type=%d masked=%d\n",
+                                       __func__, (long long) n_rows, n_embd,
+                                       (long long) (n_rows*n_embd*sizeof(float)),
+                                       (long long) offset,
+                                       (int) cparams.ctx_type, (int) masked);
+                    }
+                }
+
                 ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd*sizeof(float));
             }
         }

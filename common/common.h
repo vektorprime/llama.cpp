@@ -316,6 +316,7 @@ struct common_params_speculative_draft {
     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
+    bool custom_logs      = false; // enable detailed MTP/PP performance logging
 
     common_params_model mparams;
 
@@ -552,7 +553,8 @@ struct common_params {
     bool simple_io         = false; // improves compatibility with subprocesses and limited consoles
     bool cont_batching     = true;  // insert new sequences for decoding on-the-fly
     bool no_perf           = false; // disable performance metrics
-    bool show_timings      = true;  // show timing information on CLI
+    bool   show_timings      = true;  // show timing information on CLI
+    bool   custom_logs       = false; // enable detailed MTP/PP performance logging
     bool ctx_shift         = false; // context shift on infinite text generation
     bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
     bool kv_unified        = false; // enable unified KV cache

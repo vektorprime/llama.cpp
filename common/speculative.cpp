@@ -912,6 +912,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     int32_t n_mtp_layers  = 1;
     bool    is_mem_shared = false;   // gemma4
     bool    chain_heads   = false;   // derived in the ctor: n_mtp_layers > 1 && !is_mem_shared
+    bool    custom_logs   = false;   // --custom-logs flag for MTP perf debugging
 
     // Per-sequence cross-batch carryover: pair (h_p, x_{p+1}) at MTP pos p+1.
     // The last h-row of one process() call needs the first token of the NEXT
@@ -932,6 +933,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     common_speculative_impl_draft_mtp(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
         , params(params.draft)
+        , custom_logs(params.draft.custom_logs)
     {
         auto * ctx_tgt = this->params.ctx_tgt;
         auto * ctx_dft = this->params.ctx_dft;
@@ -952,10 +954,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 ctx_dft ? "yes" : "no",
                 common_speculative_get_devices_str(this->params.devices).c_str());
 
+        if (custom_logs) {
+            LOG_INF("%s: [MTP-INIT] custom_logs enabled, n_mtp_layers=%d is_mem_shared=%d chain_heads=%d\n",
+                    __func__, n_mtp_layers, (int) is_mem_shared, (int) chain_heads);
+        }
+
         const int32_t n_b = (int32_t) llama_n_batch(ctx_dft);
         batch = llama_batch_init(/*n_tokens=*/ n_b, /*embd=*/ n_embd, /*n_seq_max=*/ 1);
-        // llama_batch_init allocates only one of token/embd; MTP needs both.
-        // TODO: fix, how to call without malloc
         batch.token = (llama_token *) malloc(sizeof(llama_token) * n_b);
 
         smpls.resize(n_seq);
@@ -1080,6 +1085,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
+        if (custom_logs) {
+            LOG_INF("%s: [MTP-PP] process() entry: n_tokens=%d n_embd=%d row_bytes=%zu is_mem_shared=%d\n",
+                    __func__, n_tokens, n_embd, row_bytes, (int) is_mem_shared);
+        }
+
         // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode
         if (!is_mem_shared) {
             common_batch_clear(batch);
@@ -1095,7 +1105,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             // TODO:this is generally true, but would be nice to assert it
             {
                 const float * h_tgt = llama_get_embeddings_nextn(ctx_tgt);
-                std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
+                const size_t copy_bytes = row_bytes * (n_tokens - 1);
+                std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, copy_bytes);
+
+                if (custom_logs) {
+                    LOG_INF("%s: [MTP-PP] copied target h_nextn -> draft embd: %zu bytes (%d rows)\n",
+                            __func__, copy_bytes, n_tokens - 1);
+                }
             }
 
             // fill the pending embeddings from a previous run
@@ -1113,10 +1129,21 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             auto * mem_dft = llama_get_memory(ctx_dft);
 
+            // Optimization: disable draft embeddings_nextn (h_nextn D2H) during PP catch-up.
+            // The draft's t_h_nextn is only consumed during draft generation, not during
+            // prompt processing catch-up. Each draft ubatch would otherwise trigger a
+            // ggml_backend_tensor_get_async() D2H copy of n_outputs*n_embd*sizeof(float)
+            // bytes. Skipping this eliminates one of the three D2H/H2D roundtrips per ubatch
+            // during prompt processing.
+            if (custom_logs) {
+                LOG_INF("%s: [MTP-PP-OPT] disabling draft embeddings_nextn for catch-up (%d tokens, %zu bytes/row)\n",
+                        __func__, n_tokens, row_bytes);
+            }
+            llama_set_embeddings_nextn(ctx_dft, false, false);
+
             bool ok = true;
             for (int head = 0; head < n_mtp_layers; ++head) {
                 if (chain_heads) {
-                    // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
                     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
                         if (i_batch_beg[seq_id] < 0) {
                             continue;
@@ -1133,6 +1160,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     ok = false;
                     break;
                 }
+            }
+
+            // restore draft embeddings_nextn (masked) for draft generation
+            llama_set_embeddings_nextn(ctx_dft, true, true);
+
+            if (custom_logs) {
+                LOG_INF("%s: [MTP-PP-OPT] restored draft embeddings_nextn after catch-up\n", __func__);
             }
 
             if (chain_heads) {
@@ -1161,11 +1195,31 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
         }
 
+        if (custom_logs) {
+            int total_verify_rows = 0;
+            for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                total_verify_rows += verify_h_rows[seq_id];
+            }
+            LOG_INF("%s: [MTP-PP] process() exit: saved %d verify_h rows across %d seqs, "
+                    "total_verify_bytes=%zu\n",
+                    __func__, total_verify_rows, (int) n_seq,
+                    (size_t) total_verify_rows * row_bytes);
+        }
+
         return true;
     }
 
     void draft(common_speculative_draft_params_vec & dparams) override {
         auto & ctx_dft = params.ctx_dft;
+
+        if (custom_logs) {
+            int n_drafting_init = 0;
+            for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                if (dparams[seq_id].drafting) n_drafting_init++;
+            }
+            LOG_INF("%s: [MTP-DRAFT] draft() entry: n_seq=%d n_drafting=%d n_max=%d p_min=%.2f n_embd=%d\n",
+                    __func__, (int) n_seq, n_drafting_init, params.n_max, params.p_min, n_embd);
+        }
 
         common_batch_clear(batch);
 
@@ -1219,6 +1273,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (ret != 0) {
                 LOG_WRN("%s: llama_decode[%d] returned %d\n", __func__, i, ret);
                 break;
+            }
+
+            if (custom_logs) {
+                LOG_INF("%s: [MTP-DRAFT] step %d: batch.n_tokens=%d n_drafting=%d\n",
+                        __func__, i, batch.n_tokens, n_drafting);
             }
 
             // rebuild the batch for the next step: the growing-KV paths re-add only the
@@ -1312,6 +1371,19 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (dp.result->size() < (size_t) params.n_min) {
                 dp.result->clear();
             }
+        }
+
+        if (custom_logs) {
+            int total_drafts = 0;
+            int total_accepted = 0;
+            for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                if (dparams[seq_id].drafting) {
+                    total_drafts++;
+                    total_accepted += (int) dparams[seq_id].result->size();
+                }
+            }
+            LOG_INF("%s: [MTP-DRAFT] draft() exit: iterations=%d sequences_completed=%d tokens_drafted=%d\n",
+                    __func__, i, total_drafts, total_accepted);
         }
     }
 

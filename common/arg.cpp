@@ -1428,6 +1428,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SHOW_TIMINGS"));
     add_opt(common_arg(
+        {"--custom-logs"},
+        string_format("enable detailed MTP/PP performance logging (default: %s)", params.custom_logs ? "true" : "false"),
+        [](common_params & params) {
+            params.custom_logs = true;
+            params.speculative.draft.custom_logs = true;
+            params.verbosity = std::max(params.verbosity, 4);
+            common_log_set_verbosity_thold(params.verbosity);
+#if defined(__linux__) || defined(__APPLE__) || defined(unix)
+            setenv("LLAMA_CUSTOM_LOGS", "1", 1);
+#endif
+        }
+    ).set_env("LLAMA_ARG_CUSTOM_LOGS"));
+    add_opt(common_arg(
         {"-f", "--file"}, "FNAME",
         "a file containing the prompt (default: none)",
         [](common_params & params, const std::string & value) {
