@@ -230,9 +230,13 @@ Enabled parallel draft verification, reducing sequential dependency overhead.
 
 **Location**: `common/speculative.cpp:impl_mtp::process()`
 
+**Status**: Implemented, **off by default** (enable with `--mtp-pp-optimize`)
+
 **Problem**: During the catch-up decode (`llama_decode(ctx_dft, batch)` at line 1129), the draft context had `embeddings_nextn=true` with `masked=true`. This caused each draft ubatch to extract `t_h_nextn` from device to host, even though these values are never used during prompt processing. The draft's h_nextn is only needed during draft generation, not during catch-up.
 
-**Fix**: Disable `embeddings_nextn` on `ctx_dft` before the catch-up decode, and re-enable it after. This eliminates the unnecessary D2H copies of the draft's h_nextn tensors during prompt processing.
+**Fix**: When `--mtp-pp-optimize` is passed, disable `embeddings_nextn` on `ctx_dft` before the catch-up decode, and re-enable it after. This eliminates the unnecessary D2H copies of the draft's h_nextn tensors during prompt processing.
+
+**Control**: `--mtp-pp-optimize` (off by default, experimental)
 
 **Estimated Impact**:
 - Saves ~1 D2H copy per draft ubatch during PP
@@ -284,7 +288,15 @@ Added to `common_params` and parsed in `common/arg.cpp`:
 --custom-logs  // enable detailed MTP performance logging
 ```
 
-When enabled, the following metrics are logged during prompt processing:
+### --mtp-pp-optimize Parameter
+
+Added to `common_params_speculative_draft` and parsed in `common/arg.cpp`:
+
+```
+--mtp-pp-optimize  // disable draft h_nextn D2H during PP catch-up (off by default, experimental)
+```
+
+When `--custom-logs` is enabled, the following metrics are logged during prompt processing:
 
 ```
 [CUSTOM] MTP target ubatch: n_tokens=512 n_outputs=512 d2h_size=5242880 bytes d2h_src=GPU backend
@@ -382,7 +394,7 @@ cmake --build build --config Release --parallel
 
 ## Verified Behavior (Server Test with Qwen3.5-2B Q8_0)
 
-The `--custom-logs` flag was tested with the server and produced the following verified log output:
+The `--custom-logs --mtp-pp-optimize` flags were tested with the server and produced the following verified log output:
 
 ```
 [MTP-INIT] custom_logs enabled, n_mtp_layers=1 is_mem_shared=0 chain_heads=0

@@ -913,6 +913,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     bool    is_mem_shared = false;   // gemma4
     bool    chain_heads   = false;   // derived in the ctor: n_mtp_layers > 1 && !is_mem_shared
     bool    custom_logs   = false;   // --custom-logs flag for MTP perf debugging
+    bool    pp_optimize   = false;   // --mtp-pp-optimize: skip draft h_nextn D2H during catch-up
 
     // Per-sequence cross-batch carryover: pair (h_p, x_{p+1}) at MTP pos p+1.
     // The last h-row of one process() call needs the first token of the NEXT
@@ -934,6 +935,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
         , params(params.draft)
         , custom_logs(params.draft.custom_logs)
+        , pp_optimize(params.draft.mtp_pp_optimize)
     {
         auto * ctx_tgt = this->params.ctx_tgt;
         auto * ctx_dft = this->params.ctx_dft;
@@ -955,8 +957,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 common_speculative_get_devices_str(this->params.devices).c_str());
 
         if (custom_logs) {
-            LOG_INF("%s: [MTP-INIT] custom_logs enabled, n_mtp_layers=%d is_mem_shared=%d chain_heads=%d\n",
-                    __func__, n_mtp_layers, (int) is_mem_shared, (int) chain_heads);
+            LOG_INF("%s: [MTP-INIT] custom_logs enabled, n_mtp_layers=%d is_mem_shared=%d chain_heads=%d pp_optimize=%d\n",
+                    __func__, n_mtp_layers, (int) is_mem_shared, (int) chain_heads, (int) pp_optimize);
         }
 
         const int32_t n_b = (int32_t) llama_n_batch(ctx_dft);
@@ -1135,11 +1137,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             // ggml_backend_tensor_get_async() D2H copy of n_outputs*n_embd*sizeof(float)
             // bytes. Skipping this eliminates one of the three D2H/H2D roundtrips per ubatch
             // during prompt processing.
-            if (custom_logs) {
-                LOG_INF("%s: [MTP-PP-OPT] disabling draft embeddings_nextn for catch-up (%d tokens, %zu bytes/row)\n",
-                        __func__, n_tokens, row_bytes);
+            if (pp_optimize) {
+                if (custom_logs) {
+                    LOG_INF("%s: [MTP-PP-OPT] disabling draft embeddings_nextn for catch-up (%d tokens, %zu bytes/row)\n",
+                            __func__, n_tokens, row_bytes);
+                }
+                llama_set_embeddings_nextn(ctx_dft, false, false);
             }
-            llama_set_embeddings_nextn(ctx_dft, false, false);
 
             bool ok = true;
             for (int head = 0; head < n_mtp_layers; ++head) {
@@ -1163,10 +1167,12 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
 
             // restore draft embeddings_nextn (masked) for draft generation
-            llama_set_embeddings_nextn(ctx_dft, true, true);
+            if (pp_optimize) {
+                llama_set_embeddings_nextn(ctx_dft, true, true);
 
-            if (custom_logs) {
-                LOG_INF("%s: [MTP-PP-OPT] restored draft embeddings_nextn after catch-up\n", __func__);
+                if (custom_logs) {
+                    LOG_INF("%s: [MTP-PP-OPT] restored draft embeddings_nextn after catch-up\n", __func__);
+                }
             }
 
             if (chain_heads) {

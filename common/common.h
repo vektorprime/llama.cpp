@@ -317,6 +317,7 @@ struct common_params_speculative_draft {
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
     bool custom_logs      = false; // enable detailed MTP/PP performance logging
+    bool mtp_pp_optimize  = false; // disable draft h_nextn D2H during PP catch-up (experimental)
 
     common_params_model mparams;
 

@@ -1441,6 +1441,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CUSTOM_LOGS"));
     add_opt(common_arg(
+        {"--mtp-pp-optimize"},
+        string_format("disable draft h_nextn D2H copy during PP catch-up, reducing per-ubatch transfer overhead (default: %s)", params.speculative.draft.mtp_pp_optimize ? "true" : "false"),
+        [](common_params & params) {
+            params.speculative.draft.mtp_pp_optimize = true;
+        }
+    ).set_spec().set_env("LLAMA_ARG_MTP_PP_OPTIMIZE"));
+    add_opt(common_arg(
         {"-f", "--file"}, "FNAME",
         "a file containing the prompt (default: none)",
         [](common_params & params, const std::string & value) {
