@@ -98,6 +98,7 @@ class ChatStore {
 	private processingStates = new SvelteMap<string, ApiProcessingState | null>();
 	private conversationStateTimestamps = new SvelteMap<string, ConversationStateEntry>();
 	private pendingTemplateId = $state<string | null>(null);
+	private templateMessageCount = $state(0);
 	private activeConversationId = $state<string | null>(null);
 	private isStreamingActive = $state(false);
 	private isEditModeActive = $state(false);
@@ -492,8 +493,9 @@ class ChatStore {
 		this.isStreamingActive = false;
 	}
 
-	setPendingTemplate(templateId: string | null): void {
+	setPendingTemplate(templateId: string | null, messageCount = 0): void {
 		this.pendingTemplateId = templateId;
+		this.templateMessageCount = messageCount;
 	}
 
 	setActiveProcessingConversation(conversationId: string | null): void {
@@ -1022,8 +1024,17 @@ class ChatStore {
 				);
 			const assistantMessage = await this.createAssistantMessage(userMessage.id);
 			conversationsStore.addMessageToActive(assistantMessage);
+
+			// skip template messages when sending to the API — the KV cache handles them
+			let sendMessages = conversationsStore.activeMessages.slice(0, -1);
+			const skipCount = this.templateMessageCount;
+			if (this.pendingTemplateId && skipCount > 0) {
+				this.templateMessageCount = 0;
+				sendMessages = sendMessages.slice(skipCount);
+			}
+
 			await this.streamChatCompletion(
-				conversationsStore.activeMessages.slice(0, -1),
+				sendMessages,
 				assistantMessage,
 				undefined,
 				undefined,

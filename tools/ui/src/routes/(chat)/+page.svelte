@@ -64,7 +64,7 @@ import { onMount } from 'svelte';
 			clearUrlParams();
 		} else if (modelParam || newChatParam === 'true' || templateIdParam) {
 			if (templateIdParam) {
-				chatStore.setPendingTemplate(templateIdParam);
+				let restoredCount = 0;
 				try {
 					const template = await promptTemplatesStore.getTemplate(templateIdParam);
 					if (template.messages && template.messages.length > 0) {
@@ -103,6 +103,7 @@ import { onMount } from 'svelte';
 									conversationsStore.addMessageToActive(dbMsg);
 									parentId = dbMsg.id;
 								}
+								restoredCount++;
 							}
 							await conversationsStore.updateCurrentNode(parentId);
 						}
@@ -110,6 +111,7 @@ import { onMount } from 'svelte';
 				} catch (e) {
 					console.error('Failed to restore template messages:', e);
 				}
+				chatStore.setPendingTemplate(templateIdParam, restoredCount);
 			}
 			clearUrlParams();
 		}

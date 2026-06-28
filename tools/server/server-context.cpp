@@ -1791,6 +1791,15 @@ private:
         // template load: restore KV cache from saved template before processing new tokens
         if (!task.template_filepath.empty() && task.template_token_count > 0
             && (task.type == SERVER_TASK_TYPE_COMPLETION || task.type == SERVER_TASK_TYPE_INFILL)) {
+
+            // clear draft context for this slot before restoring target context state
+            if (ctx_dft) {
+                const llama_pos p0 = llama_memory_seq_pos_min(llama_get_memory(ctx_dft.get()), slot.id);
+                if (p0 >= 0) {
+                    common_context_seq_rm(ctx_dft.get(), slot.id, p0, -1);
+                }
+            }
+
             llama_tokens tmpl_tokens;
             tmpl_tokens.resize(task.template_token_count);
             size_t restored_count = 0;
@@ -3762,6 +3771,22 @@ private:
                     // save the KV cache state for the prompt template
                     const size_t token_count = slot.prompt.tokens.size();
                     const int64_t t_start = ggml_time_us();
+
+                    // clear any speculative draft state that may have accumulated
+                    if (slot.can_speculate()) {
+                        slot.spec_draft.clear();
+                        slot.spec_i_batch.clear();
+                        slot.spec_ckpt.clear();
+                    }
+
+                    // remove this slot's sequence from the draft context so the
+                    // save only contains the target model state (consistent restore)
+                    if (ctx_dft) {
+                        const llama_pos p0 = llama_memory_seq_pos_min(llama_get_memory(ctx_dft.get()), slot.id);
+                        if (p0 >= 0) {
+                            common_context_seq_rm(ctx_dft.get(), slot.id, p0, -1);
+                        }
+                    }
 
                     const llama_tokens & tokens = slot.prompt.tokens.get_tokens();
                     std::string filepath = slot.task->template_filepath;
