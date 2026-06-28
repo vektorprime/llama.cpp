@@ -1788,6 +1788,26 @@ private:
             }
         }
 
+        // template load: restore KV cache from saved template before processing new tokens
+        if (!task.template_filepath.empty() && task.template_token_count > 0
+            && (task.type == SERVER_TASK_TYPE_COMPLETION || task.type == SERVER_TASK_TYPE_INFILL)) {
+            llama_tokens tmpl_tokens;
+            tmpl_tokens.resize(task.template_token_count);
+            size_t restored_count = 0;
+            size_t nread = llama_state_seq_load_file(ctx_tgt, task.template_filepath.c_str(),
+                slot.id, tmpl_tokens.data(), tmpl_tokens.size(), &restored_count);
+            if (nread == 0 || restored_count != (size_t)task.template_token_count) {
+                slot.prompt.tokens.clear();
+                send_error(task, string_format(
+                    "Failed to restore template KV cache: expected %d tokens, got %zu",
+                    task.template_token_count, restored_count), ERROR_TYPE_INVALID_REQUEST);
+                return false;
+            }
+            SLT_INF(slot, "restored template KV cache: %zu tokens\n", restored_count);
+            slot.prompt.tokens.clear();
+            slot.prompt.tokens.insert(tmpl_tokens);
+        }
+
         if (!task.tokens.validate(ctx_tgt)) {
             send_error(task, "Prompt contains invalid tokens", ERROR_TYPE_INVALID_REQUEST);
             return false;
@@ -2363,6 +2383,7 @@ private:
             case SERVER_TASK_TYPE_INFILL:
             case SERVER_TASK_TYPE_EMBEDDING:
             case SERVER_TASK_TYPE_RERANK:
+            case SERVER_TASK_TYPE_TEMPLATE_SAVE:
                 {
                     // special case: if input is provided via CLI, tokenize it first
                     // otherwise, no need to tokenize as it's already done inside the HTTP thread
@@ -3737,6 +3758,34 @@ private:
                     return;
                 }
 
+                if (slot.task->type == SERVER_TASK_TYPE_TEMPLATE_SAVE) {
+                    // save the KV cache state for the prompt template
+                    const size_t token_count = slot.prompt.tokens.size();
+                    const int64_t t_start = ggml_time_us();
+
+                    const llama_tokens & tokens = slot.prompt.tokens.get_tokens();
+                    std::string filepath = slot.task->template_filepath;
+                    const size_t nwrite = llama_state_seq_save_file(ctx_tgt, filepath.c_str(), slot.id, tokens.data(), token_count);
+
+                    const int64_t t_end = ggml_time_us();
+                    const double t_save_ms = (t_end - t_start) / 1000.0;
+
+                    auto res = std::make_unique<server_task_result_template>();
+                    res->id          = slot.task->id;
+                    res->template_id = slot.task->template_id;
+                    res->n_tokens    = token_count;
+                    res->n_bytes     = nwrite;
+                    res->t_ms        = t_save_ms;
+                    queue_results.send(std::move(res));
+
+                    SLT_INF(slot, "template saved: %s (%zu tokens, %.2f ms)\n",
+                        slot.task->template_id.c_str(), token_count, t_save_ms);
+
+                    slot.release();
+                    slot.i_batch = -1;
+                    return;
+                }
+
                 GGML_ASSERT(slot.task->need_sampling());
 
                 // prompt evaluated for next-token prediction
@@ -4099,6 +4148,110 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         // tasks.reserve(inputs.size()); // TODO: this is inaccurate due to child tasks
 
+        // template load: if prompt_template_id is set, load template tokens into inputs
+        std::string template_filepath;
+        int         template_token_count = 0;
+        bool        has_template = false;
+
+        if (data.contains("prompt_template_id") && data.at("prompt_template_id").is_string()) {
+            std::string template_id = data.at("prompt_template_id").get<std::string>();
+            if (!template_id.empty() && !params.prompt_template_dir.empty()) {
+                std::string meta_path = params.prompt_template_dir + template_id + ".json";
+                std::string bin_path  = params.prompt_template_dir + template_id + ".bin";
+
+                // read metadata
+                json meta_json;
+                try {
+                    std::ifstream f(meta_path);
+                    if (!f) throw std::runtime_error("template not found: " + template_id);
+                    meta_json = json::parse(std::string(
+                        (std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>()));
+                } catch (const std::exception & e) {
+                    throw std::runtime_error(std::string("Failed to read template metadata: ") + e.what());
+                }
+
+                // validate model compatibility
+                if (json_value(meta_json, "model_name", std::string()) != meta->model_name) {
+                    throw std::runtime_error(string_format(
+                        "Template '%s' was created for model '%s', current model is '%s'",
+                        template_id.c_str(),
+                        json_value(meta_json, "model_name", std::string("unknown")).c_str(),
+                        meta->model_name.c_str()));
+                }
+                if (json_value(meta_json, "model_vocab_type", 0) != static_cast<int>(meta->model_vocab_type)) {
+                    throw std::runtime_error(string_format(
+                        "Template '%s' vocabulary type mismatch", template_id.c_str()));
+                }
+                if (json_value(meta_json, "cache_type_k", std::string()) != ggml_type_name(params.cache_type_k)) {
+                    throw std::runtime_error(string_format(
+                        "Template '%s' K-cache type mismatch: template=%s, server=%s",
+                        template_id.c_str(),
+                        json_value(meta_json, "cache_type_k", std::string("unknown")).c_str(),
+                        ggml_type_name(params.cache_type_k)));
+                }
+                if (json_value(meta_json, "cache_type_v", std::string()) != ggml_type_name(params.cache_type_v)) {
+                    throw std::runtime_error(string_format(
+                        "Template '%s' V-cache type mismatch: template=%s, server=%s",
+                        template_id.c_str(),
+                        json_value(meta_json, "cache_type_v", std::string("unknown")).c_str(),
+                        ggml_type_name(params.cache_type_v)));
+                }
+
+                int n_swa = static_cast<int>(llama_model_n_swa(ctx_server.model_tgt));
+                bool swa_full = json_value(meta_json, "swa_full", true);
+                int64_t tkn_count = json_value(meta_json, "token_count", 0);
+                if (!swa_full && n_swa > 0 && tkn_count > n_swa) {
+                    throw std::runtime_error(string_format(
+                        "Template '%s' has %" PRId64 " tokens but SWA window is %d. "
+                        "Restart server with --swa-full to load this template.",
+                        template_id.c_str(), tkn_count, n_swa));
+                }
+
+                template_token_count = static_cast<int>(tkn_count);
+
+                // read template tokens from the binary state file
+                // format: uint32_t magic, uint32_t version, uint32_t n_tokens, llama_token[n_tokens], ...
+                llama_tokens tmpl_tokens;
+                tmpl_tokens.resize(template_token_count);
+                {
+                    std::ifstream f(bin_path, std::ios::binary);
+                    if (!f) {
+                        throw std::runtime_error("template binary file not found: " + template_id);
+                    }
+                    uint32_t magic, version, file_token_count;
+                    f.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+                    f.read(reinterpret_cast<char*>(&version), sizeof(version));
+                    f.read(reinterpret_cast<char*>(&file_token_count), sizeof(file_token_count));
+                    if (magic != LLAMA_STATE_SEQ_MAGIC || version != LLAMA_STATE_SEQ_VERSION) {
+                        throw std::runtime_error("template binary file has invalid magic/version: " + template_id);
+                    }
+                    if (file_token_count != (uint32_t)template_token_count) {
+                        throw std::runtime_error(string_format(
+                            "template token count mismatch: metadata=%d, file=%u",
+                            template_token_count, file_token_count));
+                    }
+                    f.read(reinterpret_cast<char*>(tmpl_tokens.data()), file_token_count * sizeof(llama_token));
+                    if (!f) {
+                        throw std::runtime_error("failed to read template tokens: " + template_id);
+                    }
+                }
+
+                // prepend template tokens to the new prompt tokens
+                for (auto & input : inputs) {
+                    server_tokens combined;
+                    combined.insert(tmpl_tokens);
+                    combined.insert(input.get_tokens());
+                    input = std::move(combined);
+                }
+
+                template_filepath = bin_path;
+                has_template = true;
+
+                SRV_INF("loaded template '%s': %d tokens\n", template_id.c_str(), template_token_count);
+            }
+        }
+
         // message delimiters for checkpointing
         auto delimiters = common_chat_msg_delimiters_parse(json_value(data, "message_delimiters", json::array()));
         delimiters.tokenize(ctx_server.vocab);
@@ -4109,6 +4262,10 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.id = rd.get_new_id();
 
             task.tokens = std::move(inputs[i]);
+            if (has_template) {
+                task.template_filepath    = template_filepath;
+                task.template_token_count = template_token_count;
+            }
             task.params = server_schema::eval_llama_cmpl_schema(
                     ctx_server.vocab,
                     params,
@@ -5083,6 +5240,75 @@ void server_routes::init_routes() {
         res->ok(result->to_json());
         return res;
     };
+
+    // prompt template endpoints
+    this->get_prompt_templates = [this](const server_http_req & req) {
+        if (params.prompt_template_dir.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("Prompt template directory not configured. Start with --prompt-template-dir", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        return handle_templates_list(req);
+    };
+
+    this->post_prompt_templates = [this](const server_http_req & req) {
+        if (params.prompt_template_dir.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("Prompt template directory not configured. Start with --prompt-template-dir", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        return handle_templates_save(req);
+    };
+
+    this->del_prompt_templates = [this](const server_http_req & req) {
+        if (params.prompt_template_dir.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("Prompt template directory not configured. Start with --prompt-template-dir", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        std::string template_id = req.get_param("id");
+        if (template_id.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("Template ID is required", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!fs_validate_filename(template_id)) {
+            auto res = create_response();
+            res->error(format_error_response("Invalid template ID", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        return handle_templates_delete(req, template_id);
+    };
+
+    this->get_prompt_template = [this](const server_http_req & req) {
+        if (params.prompt_template_dir.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("Prompt template directory not configured. Start with --prompt-template-dir", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        std::string template_id = req.get_param("id");
+        if (template_id.empty() || !fs_validate_filename(template_id)) {
+            auto res = create_response();
+            res->error(format_error_response("Invalid template ID", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        return handle_templates_get(req, template_id);
+    };
+
+    this->post_prompt_template_update = [this](const server_http_req & req) {
+        if (params.prompt_template_dir.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("Prompt template directory not configured. Start with --prompt-template-dir", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        std::string template_id = req.get_param("id");
+        if (template_id.empty() || !fs_validate_filename(template_id)) {
+            auto res = create_response();
+            res->error(format_error_response("Invalid template ID", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        return handle_templates_update(req, template_id);
+    };
 }
 
 json server_routes::get_model_info() const {
@@ -5202,6 +5428,204 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
 
     GGML_ASSERT(dynamic_cast<server_task_result_slot_erase*>(result.get()) != nullptr);
     res->ok(result->to_json());
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_templates_save(const server_http_req & req) {
+    auto res = create_response();
+    if (params.prompt_template_dir.empty()) {
+        res->error(format_error_response("Prompt template directory not configured", ERROR_TYPE_NOT_SUPPORTED));
+        return res;
+    }
+
+    json body = json::parse(req.body);
+    if (!body.contains("messages") || !body.at("messages").is_array()) {
+        res->error(format_error_response("'messages' array is required", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    std::string template_id = random_string();
+    std::string template_name = json_value(body, "name", std::string(""));
+    std::string template_folder = json_value(body, "folder", std::string(""));
+    std::string filepath_bin  = params.prompt_template_dir + template_id + ".bin";
+    std::string filepath_json = params.prompt_template_dir + template_id + ".json";
+
+    // apply chat template to get prompt string
+    std::vector<raw_buffer> files;
+    json body_parsed = oaicompat_chat_params_parse(body, meta->chat_params, files);
+    const auto & prompt = body_parsed.at("prompt");
+
+    // tokenize
+    std::vector<server_tokens> inputs = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true);
+    if (inputs.empty() || inputs[0].empty()) {
+        res->error(format_error_response("Prompt tokenization resulted in empty input", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    auto & rd = res->rd;
+    {
+        server_task task(SERVER_TASK_TYPE_TEMPLATE_SAVE);
+        task.id = rd.get_new_id();
+        task.tokens = std::move(inputs[0]);
+        task.template_id = template_id;
+        task.template_filepath = filepath_bin;
+        rd.post_task(std::move(task));
+    }
+
+    auto result = rd.next(req.should_stop);
+    if (!result) {
+        GGML_ASSERT(req.should_stop());
+        return res;
+    }
+    if (result->is_error()) {
+        res->error(result->to_json());
+        return res;
+    }
+
+    auto * tmpl_result = dynamic_cast<server_task_result_template*>(result.get());
+    GGML_ASSERT(tmpl_result != nullptr);
+
+    // write metadata JSON
+    json meta_json;
+    meta_json["id"]               = template_id;
+    meta_json["model_name"]       = meta->model_name;
+    meta_json["model_vocab_type"] = static_cast<int>(meta->model_vocab_type);
+    meta_json["cache_type_k"]     = ggml_type_name(params.cache_type_k);
+    meta_json["cache_type_v"]     = ggml_type_name(params.cache_type_v);
+    meta_json["swa_full"]         = params.swa_full;
+    meta_json["n_swa"]            = static_cast<int>(llama_model_n_swa(ctx_server.model_tgt));
+    meta_json["token_count"]      = tmpl_result->n_tokens;
+    meta_json["context_size"]     = meta->slot_n_ctx;
+    meta_json["created_at"]       = std::time(0);
+    meta_json["name"]             = template_name;
+    meta_json["folder"]           = template_folder;
+    meta_json["messages"]         = body.at("messages");
+
+    {
+        std::ofstream f(filepath_json);
+        if (!f) {
+            SRV_ERR("failed to create template metadata: %s\n", filepath_json.c_str());
+        } else {
+            f << meta_json.dump(2);
+        }
+    }
+
+    res->ok(tmpl_result->to_json());
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_templates_list(const server_http_req &) {
+    auto res = create_response();
+
+    json templates = json::array();
+    try {
+        for (const auto & entry : std::filesystem::directory_iterator(params.prompt_template_dir)) {
+            if (!entry.is_regular_file()) continue;
+            std::string ext = entry.path().extension().string();
+            if (ext != ".json") continue;
+
+            std::ifstream f(entry.path());
+            if (!f) continue;
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            try {
+                json meta_json = json::parse(content);
+                templates.push_back(meta_json);
+            } catch (...) {
+                SRV_WRN("failed to parse template metadata: %s\n", entry.path().string().c_str());
+            }
+        }
+    } catch (const std::exception & e) {
+        SRV_WRN("failed to list template directory: %s\n", e.what());
+    }
+
+    res->ok({{"templates", templates}});
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_templates_delete(const server_http_req &, const std::string & template_id) {
+    auto res = create_response();
+
+    std::string filepath_bin  = params.prompt_template_dir + template_id + ".bin";
+    std::string filepath_json = params.prompt_template_dir + template_id + ".json";
+
+    bool deleted = false;
+    try {
+        if (std::filesystem::exists(filepath_bin)) {
+            std::filesystem::remove(filepath_bin);
+            deleted = true;
+        }
+        if (std::filesystem::exists(filepath_json)) {
+            std::filesystem::remove(filepath_json);
+            deleted = true;
+        }
+    } catch (const std::exception & e) {
+        res->error(format_error_response(std::string("Failed to delete template: ") + e.what(), ERROR_TYPE_SERVER));
+        return res;
+    }
+
+    if (!deleted) {
+        res->error(format_error_response("Template not found: " + template_id, ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    res->ok({{"deleted", template_id}});
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_templates_get(const server_http_req &, const std::string & template_id) {
+    auto res = create_response();
+
+    std::string filepath_json = params.prompt_template_dir + template_id + ".json";
+    if (!std::filesystem::exists(filepath_json)) {
+        res->error(format_error_response("Template not found: " + template_id, ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    try {
+        std::ifstream f(filepath_json);
+        json meta_json = json::parse(std::string(
+            (std::istreambuf_iterator<char>(f)),
+            std::istreambuf_iterator<char>()));
+        res->ok(meta_json);
+    } catch (const std::exception & e) {
+        res->error(format_error_response(std::string("Failed to read template: ") + e.what(), ERROR_TYPE_SERVER));
+    }
+
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_templates_update(const server_http_req & req, const std::string & template_id) {
+    auto res = create_response();
+
+    std::string filepath_json = params.prompt_template_dir + template_id + ".json";
+    if (!std::filesystem::exists(filepath_json)) {
+        res->error(format_error_response("Template not found: " + template_id, ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    try {
+        json body = json::parse(req.body);
+
+        // read existing metadata
+        std::ifstream f_in(filepath_json);
+        json meta_json = json::parse(std::string(
+            (std::istreambuf_iterator<char>(f_in)),
+            std::istreambuf_iterator<char>()));
+        f_in.close();
+
+        // update fields
+        if (body.contains("name"))   meta_json["name"]   = body.at("name").get<std::string>();
+        if (body.contains("folder")) meta_json["folder"] = body.at("folder").get<std::string>();
+
+        // write back
+        std::ofstream f_out(filepath_json);
+        f_out << meta_json.dump(2);
+
+        res->ok(meta_json);
+    } catch (const std::exception & e) {
+        res->error(format_error_response(std::string("Failed to update template: ") + e.what(), ERROR_TYPE_SERVER));
+    }
+
     return res;
 }
 

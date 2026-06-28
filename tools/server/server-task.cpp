@@ -1566,6 +1566,19 @@ json server_task_result_slot_erase::to_json() {
 }
 
 //
+// server_task_result_template
+//
+
+json server_task_result_template::to_json() {
+    return json {
+        { "template_id", template_id },
+        { "n_tokens",    n_tokens    },
+        { "n_bytes",     n_bytes     },
+        { "t_ms",        t_ms        },
+    };
+}
+
+//
 // server_task_result_get_lora
 //
 

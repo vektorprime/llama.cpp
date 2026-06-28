@@ -3,7 +3,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Sheet from '$lib/components/ui/sheet';
 	import * as Collapsible from '$lib/components/ui/collapsible';
-	import { File, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
+	import { File, MessageSquare, Zap, FolderOpen, LayoutTemplate } from '@lucide/svelte';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { TOOLTIP_DELAY_DURATION } from '$lib/constants';
@@ -29,6 +29,7 @@
 		onSystemPromptClick?: () => void;
 		onMcpPromptClick?: () => void;
 		onMcpResourcesClick?: () => void;
+		onSaveTemplateClick?: () => void;
 		trigger: Snippet<[{ disabled: boolean; onclick?: () => void }]>;
 	}
 
@@ -44,6 +45,7 @@
 		onSystemPromptClick,
 		onMcpPromptClick,
 		onMcpResourcesClick,
+		onSaveTemplateClick,
 		trigger
 	}: Props = $props();
 
@@ -280,6 +282,18 @@
 
 					<span>System Message</span>
 				</button>
+
+				{#if onSaveTemplateClick}
+					<button
+						type="button"
+						class={sheetItemClass}
+						onclick={onSaveTemplateClick}
+					>
+						<LayoutTemplate class="h-4 w-4 shrink-0" />
+
+						<span>Save as Template</span>
+					</button>
+				{/if}
 
 				{#if hasMcpPromptsSupport}
 					<button

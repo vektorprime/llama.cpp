@@ -331,3 +331,24 @@ export { RouterService } from './router.service';
  * @see migration.service.ts — full implementation (non-destructive)
  */
 export { MigrationService } from './migration.service';
+
+/**
+ * **PromptTemplateService** - Prompt template API communication
+ *
+ * Handles CRUD operations for prompt templates via the llama-server
+ * `/v1/prompt_templates` endpoints. Stores KV-cache-prefilled prompt
+ * templates that can be pre-loaded in chat completions to skip prompt
+ * processing.
+ *
+ * **Architecture & Relationships:**
+ * - **PromptTemplateService** (this class): Stateless API communication
+ * - **promptTemplatesStore**: Reactive state management consuming this service
+ *
+ * **Endpoints:**
+ * - `GET /v1/prompt_templates` — List saved templates
+ * - `POST /v1/prompt_templates/save` — Save a new template
+ * - `DELETE /v1/prompt_templates/:id` — Delete a template
+ *
+ * @see promptTemplatesStore in stores/prompt-templates.svelte.ts
+ */
+export { PromptTemplateService } from './prompt-template.service';

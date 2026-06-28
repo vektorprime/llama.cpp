@@ -16,6 +16,7 @@
 		onSend?: (message: string, files?: ChatUploadedFile[]) => Promise<boolean>;
 		onStop?: () => void;
 		onSystemPromptAdd?: (draft: { message: string; files: ChatUploadedFile[] }) => void;
+		onSaveTemplateClick?: () => void;
 		uploadedFiles?: ChatUploadedFile[];
 	}
 
@@ -29,6 +30,7 @@
 		onSend,
 		onStop,
 		onSystemPromptAdd,
+		onSaveTemplateClick,
 		uploadedFiles = $bindable([])
 	}: Props = $props();
 
@@ -147,6 +149,7 @@
 		{onStop}
 		onSubmit={handleSubmit}
 		onSystemPromptClick={handleSystemPromptClick}
+		onSaveTemplateClick={onSaveTemplateClick}
 		onUploadedFileRemove={handleUploadedFileRemove}
 	/>
 </div>

@@ -27,6 +27,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_ERASE,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
+    SERVER_TASK_TYPE_TEMPLATE_SAVE,
 };
 
 // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
@@ -91,6 +92,9 @@ struct task_params {
 
     // message spans for checkpointing
     common_chat_msg_spans message_spans;
+
+    // prompt template loading
+    std::string prompt_template_id;  // if set, load KV cache from this template before processing new tokens
 
     // Embeddings
     int32_t embd_normalize = 2; // (-1=none, 0=max absolute int16, 1=taxicab, 2=Euclidean/L2, >2=p-norm)
@@ -165,6 +169,11 @@ struct server_task {
         std::string filepath;
     };
     slot_action slot_action;
+
+    // used by SERVER_TASK_TYPE_TEMPLATE_SAVE, template loading in completions
+    std::string template_id;             // template ID for save/load operations
+    std::string template_filepath;      // path to template .bin file for load/save
+    int         template_token_count;   // number of tokens in the template (for load validation)
 
     // used by SERVER_TASK_TYPE_METRICS
     bool metrics_reset_bucket = false;
@@ -548,6 +557,15 @@ struct server_task_result_slot_save_load : server_task_result {
 
 struct server_task_result_slot_erase : server_task_result {
     size_t n_erased;
+
+    virtual json to_json() override;
+};
+
+struct server_task_result_template : server_task_result {
+    std::string template_id;
+    size_t n_tokens;
+    size_t n_bytes;
+    double t_ms;
 
     virtual json to_json() override;
 };

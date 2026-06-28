@@ -13,6 +13,7 @@
 #include "log.h"
 
 #include <atomic>
+#include <filesystem>
 #include <clocale>
 #include <exception>
 #include <signal.h>
@@ -137,6 +138,34 @@ int llama_server(int argc, char ** argv) {
         params.model_alias.insert(model_name);
     }
 
+    // set default prompt_template_dir to <executable_dir>/prompt_templates/ if not configured
+    if (params.prompt_template_dir.empty()) {
+        try {
+            std::filesystem::path exe_dir;
+#if defined(__linux__) || defined(__FreeBSD__)
+            char path_buf[FILENAME_MAX];
+            ssize_t len = readlink("/proc/self/exe", path_buf, sizeof(path_buf));
+            if (len > 0) {
+                exe_dir = std::filesystem::path(std::string(path_buf, len)).parent_path();
+            } else {
+                exe_dir = std::filesystem::current_path();
+            }
+#else
+            exe_dir = std::filesystem::current_path();
+#endif
+            auto default_dir = exe_dir / "prompt_templates";
+            if (!fs_is_directory(default_dir.string())) {
+                fs_create_directory_with_parents(default_dir.string());
+            }
+            if (fs_is_directory(default_dir.string())) {
+                params.prompt_template_dir = default_dir.string() + DIRECTORY_SEPARATOR;
+                SRV_INF("prompt template dir: %s\n", params.prompt_template_dir.c_str());
+            }
+        } catch (const std::exception & e) {
+            SRV_WRN("could not set up default prompt template dir (%s). Use --prompt-template-dir to set manually\n", e.what());
+        }
+    }
+
     // struct that contains llama context and inference
     server_context ctx_server;
 
@@ -240,6 +269,17 @@ int llama_server(int argc, char ** argv) {
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",            ex_wrapper(routes.post_lora_adapters));
+    // Prompt templates
+    ctx_http.get ("/v1/prompt_templates",       ex_wrapper(routes.get_prompt_templates));
+    ctx_http.get ("/prompt_templates",          ex_wrapper(routes.get_prompt_templates));
+    ctx_http.post("/v1/prompt_templates/save",  ex_wrapper(routes.post_prompt_templates));
+    ctx_http.post("/prompt_templates/save",     ex_wrapper(routes.post_prompt_templates));
+    ctx_http.del ("/v1/prompt_templates/:id",   ex_wrapper(routes.del_prompt_templates));
+    ctx_http.del ("/prompt_templates/:id",      ex_wrapper(routes.del_prompt_templates));
+    ctx_http.get ("/v1/prompt_templates/:id",   ex_wrapper(routes.get_prompt_template));
+    ctx_http.get ("/prompt_templates/:id",      ex_wrapper(routes.get_prompt_template));
+    ctx_http.post("/v1/prompt_templates/:id",   ex_wrapper(routes.post_prompt_template_update));
+    ctx_http.post("/prompt_templates/:id",      ex_wrapper(routes.post_prompt_template_update));
     // Save & load slots
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));

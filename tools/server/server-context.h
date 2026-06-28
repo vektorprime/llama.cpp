@@ -152,6 +152,11 @@ struct server_routes {
     server_http_context::handler_t post_rerank;
     server_http_context::handler_t get_lora_adapters;
     server_http_context::handler_t post_lora_adapters;
+    server_http_context::handler_t get_prompt_templates;
+    server_http_context::handler_t get_prompt_template;
+    server_http_context::handler_t post_prompt_templates;
+    server_http_context::handler_t post_prompt_template_update;
+    server_http_context::handler_t del_prompt_templates;
 
     // to be used in router mode
     json get_model_info() const;
@@ -168,6 +173,11 @@ private:
     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
     std::unique_ptr<server_res_generator> handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const server_http_req & req, task_response_type res_type);
+    std::unique_ptr<server_res_generator> handle_templates_save(const server_http_req & req);
+    std::unique_ptr<server_res_generator> handle_templates_get(const server_http_req & req, const std::string & template_id);
+    std::unique_ptr<server_res_generator> handle_templates_update(const server_http_req & req, const std::string & template_id);
+    std::unique_ptr<server_res_generator> handle_templates_list(const server_http_req & req);
+    std::unique_ptr<server_res_generator> handle_templates_delete(const server_http_req & req, const std::string & template_id);
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;

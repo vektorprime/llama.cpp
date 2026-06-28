@@ -298,6 +298,8 @@ export interface ApiChatCompletionRequest {
 	// Continuation control (vLLM compat)
 	add_generation_prompt?: boolean;
 	continue_final_message?: boolean;
+	// Prompt template
+	prompt_template_id?: string;
 }
 
 export interface ApiChatCompletionToolCallFunctionDelta {
@@ -526,4 +528,34 @@ export interface ApiStreamSession {
 	total_bytes: number;
 	started_at: number;
 	completed_at: number;
+}
+
+/** Prompt template metadata returned by GET /v1/prompt_templates */
+export interface ApiPromptTemplateMeta {
+	id: string;
+	model_name: string;
+	model_vocab_type: number;
+	cache_type_k: string;
+	cache_type_v: string;
+	swa_full: boolean;
+	n_swa: number;
+	token_count: number;
+	context_size: number;
+	created_at: number;
+	name?: string;
+	folder?: string;
+	messages?: Array<{ role: string; content: string }>;
+}
+
+/** Response from POST /v1/prompt_templates/save */
+export interface ApiPromptTemplateSaveResponse {
+	template_id: string;
+	n_tokens: number;
+	n_bytes: number;
+	t_ms: number;
+}
+
+/** Request body for updating a template description */
+export interface ApiPromptTemplateUpdateRequest {
+	description?: string;
 }

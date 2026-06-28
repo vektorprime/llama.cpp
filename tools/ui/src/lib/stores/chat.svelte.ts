@@ -97,6 +97,7 @@ class ChatStore {
 	private preEncodeAbortController: AbortController | null = null;
 	private processingStates = new SvelteMap<string, ApiProcessingState | null>();
 	private conversationStateTimestamps = new SvelteMap<string, ConversationStateEntry>();
+	private pendingTemplateId = $state<string | null>(null);
 	private activeConversationId = $state<string | null>(null);
 	private isStreamingActive = $state(false);
 	private isEditModeActive = $state(false);
@@ -489,6 +490,10 @@ class ChatStore {
 		this.isLoading = false;
 		this.currentResponse = '';
 		this.isStreamingActive = false;
+	}
+
+	setPendingTemplate(templateId: string | null): void {
+		this.pendingTemplateId = templateId;
 	}
 
 	setActiveProcessingConversation(conversationId: string | null): void {
@@ -1302,12 +1307,16 @@ class ChatStore {
 
 		const perChatOverrides = conversationsStore.activeConversation?.mcpServerOverrides;
 
+		const pendingTemplateId = this.pendingTemplateId;
+		this.pendingTemplateId = null;
+
 		{
 			const agenticResult = await agenticStore.runAgenticFlow({
 				conversationId: convId,
 				messages: allMessages,
 				options: {
 					...this.getApiOptions(),
+					...(pendingTemplateId ? { promptTemplateId: pendingTemplateId } : {}),
 					...(effectiveModel ? { model: effectiveModel } : {})
 				},
 				callbacks: streamCallbacks,
@@ -1332,6 +1341,7 @@ class ChatStore {
 			allMessages,
 			{
 				...this.getApiOptions(),
+				...(pendingTemplateId ? { promptTemplateId: pendingTemplateId } : {}),
 				...(effectiveModel ? { model: effectiveModel } : {}),
 				stream: true,
 				onChunk: streamCallbacks.onChunk,

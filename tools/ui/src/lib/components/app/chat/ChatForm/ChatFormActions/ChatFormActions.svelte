@@ -34,6 +34,7 @@
 		onSystemPromptClick?: () => void;
 		onMcpPromptClick?: () => void;
 		onMcpResourcesClick?: () => void;
+		onSaveTemplateClick?: () => void;
 	}
 
 	let {
@@ -52,7 +53,8 @@
 		onStop,
 		onSystemPromptClick,
 		onMcpPromptClick,
-		onMcpResourcesClick
+		onMcpResourcesClick,
+		onSaveTemplateClick
 	}: Props = $props();
 
 	let currentConfig = $derived(config());
@@ -112,6 +114,7 @@
 				{onSystemPromptClick}
 				{onMcpPromptClick}
 				{onMcpResourcesClick}
+				{onSaveTemplateClick}
 				onMcpSettingsClick={() => goto(ROUTES.MCP_SERVERS)}
 			/>
 		</div>

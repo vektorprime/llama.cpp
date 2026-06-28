@@ -105,6 +105,8 @@ export interface SettingsChatServiceOptions {
 	timings_per_token?: boolean;
 	// Continuation control (vLLM compat), opt in to the explicit continue final message flag
 	continueFinalMessage?: boolean;
+	// Prompt template ID to pre-load KV cache from
+	promptTemplateId?: string;
 	// Callbacks
 	onChunk?: (chunk: string) => void;
 	onReasoningChunk?: (chunk: string) => void;

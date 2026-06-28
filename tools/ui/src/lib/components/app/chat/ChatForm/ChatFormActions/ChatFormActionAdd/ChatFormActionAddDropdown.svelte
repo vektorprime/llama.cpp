@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Plus, File, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
+	import { Plus, File, MessageSquare, Zap, FolderOpen, LayoutTemplate } from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { buttonVariants } from '$lib/components/ui/button';
@@ -28,6 +28,7 @@
 		onMcpPromptClick?: () => void;
 		onMcpSettingsClick?: () => void;
 		onMcpResourcesClick?: () => void;
+		onSaveTemplateClick?: () => void;
 	}
 
 	let {
@@ -42,7 +43,8 @@
 		onSystemPromptClick,
 		onMcpPromptClick,
 		onMcpSettingsClick,
-		onMcpResourcesClick
+		onMcpResourcesClick,
+		onSaveTemplateClick
 	}: Props = $props();
 
 	let dropdownOpen = $state(false);
@@ -150,6 +152,19 @@
 			<ChatFormActionAddToolsSubmenu />
 
 			<ChatFormActionAddMcpServersSubmenu onMcpSettingsClick={handleMcpSettingsClick} />
+
+			<DropdownMenu.Separator />
+
+			{#if onSaveTemplateClick}
+				<DropdownMenu.Item
+					class="flex cursor-pointer items-center gap-2"
+					onclick={onSaveTemplateClick}
+				>
+					<LayoutTemplate class="h-4 w-4" />
+
+					<span>Save as Template</span>
+				</DropdownMenu.Item>
+			{/if}
 
 			{#if hasMcpPromptsSupport}
 				<DropdownMenu.Separator />

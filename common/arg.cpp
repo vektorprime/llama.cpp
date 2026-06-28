@@ -3202,6 +3202,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--prompt-template-dir"}, "PATH",
+        "directory for prompt template KV cache storage (default: <binary_dir>/prompt_templates/)",
+        [](common_params & params, const std::string & value) {
+            params.prompt_template_dir = value;
+            if (!fs_is_directory(params.prompt_template_dir)) {
+                fs_create_directory_with_parents(params.prompt_template_dir);
+            }
+            if (!fs_is_directory(params.prompt_template_dir)) {
+                throw std::invalid_argument("not a directory and could not create: " + value);
+            }
+            if (!params.prompt_template_dir.empty() && params.prompt_template_dir[params.prompt_template_dir.size() - 1] != DIRECTORY_SEPARATOR) {
+                params.prompt_template_dir += DIRECTORY_SEPARATOR;
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

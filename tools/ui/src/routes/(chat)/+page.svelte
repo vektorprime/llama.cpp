@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { DialogModelNotAvailable } from '$lib/components/app';
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import { conversationsStore, isConversationsInitialized } from '$lib/stores/conversations.svelte';
-	import { modelsStore, modelOptions } from '$lib/stores/models.svelte';
-	import { onMount } from 'svelte';
+import { chatStore } from '$lib/stores/chat.svelte';
+import { conversationsStore, isConversationsInitialized } from '$lib/stores/conversations.svelte';
+import { modelsStore, modelOptions } from '$lib/stores/models.svelte';
+import { promptTemplatesStore } from '$lib/stores/prompt-templates.svelte';
+import { DatabaseService } from '$lib/services';
+import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { replaceState } from '$app/navigation';
 	import { APP_NAME, NEW_CHAT_PARAM } from '$lib/constants';
@@ -11,6 +13,7 @@
 	let qParam = $derived(page.url.searchParams.get('q'));
 	let modelParam = $derived(page.url.searchParams.get('model'));
 	let newChatParam = $derived(page.url.searchParams.get(NEW_CHAT_PARAM));
+	let templateIdParam = $derived(page.url.searchParams.get('template_id'));
 
 	// Dialog state for model not available error
 	let showModelNotAvailable = $state(false);
@@ -26,6 +29,7 @@
 		url.searchParams.delete('q');
 		url.searchParams.delete('model');
 		url.searchParams.delete(NEW_CHAT_PARAM);
+		url.searchParams.delete('template_id');
 
 		replaceState(url.toString(), {});
 	}
@@ -58,7 +62,55 @@
 		if (qParam !== null) {
 			await conversationsStore.createConversation();
 			clearUrlParams();
-		} else if (modelParam || newChatParam === 'true') {
+		} else if (modelParam || newChatParam === 'true' || templateIdParam) {
+			if (templateIdParam) {
+				chatStore.setPendingTemplate(templateIdParam);
+				try {
+					const template = await promptTemplatesStore.getTemplate(templateIdParam);
+					if (template.messages && template.messages.length > 0) {
+						await conversationsStore.createConversation();
+						const conv = conversationsStore.activeConversation;
+						if (conv) {
+							const rootId = await DatabaseService.createRootMessage(conv.id);
+							let parentId = rootId;
+							for (const msg of template.messages) {
+								if (msg.role === 'system') {
+									const dbMsg = await DatabaseService.createSystemMessage(conv.id, msg.content, parentId);
+									conversationsStore.addMessageToActive(dbMsg);
+									parentId = dbMsg.id;
+								} else if (msg.role === 'user') {
+									const dbMsg = await DatabaseService.createMessageBranch({
+										convId: conv.id,
+										type: 'text' as const,
+										role: msg.role,
+										content: msg.content,
+										timestamp: Date.now(),
+										toolCalls: '',
+										children: [],
+									}, parentId);
+									conversationsStore.addMessageToActive(dbMsg);
+									parentId = dbMsg.id;
+								} else if (msg.role === 'assistant') {
+									const dbMsg = await DatabaseService.createMessageBranch({
+										convId: conv.id,
+										type: 'text' as const,
+										role: msg.role,
+										content: msg.content,
+										timestamp: Date.now(),
+										toolCalls: '',
+										children: [],
+									}, parentId);
+									conversationsStore.addMessageToActive(dbMsg);
+									parentId = dbMsg.id;
+								}
+							}
+							await conversationsStore.updateCurrentNode(parentId);
+						}
+					}
+				} catch (e) {
+					console.error('Failed to restore template messages:', e);
+				}
+			}
 			clearUrlParams();
 		}
 	}
@@ -73,7 +125,7 @@
 
 		await modelsStore.fetch();
 
-		if (qParam !== null || modelParam !== null || newChatParam === 'true') {
+		if (qParam !== null || modelParam !== null || newChatParam === 'true' || templateIdParam !== null) {
 			await handleUrlParams();
 		}
 

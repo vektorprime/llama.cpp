@@ -16,6 +16,7 @@
 		onMcpResourcesClick?: () => void;
 		onMcpSettingsClick?: () => void;
 		onSystemPromptClick?: () => void;
+		onSaveTemplateClick?: () => void;
 	}
 
 	let {
@@ -29,7 +30,8 @@
 		onMcpPromptClick,
 		onMcpResourcesClick,
 		onMcpSettingsClick,
-		onSystemPromptClick
+		onSystemPromptClick,
+		onSaveTemplateClick
 	}: Props = $props();
 </script>
 
@@ -45,6 +47,7 @@
 		{onSystemPromptClick}
 		{onMcpPromptClick}
 		{onMcpResourcesClick}
+		{onSaveTemplateClick}
 	>
 		{#snippet trigger({ disabled, onclick })}
 			<ChatFormActionAddButton {disabled} {onclick} />
@@ -63,5 +66,6 @@
 		{onMcpResourcesClick}
 		{onMcpSettingsClick}
 		{onSystemPromptClick}
+		{onSaveTemplateClick}
 	/>
 {/if}

@@ -306,6 +306,12 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             ctx.params.sampling.generation_prompt = s;
         }));
 
+    add((new field_str("prompt_template_id"))
+        ->set_desc("ID of a saved prompt template to load KV cache from before processing new messages")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.prompt_template_id = data.at("prompt_template_id").get<std::string>();
+        }));
+
     add((new field_bool("parse_tool_calls", params.chat_parser_params.parse_tool_calls))
         ->set_desc("Whether to parse tool calls from the generated output"));
 

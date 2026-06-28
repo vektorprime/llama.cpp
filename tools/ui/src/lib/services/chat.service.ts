@@ -186,7 +186,8 @@ export class ChatService {
 			excludeReasoningFromContext,
 			enableThinking,
 			reasoningEffort,
-			continueFinalMessage
+			continueFinalMessage,
+			promptTemplateId
 		} = options;
 
 		const normalizedMessages: ApiChatMessageData[] = (
@@ -285,6 +286,10 @@ export class ChatService {
 		if (continueFinalMessage) {
 			requestBody.continue_final_message = true;
 			requestBody.add_generation_prompt = false;
+		}
+
+		if (promptTemplateId) {
+			requestBody.prompt_template_id = promptTemplateId;
 		}
 
 		if (temperature !== undefined) requestBody.temperature = temperature;

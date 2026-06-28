@@ -34,6 +34,7 @@
 	import { config } from '$lib/stores/settings.svelte';
 	import { serverLoading, serverError } from '$lib/stores/server.svelte';
 	import { parseFilesToMessageExtras } from '$lib/utils/browser-only';
+import { promptTemplatesStore } from '$lib/stores/prompt-templates.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import ChatScreenGreeting from './ChatScreenGreeting.svelte';
 	import ChatScreenActionScrollDown from './ChatScreenActionScrollDown.svelte';
@@ -197,6 +198,29 @@
 		await chatStore.addSystemPrompt();
 	}
 
+	async function handleSaveTemplate() {
+		const messages = activeMessages();
+		if (messages.length === 0) return;
+
+		const apiMessages: Array<{ role: string; content: string }> = [];
+		for (const msg of messages) {
+			if (msg.role === 'assistant' || msg.role === 'user' || msg.role === 'system') {
+				const content = typeof msg.content === 'string' ? msg.content : '';
+				if (content.trim()) {
+					apiMessages.push({ role: msg.role, content });
+				}
+			}
+		}
+		if (apiMessages.length === 0) return;
+
+		try {
+			const result = await promptTemplatesStore.saveTemplate(apiMessages);
+			console.log(`Template saved: ${result.template_id} (${result.n_tokens} tokens)`);
+		} catch (e) {
+			console.error('Failed to save template:', e);
+		}
+	}
+
 	$effect(() => {
 		const shouldDisableAutoScroll =
 			config().disableAutoScroll || (isMobile.current && isCurrentConversationLoading);
@@ -314,6 +338,7 @@
 				onSend={handleSendMessage}
 				onStop={() => chatStore.stopGeneration()}
 				onSystemPromptAdd={handleSystemPromptAdd}
+				onSaveTemplateClick={handleSaveTemplate}
 				bind:uploadedFiles={fileUpload.uploadedFiles}
 			/>
 		</div>

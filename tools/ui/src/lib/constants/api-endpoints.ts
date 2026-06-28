@@ -21,6 +21,12 @@ export const API_TOOLS = {
 	EXECUTE: '/tools'
 };
 
+export const API_PROMPT_TEMPLATES = {
+	LIST: '/v1/prompt_templates',
+	SAVE: '/v1/prompt_templates/save',
+	DELETE: (id: string) => `/v1/prompt_templates/${id}`
+};
+
 // resumable stream routes, the conv::model identity is appended as a path segment
 export const API_STREAM = {
 	BASE: './v1/stream',
