@@ -3769,6 +3769,14 @@ private:
 
                 if (slot.task->type == SERVER_TASK_TYPE_TEMPLATE_SAVE) {
                     // save the KV cache state for the prompt template
+
+                    if (slot.prompt.tokens.has_mtmd) {
+                        send_error(slot, "This feature is not supported by multimodal", ERROR_TYPE_NOT_SUPPORTED);
+                        slot.release();
+                        slot.i_batch = -1;
+                        return;
+                    }
+
                     const size_t token_count = slot.prompt.tokens.size();
                     const int64_t t_start = ggml_time_us();
 
