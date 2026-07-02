@@ -25,6 +25,46 @@
 
 #define UNUSED GGML_UNUSED
 
+static float g_q2k_diffusion = 0.0f;
+void ggml_q2k_set_diffusion(float d) { g_q2k_diffusion = d; }
+float ggml_q2k_get_diffusion(void) { return g_q2k_diffusion; }
+
+static float g_q2k_diffusion_attn   = 0.7f;
+static float g_q2k_diffusion_mlp    = 0.3f;
+static float g_q2k_diffusion_lmhead = 0.1f;
+static float g_q2k_diffusion_other  = 0.5f;
+static bool g_q2k_layer_diffusion_enabled = false;
+
+void ggml_q2k_set_layer_diffusion(bool enable, float attn, float mlp, float lmhead, float other) {
+    g_q2k_layer_diffusion_enabled = enable;
+    g_q2k_diffusion_attn   = attn;
+    g_q2k_diffusion_mlp    = mlp;
+    g_q2k_diffusion_lmhead = lmhead;
+    g_q2k_diffusion_other  = other;
+}
+
+void ggml_q2k_set_diffusion_for_tensor(const char * name) {
+    if (!g_q2k_layer_diffusion_enabled) return;
+    float diff = g_q2k_diffusion_other;
+
+    if (strstr(name, "token_embd") || strstr(name, "embd") || strstr(name, "wte")) {
+        diff = 0.0f;
+    } else if (strstr(name, "output") || strstr(name, "lm_head") || strstr(name, "embed_out")) {
+        diff = g_q2k_diffusion_lmhead;
+    }
+    else if (strstr(name, "attn_q") || strstr(name, "attn_k") || strstr(name, "attn_v") ||
+             strstr(name, "attn_o") || strstr(name, "attn_output") || strstr(name, "attn_gate") ||
+             strstr(name, "q_proj") || strstr(name, "k_proj") || strstr(name, "v_proj") || strstr(name, "o_proj")) {
+        diff = g_q2k_diffusion_attn;
+    }
+    else if (strstr(name, "ffn_g") || strstr(name, "ffn_u") || strstr(name, "ffn_d") ||
+             strstr(name, "gate_proj") || strstr(name, "up_proj") || strstr(name, "down_proj") ||
+             strstr(name, "mlp.") || strstr(name, "mlp_")) {
+        diff = g_q2k_diffusion_mlp;
+    }
+    g_q2k_diffusion = diff;
+}
+
 static inline int best_index_int8(int n, const int8_t * val, float x) {
     if (x <= val[0]) return 0;
     if (x >= val[n-1]) return n-1;
@@ -839,11 +879,12 @@ void quantize_row_q2_K_ref(const float * GGML_RESTRICT x, block_q2_K * GGML_REST
     float   weights[16];
     float mins[QK_K/16];
     float scales[QK_K/16];
+    float   x_local[QK_K];
 
     const float q4scale = 15.f;
 
     for (int i = 0; i < nb; i++) {
-        float max_scale = 0; // as we are deducting the min, scales are always positive
+        float max_scale = 0;
         float max_min = 0;
         for (int j = 0; j < QK_K/16; ++j) {
             for (int l = 0; l < 16; ++l) weights[l] = fabsf(x[16*j + l]);
@@ -858,36 +899,79 @@ void quantize_row_q2_K_ref(const float * GGML_RESTRICT x, block_q2_K * GGML_REST
             }
         }
 
+        if (g_q2k_diffusion > 0.0f) {
+            memcpy(x_local, x, QK_K * sizeof(float));
+        }
+
         if (max_scale > 0) {
             float iscale = q4scale/max_scale;
-            for (int j = 0; j < QK_K/16; ++j) {
-                int l = nearest_int(iscale*scales[j]);
-                y[i].scales[j] = l;
-            }
             y[i].d = GGML_FP32_TO_FP16(max_scale/q4scale);
+
+            if (g_q2k_diffusion > 0.0f) {
+                float iscale_min = (max_min > 0) ? q4scale/max_min : 0;
+                for (int j = 0; j < QK_K/16; ++j) {
+                    const float * x_cur = x_local + 16*j;
+                    for (int l = 0; l < 16; ++l) weights[l] = fabsf(x_cur[l]);
+                    float new_min;
+                    float new_scale = make_qkx2_quants(16, 3, x_cur, weights, L + 16*j, &new_min, Laux, -0.5f, 0.1f, 15, true);
+
+                    int sl = nearest_int(iscale * new_scale);
+                    sl = MAX(0, MIN(15, sl));
+                    int ml = (max_min > 0) ? nearest_int(iscale_min * new_min) : 0;
+                    ml = MAX(0, MIN(15, ml));
+                    y[i].scales[j] = sl | (ml << 4);
+                }
+            } else {
+                for (int j = 0; j < QK_K/16; ++j) {
+                    int l = nearest_int(iscale*scales[j]);
+                    y[i].scales[j] = l;
+                }
+            }
         } else {
             for (int j = 0; j < QK_K/16; ++j) y[i].scales[j] = 0;
             y[i].d = GGML_FP32_TO_FP16(0.f);
         }
-        if (max_min > 0) {
-            float iscale = q4scale/max_min;
-            for (int j = 0; j < QK_K/16; ++j) {
-                int l = nearest_int(iscale*mins[j]);
-                y[i].scales[j] |= (l << 4);
+
+        if (!(g_q2k_diffusion > 0.0f)) {
+            if (max_min > 0) {
+                float iscale = q4scale/max_min;
+                for (int j = 0; j < QK_K/16; ++j) {
+                    int l = nearest_int(iscale*mins[j]);
+                    y[i].scales[j] |= (l << 4);
+                }
+                y[i].dmin = GGML_FP32_TO_FP16(max_min/q4scale);
+            } else {
+                y[i].dmin = GGML_FP32_TO_FP16(0.f);
             }
-            y[i].dmin = GGML_FP32_TO_FP16(max_min/q4scale);
         } else {
-            y[i].dmin = GGML_FP32_TO_FP16(0.f);
-        }
-        for (int j = 0; j < QK_K/16; ++j) {
-            const float d = GGML_FP16_TO_FP32(y[i].d) * (y[i].scales[j] & 0xF);
-            if (!d) continue;
-            const float dm = GGML_FP16_TO_FP32(y[i].dmin) * (y[i].scales[j] >> 4);
-            for (int ii = 0; ii < 16; ++ii) {
-                int l = nearest_int((x[16*j + ii] + dm)/d);
-                l = MAX(0, MIN(3, l));
-                L[16*j + ii] = l;
+            if (max_min > 0) {
+                y[i].dmin = GGML_FP32_TO_FP16(max_min/q4scale);
+            } else {
+                y[i].dmin = GGML_FP32_TO_FP16(0.f);
             }
+        }
+
+        if (max_scale > 0) {
+            for (int j = 0; j < QK_K/16; ++j) {
+                const float d = GGML_FP16_TO_FP32(y[i].d) * (y[i].scales[j] & 0xF);
+                if (!d) continue;
+                const float dm = GGML_FP16_TO_FP32(y[i].dmin) * (y[i].scales[j] >> 4);
+                const float * x_ref = (g_q2k_diffusion > 0.0f) ? x_local : x;
+                for (int ii = 0; ii < 16; ++ii) {
+                    int l = nearest_int((x_ref[16*j + ii] + dm)/d);
+                    l = MAX(0, MIN(3, l));
+                    L[16*j + ii] = l;
+                }
+                if (g_q2k_diffusion > 0.0f && j + 1 < QK_K/16) {
+                    for (int ii = 0; ii < 16; ++ii) {
+                        const float w_q = d * (float)L[16*j + ii] - dm;
+                        const float err = x[16*j + ii] - w_q;
+                        x_local[16*(j+1) + ii] += g_q2k_diffusion * err;
+                    }
+                }
+            }
+        } else {
+            for (int j = 0; j < QK_K; ++j) L[j] = 0;
         }
 
         for (int j = 0; j < QK_K; j += 128) {
@@ -1101,6 +1185,7 @@ static void quantize_row_q2_K_impl(const float * GGML_RESTRICT x, block_q2_K * G
     float sw[QK_K/16];
     float weight[16];
     uint8_t Ls[QK_K/16], Lm[QK_K/16];
+    float x_local[QK_K];
 
     for (int i = 0; i < nb; i++) {
         memset(sw, 0, QK_K/16*sizeof(float));
@@ -1123,8 +1208,26 @@ static void quantize_row_q2_K_impl(const float * GGML_RESTRICT x, block_q2_K * G
         dm        = GGML_FP16_TO_FP32(y[i].d);
         mm        = GGML_FP16_TO_FP32(y[i].dmin);
 
+        if (g_q2k_diffusion > 0.0f) {
+            memcpy(x_local, x, QK_K * sizeof(float));
+        }
+
         for (int j = 0; j < QK_K/16; ++j) {
-            y[i].scales[j] = Ls[j] | (Lm[j] << 4);
+            if (g_q2k_diffusion > 0.0f) {
+                const float * x_cur = x_local + 16*j;
+                const float * qw = quant_weights + QK_K * i + 16*j;
+                for (int l = 0; l < 16; ++l) weight[l] = qw[l] * sqrtf(sigma2 + x_cur[l]*x_cur[l]);
+                float new_min;
+                float new_scale = make_qkx3_quants(16, 3, x_cur, weight, L + 16*j, &new_min, Laux, -0.9f, 0.05f, 36, false);
+
+                int sl = dm > 0 ? nearest_int(new_scale / dm) : 0;
+                sl = MAX(0, MIN(15, sl));
+                int ml = mm > 0 ? nearest_int(new_min / mm) : 0;
+                ml = MAX(0, MIN(15, ml));
+                y[i].scales[j] = sl | (ml << 4);
+            } else {
+                y[i].scales[j] = Ls[j] | (Lm[j] << 4);
+            }
         }
 
         if (requantize) {
@@ -1132,10 +1235,18 @@ static void quantize_row_q2_K_impl(const float * GGML_RESTRICT x, block_q2_K * G
                 const float d = dm * (y[i].scales[j] & 0xF);
                 if (!d) continue;
                 const float m = mm * (y[i].scales[j] >> 4);
+                const float * x_ref = (g_q2k_diffusion > 0.0f) ? x_local : x;
                 for (int ii = 0; ii < 16; ++ii) {
-                    int l = nearest_int((x[16*j + ii] + m)/d);
+                    int l = nearest_int((x_ref[16*j + ii] + m)/d);
                     l = MAX(0, MIN(3, l));
                     L[16*j + ii] = l;
+                }
+                if (g_q2k_diffusion > 0.0f && j + 1 < QK_K/16) {
+                    for (int ii = 0; ii < 16; ++ii) {
+                        const float w_q = d * (float)L[16*j + ii] - m;
+                        const float err = x[16*j + ii] - w_q;
+                        x_local[16*(j+1) + ii] += g_q2k_diffusion * err;
+                    }
                 }
             }
         }

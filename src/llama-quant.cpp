@@ -3,6 +3,10 @@
 #include "llama-model-loader.h"
 #include "llama-ext.h"
 
+extern "C" {
+void ggml_q2k_set_diffusion_for_tensor(const char * name);
+}
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -1221,6 +1225,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
                 LLAMA_LOG_INFO("converting to %s .. ", ggml_type_name(new_type));
                 fflush(stdout);
+
+                ggml_q2k_set_diffusion_for_tensor(tensor->name);
 
                 if (work.size() < (size_t)nelements * 4) {
                     work.resize(nelements * 4); // upper bound on size

@@ -32,6 +32,11 @@ GGML_API void quantize_row_q5_K_ref(const float * GGML_RESTRICT x, block_q5_K * 
 GGML_API void quantize_row_q6_K_ref(const float * GGML_RESTRICT x, block_q6_K * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K * GGML_RESTRICT y, int64_t k);
 
+GGML_API void ggml_q2k_set_diffusion(float d);
+GGML_API float ggml_q2k_get_diffusion(void);
+GGML_API void ggml_q2k_set_layer_diffusion(bool enable, float attn, float mlp, float lmhead, float other);
+GGML_API void ggml_q2k_set_diffusion_for_tensor(const char * name);
+
 GGML_API void quantize_row_tq1_0_ref(const float * GGML_RESTRICT x, block_tq1_0 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RESTRICT y, int64_t k);
 

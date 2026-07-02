@@ -18,6 +18,13 @@
 #include <fstream>
 #include <filesystem>
 
+extern "C" {
+void ggml_q2k_set_diffusion(float d);
+float ggml_q2k_get_diffusion(void);
+void ggml_q2k_set_layer_diffusion(bool enable, float attn, float mlp, float lmhead, float other);
+void ggml_q2k_set_diffusion_for_tensor(const char * name);
+}
+
 // result of parsing --tensor-type option
 // changes to this struct must also be reflected in src/llama-quant.cpp
 struct tensor_type_option {
@@ -161,6 +168,18 @@ static void usage(const char * executable) {
     printf("  --dry-run\n");
     printf("                                      calculate and show the final quantization size without performing quantization\n");
     printf("                                      example: llama-quantize --dry-run model-f32.gguf Q4_K\n\n");
+    printf("  --q2k-diffusion FLOAT\n");
+    printf("                                      error diffusion coefficient for Q2_K quantization (0.0 = disabled)\n");
+    printf("  --q2k-layer-diffusion\n");
+    printf("                                      enable per-layer-type error diffusion for Q2_K quantization\n");
+    printf("  --q2k-diffusion-attn FLOAT\n");
+    printf("                                      diffusion coeff for attention layers (default 0.7)\n");
+    printf("  --q2k-diffusion-mlp FLOAT\n");
+    printf("                                      diffusion coeff for MLP/FFN layers (default 0.3)\n");
+    printf("  --q2k-diffusion-lmhead FLOAT\n");
+    printf("                                      diffusion coeff for lm_head/output layers (default 0.1)\n");
+    printf("  --q2k-diffusion-other FLOAT\n");
+    printf("                                      diffusion coeff for other layers (default 0.5)\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
     printf("-----------------------------------------------------------------------------\n");
     printf(" allowed quantization types\n");
@@ -403,6 +422,13 @@ int llama_quantize(int argc, char ** argv) {
     std::vector<tensor_type_option> tensor_type_opts;
     std::vector<int> prune_layers;
 
+    float  q2k_diffusion_attn   = 0.7f;
+    float  q2k_diffusion_mlp    = 0.3f;
+    float  q2k_diffusion_lmhead = 0.1f;
+    float  q2k_diffusion_other  = 0.5f;
+    bool   q2k_layer_diffusion  = false;
+    float  q2k_diffusion_val    = 0.0f;
+
     for (; arg_idx < argc && strncmp(argv[arg_idx], "--", 2) == 0; arg_idx++) {
         if (strcmp(argv[arg_idx], "--leave-output-tensor") == 0) {
             params.quantize_output_tensor = false;
@@ -466,6 +492,48 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--keep-split") == 0) {
             params.keep_split = true;
+        } else if (strncmp(argv[arg_idx], "--q2k-diffusion=", 16) == 0) {
+            q2k_diffusion_val = (float)atof(argv[arg_idx] + 16);
+        } else if (strcmp(argv[arg_idx], "--q2k-diffusion") == 0) {
+            if (arg_idx < argc-1) {
+                q2k_diffusion_val = (float)atof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strncmp(argv[arg_idx], "--q2k-diffusion-attn=", 21) == 0) {
+            q2k_diffusion_attn = (float)atof(argv[arg_idx] + 21);
+        } else if (strcmp(argv[arg_idx], "--q2k-diffusion-attn") == 0) {
+            if (arg_idx < argc-1) {
+                q2k_diffusion_attn = (float)atof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strncmp(argv[arg_idx], "--q2k-diffusion-mlp=", 20) == 0) {
+            q2k_diffusion_mlp = (float)atof(argv[arg_idx] + 20);
+        } else if (strcmp(argv[arg_idx], "--q2k-diffusion-mlp") == 0) {
+            if (arg_idx < argc-1) {
+                q2k_diffusion_mlp = (float)atof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strncmp(argv[arg_idx], "--q2k-diffusion-lmhead=", 23) == 0) {
+            q2k_diffusion_lmhead = (float)atof(argv[arg_idx] + 23);
+        } else if (strcmp(argv[arg_idx], "--q2k-diffusion-lmhead") == 0) {
+            if (arg_idx < argc-1) {
+                q2k_diffusion_lmhead = (float)atof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strncmp(argv[arg_idx], "--q2k-diffusion-other=", 22) == 0) {
+            q2k_diffusion_other = (float)atof(argv[arg_idx] + 22);
+        } else if (strcmp(argv[arg_idx], "--q2k-diffusion-other") == 0) {
+            if (arg_idx < argc-1) {
+                q2k_diffusion_other = (float)atof(argv[++arg_idx]);
+            } else {
+                usage(argv[0]);
+            }
+        } else if (strcmp(argv[arg_idx], "--q2k-layer-diffusion") == 0) {
+            q2k_layer_diffusion = true;
         } else {
             usage(argv[0]);
         }
@@ -477,6 +545,12 @@ int llama_quantize(int argc, char ** argv) {
     }
     if (!included_weights.empty() && !excluded_weights.empty()) {
         usage(argv[0]);
+    }
+
+    if (q2k_layer_diffusion) {
+        ggml_q2k_set_layer_diffusion(true, q2k_diffusion_attn, q2k_diffusion_mlp, q2k_diffusion_lmhead, q2k_diffusion_other);
+    } else if (q2k_diffusion_val > 0.0f) {
+        ggml_q2k_set_diffusion(q2k_diffusion_val);
     }
 
     std::vector<std::string> imatrix_datasets;
