@@ -5,7 +5,7 @@
 
 extern "C" {
 void ggml_q2k_set_diffusion_for_tensor(const char * name);
-void iq2xxs_learn_grid(const float * x, const float * weights, int64_t nrows, int64_t n_per_row);
+void iq2xxs_learn_grid(const float * x, const float * weights, int64_t nrows, int64_t n_per_row, const char * tensor_name);
 void ggml_iq2xxs_set_learn_codebook(bool enable);
 bool ggml_iq2xxs_get_learn_codebook(void);
 const uint64_t * iq2xxs_get_learned_grid(void);
@@ -715,9 +715,9 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
 // quantization implementation
 //
 
-static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t nrows, int64_t n_per_row, const float * imatrix, std::vector<std::thread> & workers, const int nthread) {
+static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t nrows, int64_t n_per_row, const float * imatrix, std::vector<std::thread> & workers, const int nthread, const char * tensor_name) {
     if (new_type == GGML_TYPE_IQ2_XXS && ggml_iq2xxs_get_learn_codebook()) {
-        iq2xxs_learn_grid(f32_data, imatrix, nrows, n_per_row);
+        iq2xxs_learn_grid(f32_data, imatrix, nrows, n_per_row, tensor_name);
     }
 
     if (nthread < 2) {
@@ -1261,7 +1261,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     void * new_data_03 = (char *)new_data + ggml_row_size(new_type, n_per_row) * i03 * nrows;
                     const float * imatrix_03 = imatrix ? imatrix + i03 * n_per_row : nullptr;
 
-                    new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
+                    new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use, tensor->name);
                 }
 
                 if (new_type == GGML_TYPE_IQ2_XXS && ggml_iq2xxs_get_learn_codebook()) {

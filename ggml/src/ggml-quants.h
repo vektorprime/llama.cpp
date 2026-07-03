@@ -110,7 +110,7 @@ GGML_API size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_REST
 GGML_API void iq2xs_init_impl(enum ggml_type type);
 GGML_API void iq2xs_free_impl(enum ggml_type type);
 GGML_API void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRICT weights,
-        int64_t nrows, int64_t n_per_row);
+        int64_t nrows, int64_t n_per_row, const char * tensor_name);
 GGML_API void iq3xs_init_impl(int grid_size);
 GGML_API void iq3xs_free_impl(int grid_size);
 
