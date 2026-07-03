@@ -3946,6 +3946,42 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
         }
 
         float d = max_scale/31;
+        /* --- Gradient-based d refinement (SAFE version with clamping) ---
+         * After all sub-blocks are quantized, refine the super-block scale d
+         * via a small grid search around the computed d. We try 11 scale 
+         * multipliers from 0.8x to 1.2x, evaluate reconstruction error,
+         * and pick the best. Safety: only apply if d > 0. */
+        if (d > 1e-8f) {
+            float best_d = d;
+            float best_err = FLT_MAX;
+            for (int is = -10; is <= 10; ++is) {
+                float d_try = d * (1.0f + is * 0.02f);  /* 0.8x to 1.2x in 2% steps */
+                float err = 0.0f;
+                for (int ib = 0; ib < QK_K/32; ++ib) {
+                    const float * xb = xbl + 32*ib;
+                    const float * qw = quant_weights + QK_K*ibl + 32*ib;
+                    float sigma2_ib = 0.0f;
+                    for (int i = 0; i < 32; ++i) sigma2_ib += xb[i]*xb[i];
+                    sigma2_ib /= 32.0f;
+                    int lb = (q2[2*ib+1] >> 28) & 0xf;
+                    float s_factor = (0.5f + (float)lb) * 0.25f;
+                    for (int k = 0; k < 4; ++k) {
+                        int grid_idx = (q2[2*ib+0] >> (8*k)) & 0xff;
+                        const int8_t * pg = (const int8_t *)(kgrid_q2xs + grid_idx);
+                        uint8_t signs = block_signs[k];
+                        for (int i = 0; i < 8; ++i) {
+                            float sign_f = (signs & (1 << i)) ? -1.0f : 1.0f;
+                            float q = s_factor * (float)pg[i] * sign_f;
+                            float diff = xb[8*k+i] - d_try * q;
+                            float w = qw[8*k+i] * sqrtf(sigma2_ib + xb[8*k+i]*xb[8*k+i]);
+                            err += w * diff * diff;
+                        }
+                    }
+                }
+                if (err < best_err) { best_err = err; best_d = d_try; }
+            }
+            d = best_d;
+        }
         y[ibl].d = GGML_FP32_TO_FP16(d);
         float id = 1/d;
         for (int ib = 0; ib < QK_K/32; ++ib) {
