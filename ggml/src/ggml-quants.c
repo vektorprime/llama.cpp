@@ -3565,15 +3565,15 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             memset(new_wt_sums, 0, grid_size * 8 * sizeof(float));
 
             for (int64_t s = 0; s < n_samples; ++s) {
-                float best_d2 = FLT_MAX;
+                float best_d1 = FLT_MAX;
                 int best_k = 0;
                 for (int k = 0; k < grid_size; ++k) {
-                    float d2 = 0;
+                    float d1 = 0;
                     for (int i = 0; i < 8; ++i) {
                         float diff = centroids_float[8*k + i] - samples[8*s + i];
-                        d2 += sample_weights[8*s + i] * diff * diff;
+                        d1 += sample_weights[8*s + i] * fabsf(diff);
                     }
-                    if (d2 < best_d2) { best_d2 = d2; best_k = k; }
+                    if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
                 assignments[s] = (int8_t)best_k;
                 for (int i = 0; i < 8; ++i) {
@@ -3633,7 +3633,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 float diff = (float)pg[8*k + i] - samples[8*s + i];
                 d2 += sample_weights[8*s + i] * diff * diff;
             }
-            trial_error += d2;
+            trial_error += d1;
         }
 
         free(new_wt_sums);
@@ -3663,18 +3663,18 @@ static int iq2_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours, co
         const float * GGML_RESTRICT xval, const float * GGML_RESTRICT weight, float scale, int8_t * GGML_RESTRICT L) {
     int num_neighbors = neighbours[0];
     GGML_ASSERT(num_neighbors > 0);
-    float best_d2 = FLT_MAX;
+    float best_d1 = FLT_MAX;
     int grid_index = -1;
     for (int j = 1; j <= num_neighbors; ++j) {
         const int8_t * pg = (const int8_t *)(grid + neighbours[j]);
-        float d2 = 0;
+        float d1 = 0;
         for (int i = 0; i < 8; ++i) {
             float q = pg[i];
             float diff = scale*q - xval[i];
-            d2 += weight[i]*diff*diff;
+            d1 += weight[i]*fabsf(diff);
         }
-        if (d2 < best_d2) {
-            best_d2 = d2; grid_index = neighbours[j];
+        if (d1 < best_d1) {
+            best_d1 = d1; grid_index = neighbours[j];
         }
     }
     GGML_ASSERT(grid_index >= 0);
@@ -4307,18 +4307,18 @@ static int iq3_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours, co
         const float * GGML_RESTRICT xval, const float * GGML_RESTRICT weight, float scale, int8_t * GGML_RESTRICT L) {
     int num_neighbors = neighbours[0];
     GGML_ASSERT(num_neighbors > 0);
-    float best_d2 = FLT_MAX;
+    float best_d1 = FLT_MAX;
     int grid_index = -1;
     for (int j = 1; j <= num_neighbors; ++j) {
         const int8_t * pg = (const int8_t *)(grid + neighbours[j]);
-        float d2 = 0;
+        float d1 = 0;
         for (int i = 0; i < 4; ++i) {
             float q = pg[i];
             float diff = scale*q - xval[i];
-            d2 += weight[i]*diff*diff;
+            d1 += weight[i]*fabsf(diff);
         }
-        if (d2 < best_d2) {
-            best_d2 = d2; grid_index = neighbours[j];
+        if (d1 < best_d1) {
+            best_d1 = d1; grid_index = neighbours[j];
         }
     }
     GGML_ASSERT(grid_index >= 0);
