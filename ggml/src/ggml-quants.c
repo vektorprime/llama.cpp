@@ -3483,7 +3483,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         int64_t nrows, int64_t n_per_row, const char * tensor_name) {
     const int grid_size = 256;
     const int gindex = 0;
-    const int kmeans_iters = 40;
+    const int kmeans_iters = 60;
 
     /* --- Per-tensor-type codebooks ---
      * Classify tensor by name into attention (attn_*), MLP (ffn_*), or other.
@@ -3503,7 +3503,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     static int per_cat_tensor_count[3] = { 0, 0, 0 };
     per_cat_tensor_count[tcat]++;
 
-    const int num_trials = 5;
+    const int num_trials = 7;
     const int max_samples = 16384;
 
     int64_t n_total = nrows * n_per_row;
@@ -3545,22 +3545,70 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
             }
         } else {
-            /* --- Data-driven init: pick distinct random samples per centroid, no E8 bias --- */
+            /* --- K-means++ initialization: probabilistic farthest-first sampling --- */
             unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
-            for (int k = 0; k < grid_size; ++k) {
-                rng_state ^= rng_state << 13;
-                rng_state ^= rng_state >> 17;
-                rng_state ^= rng_state << 5;
-                int64_t sample_idx = rng_state % n_samples;
-                int8_t * pg = (int8_t *)(trial_grid + k);
+            float * min_d2 = (float *)malloc(n_samples * sizeof(float));
+            GGML_ASSERT(min_d2);
+
+            /* Pick first centroid uniformly at random */
+            rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
+            {
+                int64_t idx = rng_state % n_samples;
+                int8_t * pg = (int8_t *)(trial_grid + 0);
                 for (int i = 0; i < 8; ++i) {
-                    float v = samples[8*sample_idx + i];
+                    float v = samples[8*idx + i];
                     v = roundf(v);
                     if (v < 0.0f) v = 0.0f;
                     if (v > 127.0f) v = 127.0f;
                     pg[i] = (int8_t)v;
                 }
             }
+
+            float total_d2 = 0.0f;
+            const int8_t * pg0 = (const int8_t *)(trial_grid + 0);
+            for (int64_t s = 0; s < n_samples; ++s) {
+                float d2 = 0.0f;
+                for (int i = 0; i < 8; ++i) {
+                    float diff = (float)pg0[i] - samples[8*s + i];
+                    d2 += diff * diff;
+                }
+                min_d2[s] = d2;
+                total_d2 += d2;
+            }
+
+            /* Pick remaining centroids with probability proportional to squared distance */
+            for (int k = 1; k < grid_size; ++k) {
+                rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
+                float r = ((float)(rng_state & 0x7FFFFFFF) / 2147483648.0f) * total_d2;
+                float cumsum = 0.0f;
+                int64_t selected = n_samples - 1;
+                for (int64_t s = 0; s < n_samples; ++s) {
+                    cumsum += min_d2[s];
+                    if (cumsum >= r && selected == n_samples - 1) { selected = s; }
+                }
+
+                int8_t * pg = (int8_t *)(trial_grid + k);
+                for (int i = 0; i < 8; ++i) {
+                    float v = samples[8*selected + i];
+                    v = roundf(v);
+                    if (v < 0.0f) v = 0.0f;
+                    if (v > 127.0f) v = 127.0f;
+                    pg[i] = (int8_t)v;
+                }
+
+                total_d2 = 0.0f;
+                for (int64_t s = 0; s < n_samples; ++s) {
+                    float d2 = 0.0f;
+                    for (int i = 0; i < 8; ++i) {
+                        float diff = (float)pg[i] - samples[8*s + i];
+                        d2 += diff * diff;
+                    }
+                    if (d2 < min_d2[s]) min_d2[s] = d2;
+                    total_d2 += min_d2[s];
+                }
+            }
+
+            free(min_d2);
         }
 
         float * centroids_float = (float *)calloc(grid_size * 8, sizeof(float));
