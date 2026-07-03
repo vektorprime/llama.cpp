@@ -3490,7 +3490,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
      * Maintain separate shared grids per category so that each type trains
      * a grid optimized for its own weight distribution. */
     enum tensor_type_category { TENSOR_ATTN, TENSOR_MLP, TENSOR_OTHER };
-    tensor_type_category tcat = TENSOR_OTHER;
+    enum tensor_type_category tcat = TENSOR_OTHER;
     if (tensor_name) {
         if (strstr(tensor_name, "attn_")) {
             tcat = TENSOR_ATTN;
