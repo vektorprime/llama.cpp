@@ -3628,10 +3628,10 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         for (int64_t s = 0; s < n_samples; ++s) {
             const int8_t * pg = (const int8_t *)trial_grid;
             int k = assignments[s];
-            float d2 = 0;
+            float d1 = 0;
             for (int i = 0; i < 8; ++i) {
                 float diff = (float)pg[8*k + i] - samples[8*s + i];
-                d2 += sample_weights[8*s + i] * diff * diff;
+                d1 += sample_weights[8*s + i] * fabsf(diff);
             }
             trial_error += d1;
         }
