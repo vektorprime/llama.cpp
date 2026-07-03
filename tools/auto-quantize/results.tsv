@@ -15,3 +15,4 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-03T07:10:00	exp-20260703-001	4d65df895	0858b30ec	float-space K-means: train centroids as floats (no int8 rounding during 20 iters), snap to int8 at end only	success	0.993424	IQ2_XXS			786.3	637.1	820.0	125.0	34.756	55.890
 2026-07-03T08:00:00	exp-20260703-002	967eb43e5	4d65df895	error-aware int8 snap + data-driven init + allow-zero centroids + 40 iters/5 trials	success	0.971159	IQ2_XXS			786.3	1853.8	820.0	125.0	33.946	56.500
 2026-07-03T08:40:00	exp-20260703-003	a982d7659	967eb43e5	L1 distance metric for K-means assignment and quantization search (on top of exp-002 improvements)	success	0.970904	IQ2_XXS			786.3	1852.0	820.0	125.0	33.753	55.625
+2026-07-03T14:32:32	exp-20260703-004	a982d7659	967eb43e5	multi-round error-aware refinement: 3 rounds of re-assign + +/-1 GD per centroid dim after initial snap	success	0.970904	IQ2_XXS			786.3	2178.5	820.0	125.0	33.753	55.625

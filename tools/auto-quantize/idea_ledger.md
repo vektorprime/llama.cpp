@@ -22,3 +22,20 @@ weight positions, reducing output distortion.
 K-means pass on the residual. This allows the grid to adapt to quantization artifacts.
 
 **Expected**: KL reduction of 5-15%.
+
+### exp-20260703-004: Multi-round error-aware refinement (RESULT: NO CHANGE)
+**Hypothesis**: After the initial error-aware int8 snap, re-assign samples to snapped centroids and do ±1 gradient descent per dimension for 2-3 rounds. This could escape local minima and find better centroid values.
+
+**Result**: KL = 0.970904 (identical to exp-003). The multi-round refinement found no improvements — the error-aware snap already finds near-optimal integer values. This suggests the K-means assignment + error-aware snap is already at a fixed point.
+
+**Lesson**: The grid values are already locally optimal. To improve further, we need structural changes (per-type grids, scale refinement) rather than local search.
+
+### exp-20260703-005: Per-tensor-type codebooks (PENDING)
+**Hypothesis**: Separate shared grids for attention (attn_*) vs MLP (ffn_*) tensors, since they have different magnitude distributions. Grids are refined across all tensors of the same type.
+
+**Expected**: KL reduction of 2-5%.
+
+### exp-20260703-006: Gradient-based super-block scale refinement (PENDING)
+**Hypothesis**: After quantization, refine super-block scale d via weighted least squares to minimize reconstruction error. This is a 1-D closed-form optimization.
+
+**Expected**: KL reduction of 1-3%.
