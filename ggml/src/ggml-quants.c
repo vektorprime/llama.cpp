@@ -3509,6 +3509,20 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         }
     }
 
+    float samples_max = 0.0f;
+    for (int64_t t = 0; t < 8 * n_samples; ++t) {
+        if (samples[t] > samples_max) samples_max = samples[t];
+    }
+    if (samples_max < 1e-6f) {
+        free(samples);
+        free(sample_weights);
+        return;
+    }
+    float samples_scale = 127.0f / samples_max;
+    for (int64_t t = 0; t < 8 * n_samples; ++t) {
+        samples[t] *= samples_scale;
+    }
+
     uint64_t * best_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
     GGML_ASSERT(best_grid);
     float best_error = FLT_MAX;
