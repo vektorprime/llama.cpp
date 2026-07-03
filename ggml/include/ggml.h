@@ -695,7 +695,7 @@ extern "C" {
 
         void * extra; // extra things e.g. for ggml-cuda.cu
 
-        char padding[8];
+        void * iq2xxs_grid_data; // per-tensor IQ2_XXS codebook (256 uint64_t)
     };
 
     static const size_t GGML_TENSOR_SIZE = sizeof(struct ggml_tensor);

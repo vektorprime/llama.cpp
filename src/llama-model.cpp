@@ -1,5 +1,7 @@
 #include "llama-model.h"
 
+#include "gguf.h"
+
 #include "llama-arch.h"
 #include "llama-ext.h"
 #include "llama-hparams.h"
@@ -1010,6 +1012,9 @@ struct llama_model::impl {
     std::vector<layer_dev> dev_layer;
 
     bool has_tensor_overrides;
+
+    // Per-tensor IQ2_XXS grids loaded from companion file
+    std::vector<std::vector<uint8_t>> iq2xxs_grids_storage;
 };
 
 llama_model::llama_model(const llama_model_params & params) : params(params), pimpl(std::make_unique<impl>()) {
@@ -1625,6 +1630,78 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     return true;
+}
+
+void llama_model::load_iq2xxs_grids(const std::string & fname) {
+    std::string grids_fname = fname + ".iq2xxs_grids";
+    FILE * fp = fopen(grids_fname.c_str(), "rb");
+    if (!fp) {
+        return;
+    }
+    fclose(fp);
+
+    struct ggml_context * ctx = NULL;
+    struct gguf_init_params gguf_params = {
+        /*.no_alloc = */ true,
+        /*.ctx      = */ &ctx,
+    };
+    struct gguf_context * grids_ctx = gguf_init_from_file(grids_fname.c_str(), gguf_params);
+    if (!grids_ctx) {
+        LLAMA_LOG_WARN("%s: failed to load companion grids file: %s\n", __func__, grids_fname.c_str());
+        return;
+    }
+
+    int n_tensors = gguf_get_n_tensors(grids_ctx);
+    LLAMA_LOG_INFO("%s: loading %d per-tensor IQ2_XXS grids from %s\n", __func__, n_tensors, grids_fname.c_str());
+
+    for (int i = 0; i < n_tensors; i++) {
+        const char * grid_name = gguf_get_tensor_name(grids_ctx, i);
+        std::string grid_name_str(grid_name);
+        std::string tensor_name = grid_name_str;
+        std::string suffix = ".iq2xxs_grid";
+        size_t pos = tensor_name.rfind(suffix);
+        if (pos == std::string::npos || pos + suffix.size() != tensor_name.size()) {
+            LLAMA_LOG_WARN("%s: unexpected grid name: %s\n", __func__, grid_name);
+            continue;
+        }
+        tensor_name.resize(pos);
+
+        ggml_tensor * tensor = nullptr;
+        for (auto & [name, t] : tensors_by_name) {
+            if (name == tensor_name) {
+                tensor = t;
+                break;
+            }
+        }
+        if (!tensor) {
+            LLAMA_LOG_WARN("%s: no tensor named '%s' for grid '%s'\n", __func__, tensor_name.c_str(), grid_name);
+            continue;
+        }
+        if (tensor->type != GGML_TYPE_IQ2_XXS) {
+            LLAMA_LOG_WARN("%s: tensor '%s' is not IQ2_XXS, skipping grid\n", __func__, tensor_name.c_str());
+            continue;
+        }
+
+        const size_t grid_size = 256 * sizeof(uint64_t);
+        pimpl->iq2xxs_grids_storage.emplace_back(grid_size);
+        uint8_t * grid_data = pimpl->iq2xxs_grids_storage.back().data();
+
+        size_t tensor_offset = gguf_get_tensor_offset(grids_ctx, i);
+        size_t data_offset = gguf_get_data_offset(grids_ctx) + tensor_offset;
+        FILE * gfp = fopen(grids_fname.c_str(), "rb");
+        if (gfp) {
+            fseek(gfp, data_offset, SEEK_SET);
+            fread(grid_data, 1, grid_size, gfp);
+            fclose(gfp);
+        }
+
+        tensor->iq2xxs_grid_data = (void *)grid_data;
+    }
+
+    gguf_free(grids_ctx);
+    if (ctx) {
+        ggml_free(ctx);
+    }
 }
 
 ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {

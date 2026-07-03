@@ -82,6 +82,10 @@ void ggml_cuda_mul_mat_q(
 
     GGML_TENSOR_BINARY_OP_LOCALS;
 
+    // NOTE: per-tensor IQ2_XXS grid is NOT set here because mmq template instances
+    // are compiled in separate TUs. The mmvq path (mmvq.cu) handles per-tensor grids.
+    // This path falls back to the default iq2xxs_grid.
+
     cudaStream_t stream = ctx.stream();
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 

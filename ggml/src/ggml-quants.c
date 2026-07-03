@@ -2524,9 +2524,20 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
 
 // ====================== "True" 2-bit (de)-quantization
 
+// Thread-local per-tensor grid pointer set by CPU/CUDA backends before dequant/vec_dot
+extern _Thread_local const uint64_t * g_iq2xxs_per_tensor_grid;
+const uint64_t * ggml_iq2xxs_get_per_tensor_grid(void);
+
+static inline const uint64_t * iq2xxs_resolve_grid(void) {
+    const uint64_t * g = ggml_iq2xxs_get_per_tensor_grid();
+    return g ? g : iq2xxs_grid;
+}
+
 void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
+
+    const uint64_t * local_grid = iq2xxs_resolve_grid();
 
     uint32_t aux32[2];
     const uint8_t * aux8 = (const uint8_t *)aux32;
@@ -2539,7 +2550,7 @@ void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_
             memcpy(aux32, x[i].qs + 4*ib32, 2*sizeof(uint32_t));
             const float db = d * (0.5f + (aux32[1] >> 28)) * 0.25f;
             for (int l = 0; l < 4; ++l) {
-                const uint8_t * grid = (const uint8_t *)(iq2xxs_grid + aux8[l]);
+                const uint8_t * grid = (const uint8_t *)(local_grid + aux8[l]);
                 const uint8_t  signs = ksigns_iq2xs[(aux32[1] >> 7*l) & 127];
                 for (int j = 0; j < 8; ++j) {
                     y[j] = db * grid[j] * (signs & kmask_iq2xs[j] ? -1.f : 1.f);
@@ -2868,6 +2879,30 @@ static iq2_entry_t iq2_data[4] = {
     {NULL, NULL, NULL},
     {NULL, NULL, NULL},
 };
+
+static bool g_iq2xxs_learn_codebook = false;
+
+void ggml_iq2xxs_set_learn_codebook(bool enable) {
+    g_iq2xxs_learn_codebook = enable;
+}
+
+bool ggml_iq2xxs_get_learn_codebook(void) {
+    return g_iq2xxs_learn_codebook;
+}
+
+_Thread_local const uint64_t * g_iq2xxs_per_tensor_grid = NULL;
+
+void ggml_iq2xxs_set_per_tensor_grid(const uint64_t * grid) {
+    g_iq2xxs_per_tensor_grid = grid;
+}
+
+const uint64_t * ggml_iq2xxs_get_per_tensor_grid(void) {
+    return g_iq2xxs_per_tensor_grid;
+}
+
+const uint64_t * iq2xxs_get_learned_grid(void) {
+    return iq2_data[0].grid;
+}
 
 static inline int iq2_data_index(enum ggml_type type) {
     GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
@@ -3304,6 +3339,297 @@ void iq2xs_free_impl(enum ggml_type type) {
         free(iq2_data[gindex].map);        iq2_data[gindex].map  = NULL;
         free(iq2_data[gindex].neighbours); iq2_data[gindex].neighbours = NULL;
     }
+}
+
+static void iq2xxs_rebuild_map_and_neighbours(void) {
+    const int gindex = 0;
+    const int grid_size = 256;
+    const int kmap_size = 43692;
+    const int nwant = 2;
+
+    uint64_t * kgrid_q2xs = iq2_data[gindex].grid;
+    GGML_ASSERT(kgrid_q2xs);
+
+    int * kmap_q2xs = (int *)malloc(kmap_size*sizeof(int));
+    for (int i = 0; i < kmap_size; ++i) kmap_q2xs[i] = -1;
+
+    uint64_t aux64;
+    uint8_t * aux8 = (uint8_t *)&aux64;
+    for (int i = 0; i < grid_size; ++i) {
+        aux64 = kgrid_q2xs[i];
+        uint16_t index = 0;
+        for (int k = 0; k < 8; ++k) {
+            uint16_t q = (aux8[k] - 1)/2;
+            index |= (q << 2*k);
+        }
+        kmap_q2xs[index] = i;
+    }
+
+    int * n_per_i = (int *)malloc(kmap_size*sizeof(int));
+    GGML_ASSERT(n_per_i);
+    int num_neighbors = 0, num_not_in_map = 0;
+#ifdef GGML_USE_OPENMP
+    #pragma omp parallel reduction(+:num_neighbors,num_not_in_map)
+#endif
+    {
+        int * dist2 = (int *)malloc(2*grid_size*sizeof(int));
+        GGML_ASSERT(dist2);
+        int8_t pos[8];
+        int i;
+#ifdef GGML_USE_OPENMP
+        #pragma omp for schedule(dynamic, 64)
+#endif
+        for (i = 0; i < kmap_size; ++i) {
+            if (kmap_q2xs[i] >= 0) {
+                n_per_i[i] = 0;
+                continue;
+            }
+            ++num_not_in_map;
+            for (int k = 0; k < 8; ++k) {
+                int l = (i >> 2*k) & 0x3;
+                pos[k] = 2*l + 1;
+            }
+            for (int j = 0; j < grid_size; ++j) {
+                const int8_t * pg = (const int8_t *)(kgrid_q2xs + j);
+                int d2 = 0;
+                for (int k = 0; k < 8; ++k) d2 += (pg[k] - pos[k])*(pg[k] - pos[k]);
+                dist2[2*j+0] = d2;
+                dist2[2*j+1] = j;
+            }
+            qsort(dist2, grid_size, 2*sizeof(int), iq2_compare_func);
+            int n = 0; int d2 = dist2[0];
+            int nhave = 1;
+            for (int j = 0; j < grid_size; ++j) {
+                if (dist2[2*j] > d2) {
+                    if (nhave == nwant) break;
+                    d2 = dist2[2*j];
+                    ++nhave;
+                }
+                ++n;
+            }
+            n_per_i[i] = n;
+            num_neighbors += n;
+        }
+        free(dist2);
+    }
+
+    uint16_t * kneighbors_q2xs = (uint16_t *)malloc((num_neighbors + num_not_in_map)*sizeof(uint16_t));
+
+    int * offsets = (int *)malloc(kmap_size*sizeof(int));
+    GGML_ASSERT(offsets);
+    int counter = 0;
+    for (int i = 0; i < kmap_size; ++i) {
+        if (kmap_q2xs[i] >= 0) {
+            offsets[i] = -1;
+            continue;
+        }
+        offsets[i] = counter;
+        counter += 1 + n_per_i[i];
+    }
+
+#ifdef GGML_USE_OPENMP
+    #pragma omp parallel
+#endif
+    {
+        int * dist2 = (int *)malloc(2*grid_size*sizeof(int));
+        GGML_ASSERT(dist2);
+        int8_t pos[8];
+        int i;
+#ifdef GGML_USE_OPENMP
+        #pragma omp for schedule(dynamic, 64)
+#endif
+        for (i = 0; i < kmap_size; ++i) {
+            if (kmap_q2xs[i] >= 0) continue;
+            for (int k = 0; k < 8; ++k) {
+                int l = (i >> 2*k) & 0x3;
+                pos[k] = 2*l + 1;
+            }
+            for (int j = 0; j < grid_size; ++j) {
+                const int8_t * pg = (const int8_t *)(kgrid_q2xs + j);
+                int d2 = 0;
+                for (int k = 0; k < 8; ++k) d2 += (pg[k] - pos[k])*(pg[k] - pos[k]);
+                dist2[2*j+0] = d2;
+                dist2[2*j+1] = j;
+            }
+            qsort(dist2, grid_size, 2*sizeof(int), iq2_compare_func);
+            int local_counter = offsets[i];
+            kmap_q2xs[i] = -(local_counter + 1);
+            int d2 = dist2[0];
+            uint16_t * start = &kneighbors_q2xs[local_counter++];
+            int n = 0, nhave = 1;
+            for (int j = 0; j < grid_size; ++j) {
+                if (dist2[2*j] > d2) {
+                    if (nhave == nwant) break;
+                    d2 = dist2[2*j];
+                    ++nhave;
+                }
+                kneighbors_q2xs[local_counter++] = dist2[2*j+1];
+                ++n;
+            }
+            *start = n;
+        }
+        free(dist2);
+    }
+    free(offsets);
+    free(n_per_i);
+
+    free(iq2_data[gindex].map);
+    free(iq2_data[gindex].neighbours);
+    iq2_data[gindex].map = kmap_q2xs;
+    iq2_data[gindex].neighbours = kneighbors_q2xs;
+}
+
+void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRICT weights,
+        int64_t nrows, int64_t n_per_row) {
+    const int grid_size = 256;
+    const int gindex = 0;
+    const int kmeans_iters = 20;
+    const int num_trials = 3;
+    const int max_samples = 16384;
+
+    int64_t n_total = nrows * n_per_row;
+    if (n_total < grid_size * 8) return;
+
+    int64_t n_samples = n_total / 8;
+    if (n_samples > max_samples) n_samples = max_samples;
+
+    float * samples = (float *)malloc(8 * n_samples * sizeof(float));
+    float * sample_weights = (float *)malloc(8 * n_samples * sizeof(float));
+    GGML_ASSERT(samples && sample_weights);
+
+    int64_t step = n_total / 8 / n_samples;
+    if (step < 1) step = 1;
+    for (int64_t s = 0; s < n_samples; ++s) {
+        int64_t idx = (s * step) % (n_total / 8);
+        for (int k = 0; k < 8; ++k) {
+            samples[8*s + k] = fabsf(x[idx*8 + k]);
+            sample_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
+        }
+    }
+
+    uint64_t * best_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
+    GGML_ASSERT(best_grid);
+    float best_error = FLT_MAX;
+
+    for (int trial = 0; trial < num_trials; ++trial) {
+        uint64_t * trial_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
+        GGML_ASSERT(trial_grid);
+
+        if (trial == 0) {
+            if (iq2_data[gindex].grid) {
+                memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
+            } else {
+                iq2xs_init_impl(GGML_TYPE_IQ2_XXS);
+                memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
+            }
+        } else {
+            unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
+            for (int k = 0; k < grid_size; ++k) {
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 17;
+                rng_state ^= rng_state << 5;
+                int64_t sample_idx = rng_state % n_samples;
+                int8_t * pg = (int8_t *)(trial_grid + k);
+                for (int i = 0; i < 8; ++i) {
+                    float v = samples[8*sample_idx + i];
+                    rng_state ^= rng_state << 13;
+                    rng_state ^= rng_state >> 17;
+                    rng_state ^= rng_state << 5;
+                    v += ((float)(int)(rng_state & 0xFF)) / 256.0f - 0.5f;
+                    v = roundf(v);
+                    if (v < 1.0f) v = 1.0f;
+                    if (v > 127.0f) v = 127.0f;
+                    pg[i] = (int8_t)v;
+                }
+            }
+        }
+
+        float * centroids_float = (float *)calloc(grid_size * 8, sizeof(float));
+        float * weight_sums    = (float *)calloc(grid_size * 8, sizeof(float));
+        GGML_ASSERT(centroids_float && weight_sums);
+
+        for (int k = 0; k < grid_size; ++k) {
+            int8_t * pg = (int8_t *)(trial_grid + k);
+            for (int i = 0; i < 8; ++i) {
+                centroids_float[8*k + i] = (float)pg[i];
+            }
+        }
+
+        int8_t * assignments = (int8_t *)malloc(n_samples * sizeof(int8_t));
+        GGML_ASSERT(assignments);
+
+        for (int iter = 0; iter < kmeans_iters; ++iter) {
+            memset(weight_sums, 0, grid_size * 8 * sizeof(float));
+            memset(centroids_float, 0, grid_size * 8 * sizeof(float));
+
+            for (int64_t s = 0; s < n_samples; ++s) {
+                const int8_t * pg = (const int8_t *)trial_grid;
+                float best_d2 = FLT_MAX;
+                int best_k = 0;
+                for (int k = 0; k < grid_size; ++k) {
+                    float d2 = 0;
+                    for (int i = 0; i < 8; ++i) {
+                        float diff = (float)pg[8*k + i] - samples[8*s + i];
+                        d2 += sample_weights[8*s + i] * diff * diff;
+                    }
+                    if (d2 < best_d2) { best_d2 = d2; best_k = k; }
+                }
+                assignments[s] = (int8_t)best_k;
+                for (int i = 0; i < 8; ++i) {
+                    float w = sample_weights[8*s + i];
+                    centroids_float[8*best_k + i] += samples[8*s + i] * w;
+                    weight_sums[8*best_k + i] += w;
+                }
+            }
+
+            for (int k = 0; k < grid_size; ++k) {
+                int8_t * pg = (int8_t *)(trial_grid + k);
+                for (int i = 0; i < 8; ++i) {
+                    float ws = weight_sums[8*k + i];
+                    if (ws > 0.0f) {
+                        centroids_float[8*k + i] /= ws;
+                    } else {
+                        centroids_float[8*k + i] = (float)pg[i];
+                    }
+                    float v = roundf(centroids_float[8*k + i]);
+                    if (v < 1.0f) v = 1.0f;
+                    if (v > 127.0f) v = 127.0f;
+                    pg[i] = (int8_t)v;
+                    centroids_float[8*k + i] = v;
+                }
+            }
+        }
+
+        float trial_error = 0.0f;
+        for (int64_t s = 0; s < n_samples; ++s) {
+            const int8_t * pg = (const int8_t *)trial_grid;
+            int k = assignments[s];
+            float d2 = 0;
+            for (int i = 0; i < 8; ++i) {
+                float diff = (float)pg[8*k + i] - samples[8*s + i];
+                d2 += sample_weights[8*s + i] * diff * diff;
+            }
+            trial_error += d2;
+        }
+
+        if (trial_error < best_error) {
+            best_error = trial_error;
+            memcpy(best_grid, trial_grid, grid_size * sizeof(uint64_t));
+        }
+
+        free(assignments);
+        free(weight_sums);
+        free(centroids_float);
+        free(trial_grid);
+    }
+
+    free(samples);
+    free(sample_weights);
+
+    free(iq2_data[gindex].grid);
+    iq2_data[gindex].grid = best_grid;
+
+    iq2xxs_rebuild_map_and_neighbours();
 }
 
 static int iq2_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours, const uint64_t * GGML_RESTRICT grid,

@@ -2670,6 +2670,9 @@ void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
 
     const int nb = n / QK_K;
 
+    const uint64_t * local_grid = ggml_iq2xxs_get_per_tensor_grid();
+    if (!local_grid) local_grid = iq2xxs_grid;
+
 #if defined(__AVX2__)
 
     const uint64_t * signs64 = (const uint64_t *)keven_signs_q2xs;
@@ -2688,8 +2691,8 @@ void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
             const __m256i q8_1 = _mm256_loadu_si256((const __m256i *)q8); q8 += 32;
             const __m256i q8_2 = _mm256_loadu_si256((const __m256i *)q8); q8 += 32;
             memcpy(aux32, q2, 4*sizeof(uint32_t)); q2 += 8;
-            const __m256i q2_1 = _mm256_set_epi64x(iq2xxs_grid[aux8[ 3]], iq2xxs_grid[aux8[ 2]], iq2xxs_grid[aux8[1]], iq2xxs_grid[aux8[0]]);
-            const __m256i q2_2 = _mm256_set_epi64x(iq2xxs_grid[aux8[11]], iq2xxs_grid[aux8[10]], iq2xxs_grid[aux8[9]], iq2xxs_grid[aux8[8]]);
+            const __m256i q2_1 = _mm256_set_epi64x(local_grid[aux8[ 3]], local_grid[aux8[ 2]], local_grid[aux8[1]], local_grid[aux8[0]]);
+            const __m256i q2_2 = _mm256_set_epi64x(local_grid[aux8[11]], local_grid[aux8[10]], local_grid[aux8[9]], local_grid[aux8[8]]);
             const __m256i s2_1 = _mm256_set_epi64x(signs64[(aux32[1] >> 21) & 127], signs64[(aux32[1] >> 14) & 127],
                                                    signs64[(aux32[1] >>  7) & 127], signs64[(aux32[1] >>  0) & 127]);
             const __m256i s2_2 = _mm256_set_epi64x(signs64[(aux32[3] >> 21) & 127], signs64[(aux32[3] >> 14) & 127],
@@ -2733,10 +2736,10 @@ void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
             const __m128i q8_2_0 = _mm_loadu_si128((const __m128i *)q8); q8 += 16;
             const __m128i q8_2_1 = _mm_loadu_si128((const __m128i *)q8); q8 += 16;
             memcpy(aux32, q2, 4*sizeof(uint32_t)); q2 += 8;
-            const __m128i q2_1_0 = _mm_set_epi64x(iq2xxs_grid[aux8[1]], iq2xxs_grid[aux8[0]]);
-            const __m128i q2_1_1 = _mm_set_epi64x(iq2xxs_grid[aux8[3]], iq2xxs_grid[aux8[2]]);
-            const __m128i q2_2_0 = _mm_set_epi64x(iq2xxs_grid[aux8[9]], iq2xxs_grid[aux8[8]]);
-            const __m128i q2_2_1 = _mm_set_epi64x(iq2xxs_grid[aux8[11]], iq2xxs_grid[aux8[10]]);
+            const __m128i q2_1_0 = _mm_set_epi64x(local_grid[aux8[1]], local_grid[aux8[0]]);
+            const __m128i q2_1_1 = _mm_set_epi64x(local_grid[aux8[3]], local_grid[aux8[2]]);
+            const __m128i q2_2_0 = _mm_set_epi64x(local_grid[aux8[9]], local_grid[aux8[8]]);
+            const __m128i q2_2_1 = _mm_set_epi64x(local_grid[aux8[11]], local_grid[aux8[10]]);
             const __m128i s2_1_0 = _mm_set_epi64x(signs64[(aux32[1] >>  7) & 127], signs64[(aux32[1] >>  0) & 127]);
             const __m128i s2_1_1 = _mm_set_epi64x(signs64[(aux32[1] >> 21) & 127], signs64[(aux32[1] >> 14) & 127]);
             const __m128i s2_2_0 = _mm_set_epi64x(signs64[(aux32[3] >>  7) & 127], signs64[(aux32[3] >>  0) & 127]);

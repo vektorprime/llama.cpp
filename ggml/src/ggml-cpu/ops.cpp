@@ -7,6 +7,7 @@
 #include "ggml.h"
 #include "unary-ops.h"
 #include "vec.h"
+#include "ggml-quants.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -486,6 +487,10 @@ static void ggml_compute_forward_dup_from_q(
 
     size_t qk = ggml_blck_size(type);
     const int64_t nr = ggml_nelements(src1) / qk;
+
+    if (type == GGML_TYPE_IQ2_XXS) {
+        ggml_iq2xxs_set_per_tensor_grid((const uint64_t *)src0->iq2xxs_grid_data);
+    }
 
     // destination must be contiguous in the first dimension
     GGML_ASSERT(nb10 == ggml_type_size(dst->type));

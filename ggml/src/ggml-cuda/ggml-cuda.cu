@@ -908,6 +908,9 @@ struct ggml_backend_cuda_split_buffer_context {
                 if (extra->data_device[id] != nullptr) {
                     CUDA_CHECK(cudaFree(extra->data_device[id]));
                 }
+                if (extra->iq2xxs_grid[id] != nullptr) {
+                    CUDA_CHECK(cudaFree(extra->iq2xxs_grid[id]));
+                }
             }
             delete extra;
         }
@@ -940,6 +943,17 @@ static enum ggml_status ggml_backend_cuda_split_buffer_init_tensor(ggml_backend_
 
     ggml_tensor_extra_gpu * extra = new ggml_tensor_extra_gpu{};
     ctx->tensor_extras.push_back(extra);
+
+    // Upload per-tensor IQ2_XXS grid if available
+    if (tensor->type == GGML_TYPE_IQ2_XXS && tensor->iq2xxs_grid_data) {
+        const uint64_t * host_grid = (const uint64_t *)tensor->iq2xxs_grid_data;
+        for (int id = 0; id < ggml_backend_cuda_get_device_count(); ++id) {
+            ggml_cuda_set_device(id);
+            CUDA_CHECK(ggml_cuda_device_malloc((void**)&extra->iq2xxs_grid[id], 256 * sizeof(uint64_t), id));
+            CUDA_CHECK(cudaMemcpyAsync(extra->iq2xxs_grid[id], host_grid, 256 * sizeof(uint64_t),
+                                       cudaMemcpyHostToDevice, cudaStreamPerThread));
+        }
+    }
 
     for (int id = 0; id < ggml_backend_cuda_get_device_count(); ++id) {
         int64_t row_low, row_high;

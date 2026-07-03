@@ -1196,6 +1196,7 @@ struct ggml_cuda_pool_alloc {
 
 struct ggml_tensor_extra_gpu {
     void * data_device[GGML_CUDA_MAX_DEVICES]; // 1 pointer for each device for split tensors
+    uint64_t * iq2xxs_grid[GGML_CUDA_MAX_DEVICES]; // per-tensor grid (GPU mem), NULL = use default
     cudaEvent_t events[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS]; // events for synchronizing multiple GPUs
 };
 
@@ -1638,4 +1639,14 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
     kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
     CUDA_CHECK(cudaGetLastError());
 }
+
+// Per-tensor IQ2_XXS grid pointer for CUDA kernels.
+// Each translation unit has its own copy; set via ggml_cuda_set_iq2xxs_grid() before kernel launches.
+// NULL means fall back to the default iq2xxs_grid.
+static __device__ const uint64_t * g_dev_iq2xxs_grid = nullptr;
+
+static void ggml_cuda_set_iq2xxs_grid(const uint64_t * dev_grid) {
+    CUDA_CHECK(cudaMemcpyToSymbol(g_dev_iq2xxs_grid, &dev_grid, sizeof(const uint64_t *)));
+}
+
 

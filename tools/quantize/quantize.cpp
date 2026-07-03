@@ -23,6 +23,7 @@ void ggml_q2k_set_diffusion(float d);
 float ggml_q2k_get_diffusion(void);
 void ggml_q2k_set_layer_diffusion(bool enable, float attn, float mlp, float lmhead, float other);
 void ggml_q2k_set_diffusion_for_tensor(const char * name);
+void ggml_iq2xxs_set_learn_codebook(bool enable);
 }
 
 // result of parsing --tensor-type option
@@ -180,6 +181,8 @@ static void usage(const char * executable) {
     printf("                                      diffusion coeff for lm_head/output layers (default 0.1)\n");
     printf("  --q2k-diffusion-other FLOAT\n");
     printf("                                      diffusion coeff for other layers (default 0.5)\n");
+    printf("  --iq2xxs-learn\n");
+    printf("                                      learn per-tensor codebook via K-means for IQ2_XXS\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
     printf("-----------------------------------------------------------------------------\n");
     printf(" allowed quantization types\n");
@@ -427,6 +430,7 @@ int llama_quantize(int argc, char ** argv) {
     float  q2k_diffusion_lmhead = 0.1f;
     float  q2k_diffusion_other  = 0.5f;
     bool   q2k_layer_diffusion  = false;
+    bool   iq2xxs_learn_codebook = false;
     float  q2k_diffusion_val    = 0.0f;
 
     for (; arg_idx < argc && strncmp(argv[arg_idx], "--", 2) == 0; arg_idx++) {
@@ -534,6 +538,8 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--q2k-layer-diffusion") == 0) {
             q2k_layer_diffusion = true;
+        } else if (strcmp(argv[arg_idx], "--iq2xxs-learn") == 0) {
+            iq2xxs_learn_codebook = true;
         } else {
             usage(argv[0]);
         }
@@ -552,6 +558,8 @@ int llama_quantize(int argc, char ** argv) {
     } else if (q2k_diffusion_val > 0.0f) {
         ggml_q2k_set_diffusion(q2k_diffusion_val);
     }
+
+    ggml_iq2xxs_set_learn_codebook(iq2xxs_learn_codebook);
 
     std::vector<std::string> imatrix_datasets;
     std::unordered_map<std::string, std::vector<float>> imatrix_data;

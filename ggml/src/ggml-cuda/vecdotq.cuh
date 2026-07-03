@@ -991,10 +991,12 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
     const uint8_t * aux8 = (const uint8_t *) &q2;
     const uint32_t aux32 = get_int_b2(bq2->qs, iqs + 1);
 
+    const uint64_t * grid = g_dev_iq2xxs_grid ? g_dev_iq2xxs_grid : iq2xxs_grid;
+
     int sumi = 0;
 #pragma unroll
     for (int k0 = 0; k0 < 8; k0 += 2) {
-        const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
+        const uint2 grid_pos = ((const uint2*)grid)[aux8[k0/2]];
         const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
 
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);

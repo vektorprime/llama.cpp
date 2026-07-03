@@ -5,9 +5,14 @@
 
 extern "C" {
 void ggml_q2k_set_diffusion_for_tensor(const char * name);
+void iq2xxs_learn_grid(const float * x, const float * weights, int64_t nrows, int64_t n_per_row);
+void ggml_iq2xxs_set_learn_codebook(bool enable);
+bool ggml_iq2xxs_get_learn_codebook(void);
+const uint64_t * iq2xxs_get_learned_grid(void);
 }
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cinttypes>
@@ -711,6 +716,10 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
 //
 
 static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t nrows, int64_t n_per_row, const float * imatrix, std::vector<std::thread> & workers, const int nthread) {
+    if (new_type == GGML_TYPE_IQ2_XXS && ggml_iq2xxs_get_learn_codebook()) {
+        iq2xxs_learn_grid(f32_data, imatrix, nrows, n_per_row);
+    }
+
     if (nthread < 2) {
         // single-thread
         size_t new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, nrows, n_per_row, imatrix);
@@ -1018,6 +1027,8 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     // flag for --dry-run
     bool will_require_imatrix = false;
 
+    std::unordered_map<std::string, std::array<uint64_t, 256>> learned_grids;
+
     //
     // preliminary iteration over all weights
     //
@@ -1252,6 +1263,16 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
                     new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
                 }
+
+                if (new_type == GGML_TYPE_IQ2_XXS && ggml_iq2xxs_get_learn_codebook()) {
+                    const uint64_t * grid = iq2xxs_get_learned_grid();
+                    if (grid) {
+                        std::array<uint64_t, 256> grid_copy;
+                        memcpy(grid_copy.data(), grid, 256 * sizeof(uint64_t));
+                        learned_grids[ggml_get_name(tensor)] = grid_copy;
+                    }
+                }
+
                 LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
             }
             total_size_org += tensor_size;
@@ -1267,6 +1288,28 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
             zeros(fout, GGML_PAD(new_size, align) - new_size);
         } // no --dry-run
     } // main loop
+
+    if (!params->dry_run && !learned_grids.empty()) {
+        std::string grids_fname = fname_out + ".iq2xxs_grids";
+        struct gguf_context * grids_ctx = gguf_init_empty();
+        struct ggml_init_params ggml_params = {
+            ggml_tensor_overhead() * learned_grids.size() + 256 * sizeof(uint64_t) * learned_grids.size(),
+            NULL,
+            false,
+        };
+        struct ggml_context * ggml_ctx = ggml_init(ggml_params);
+        for (const auto & [name, grid] : learned_grids) {
+            std::string grid_name = name + ".iq2xxs_grid";
+            struct ggml_tensor * grid_tensor = ggml_new_tensor_1d(ggml_ctx, GGML_TYPE_I64, 256);
+            ggml_format_name(grid_tensor, "%s", grid_name.c_str());
+            memcpy(grid_tensor->data, grid.data(), 256 * sizeof(uint64_t));
+            gguf_add_tensor(grids_ctx, grid_tensor);
+        }
+        gguf_write_to_file(grids_ctx, grids_fname.c_str(), false);
+        gguf_free(grids_ctx);
+        ggml_free(ggml_ctx);
+        LLAMA_LOG_INFO("%s: wrote %zu grids to %s\n", __func__, learned_grids.size(), grids_fname.c_str());
+    }
 
     if (!params->dry_run) {
         close_ofstream();

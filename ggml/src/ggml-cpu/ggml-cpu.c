@@ -7,6 +7,7 @@
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
 #include "quants.h"
+#include "ggml-quants.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -1174,6 +1175,10 @@ static void ggml_compute_forward_mul_mat_one_chunk(
 
     ggml_vec_dot_t const vec_dot      = type_traits_cpu[type].vec_dot;
     enum ggml_type const vec_dot_type = type_traits_cpu[type].vec_dot_type;
+
+    if (type == GGML_TYPE_IQ2_XXS) {
+        ggml_iq2xxs_set_per_tensor_grid((const uint64_t *)src0->iq2xxs_grid_data);
+    }
 
     // broadcast factors
     const int64_t r2 = ne12 / ne02;

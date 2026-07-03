@@ -1189,6 +1189,16 @@ void ggml_cuda_mul_mat_vec_q(
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
         quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+
+    if (src0->type == GGML_TYPE_IQ2_XXS) {
+        ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *) src0->extra;
+        if (extra && extra->iq2xxs_grid[ctx.device]) {
+            ggml_cuda_set_iq2xxs_grid(extra->iq2xxs_grid[ctx.device]);
+        } else {
+            ggml_cuda_set_iq2xxs_grid(nullptr);
+        }
+    }
+
     }
 
     const int64_t s01 = src0->nb[1] / ts_src0;
@@ -1228,6 +1238,15 @@ void ggml_cuda_op_mul_mat_vec_q(
 
     const int64_t ne00 = src0->ne[0];
     const int64_t row_diff = row_high - row_low;
+
+    if (src0->type == GGML_TYPE_IQ2_XXS) {
+        ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *) src0->extra;
+        if (extra && extra->iq2xxs_grid[ctx.device]) {
+            ggml_cuda_set_iq2xxs_grid(extra->iq2xxs_grid[ctx.device]);
+        } else {
+            ggml_cuda_set_iq2xxs_grid(nullptr);
+        }
+    }
 
     const int64_t ne10 = src1->ne[0];
     GGML_ASSERT(ne10 % QK8_1 == 0);

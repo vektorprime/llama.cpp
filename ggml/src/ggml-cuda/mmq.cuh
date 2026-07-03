@@ -2772,7 +2772,11 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 
 #pragma unroll
         for (int l = 0; l < QR2_XXS; ++l) {
-            const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[l]];
+            // Use static device pointer for per-tensor grid (set before kernel launch in mmvq path only).
+            // The mmq template instances have their own copies of this pointer; they will fall back
+            // to iq2xxs_grid unless the grid is set in the same TU (see mmvq.cu).
+            const uint64_t * grid = g_dev_iq2xxs_grid ? g_dev_iq2xxs_grid : iq2xxs_grid;
+            const uint2 grid_pos = ((const uint2*)grid)[aux8[l]];
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);

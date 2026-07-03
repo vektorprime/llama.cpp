@@ -675,6 +675,9 @@ struct llama_model {
     virtual void load_vocab  (llama_model_loader & ml) = 0;
     virtual bool load_tensors(llama_model_loader & ml) = 0; // returns false if cancelled by progress_callback
 
+    // Load per-tensor IQ2_XXS grids from companion GGUF file ({fname}.iq2xxs_grids)
+    void load_iq2xxs_grids(const std::string & fname);
+
     // model must define these
     virtual void load_arch_hparams(llama_model_loader & ml) = 0;
     virtual void load_arch_tensors(llama_model_loader & ml) = 0;

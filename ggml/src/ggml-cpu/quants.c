@@ -865,6 +865,9 @@ void ggml_vec_dot_iq2_xxs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
 
     const int nb = n / QK_K;
 
+    const uint64_t * local_grid = ggml_iq2xxs_get_per_tensor_grid();
+    if (!local_grid) local_grid = iq2xxs_grid;
+
     uint32_t aux32[2];
     const uint8_t * aux8 = (const uint8_t *)aux32;
 
@@ -880,7 +883,7 @@ void ggml_vec_dot_iq2_xxs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
             const uint32_t ls = 2*(aux32[1] >> 28) + 1;
             int32_t sumi = 0;
             for (int l = 0; l < 4; ++l) {
-                const uint8_t * grid = (const uint8_t *)(iq2xxs_grid + aux8[l]);
+                const uint8_t * grid = (const uint8_t *)(local_grid + aux8[l]);
                 const uint8_t  signs = ksigns_iq2xs[(aux32[1] >> 7*l) & 127];
                 for (int j = 0; j < 8; ++j) {
                     sumi += grid[j] * q8[j] * (signs & kmask_iq2xs[j] ? -1 : 1);
