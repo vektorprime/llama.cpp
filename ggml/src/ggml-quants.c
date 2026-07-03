@@ -3593,7 +3593,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         }
 
-        int8_t * assignments = (int8_t *)malloc(n_samples * sizeof(int8_t));
+        int16_t * assignments = (int16_t *)malloc(n_samples * sizeof(int16_t));
         GGML_ASSERT(assignments);
 
         float * new_centroids  = (float *)calloc(grid_size * 8, sizeof(float));
@@ -3616,7 +3616,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
-                assignments[s] = (int8_t)best_k;
+                assignments[s] = (int16_t)best_k;
                 for (int i = 0; i < 8; ++i) {
                     float w = sample_weights[8*s + i];
                     new_centroids[8*best_k + i] += samples[8*s + i] * w;
@@ -3682,7 +3682,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
-                assignments[s] = (int8_t)best_k;
+                assignments[s] = (int16_t)best_k;
             }
 
             /* Step 2: Per-centroid gradient descent - try +/-1 per dimension */
