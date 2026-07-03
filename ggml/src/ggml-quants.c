@@ -3483,8 +3483,8 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         int64_t nrows, int64_t n_per_row) {
     const int grid_size = 256;
     const int gindex = 0;
-    const int kmeans_iters = 20;
-    const int num_trials = 3;
+    const int kmeans_iters = 40;
+    const int num_trials = 5;
     const int max_samples = 16384;
 
     int64_t n_total = nrows * n_per_row;
@@ -3524,22 +3524,45 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         } else {
             unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
-            for (int k = 0; k < grid_size; ++k) {
-                rng_state ^= rng_state << 13;
-                rng_state ^= rng_state >> 17;
-                rng_state ^= rng_state << 5;
-                int64_t sample_idx = rng_state % n_samples;
-                int8_t * pg = (int8_t *)(trial_grid + k);
+            if (trial == 1 || trial == 3) {
+                /* --- Quantile-based init: sort samples per dimension, pick evenly spaced --- */
                 for (int i = 0; i < 8; ++i) {
-                    float v = samples[8*sample_idx + i];
+                    float * col = (float *)malloc(n_samples * sizeof(float));
+                    for (int64_t s = 0; s < n_samples; ++s) col[s] = samples[8*s + i];
+                    /* Simple sort */
+                    for (int64_t a = 1; a < n_samples; ++a) {
+                        float key = col[a]; int64_t b = a - 1;
+                        while (b >= 0 && col[b] > key) { col[b+1] = col[b]; b--; }
+                        col[b+1] = key;
+                    }
+                    for (int k = 0; k < grid_size; ++k) {
+                        int64_t qidx = (int64_t)((float)k / (float)(grid_size - 1) * (float)(n_samples - 1));
+                        float v = col[qidx];
+                        rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
+                        v += ((float)(int)(rng_state & 0x1F)) / 64.0f - 0.25f; /* small jitter */
+                        v = roundf(v);
+                        if (v < 0.0f) v = 0.0f;
+                        if (v > 127.0f) v = 127.0f;
+                        int8_t * pg = (int8_t *)(trial_grid + k);
+                        pg[i] = (int8_t)v;
+                    }
+                    free(col);
+                }
+            } else {
+                /* --- Random-sample init: pick distinct random samples per centroid --- */
+                for (int k = 0; k < grid_size; ++k) {
                     rng_state ^= rng_state << 13;
                     rng_state ^= rng_state >> 17;
                     rng_state ^= rng_state << 5;
-                    v += ((float)(int)(rng_state & 0xFF)) / 256.0f - 0.5f;
-                    v = roundf(v);
-                    if (v < 1.0f) v = 1.0f;
-                    if (v > 127.0f) v = 127.0f;
-                    pg[i] = (int8_t)v;
+                    int64_t sample_idx = rng_state % n_samples;
+                    int8_t * pg = (int8_t *)(trial_grid + k);
+                    for (int i = 0; i < 8; ++i) {
+                        float v = samples[8*sample_idx + i];
+                        v = roundf(v);
+                        if (v < 0.0f) v = 0.0f;
+                        if (v > 127.0f) v = 127.0f;
+                        pg[i] = (int8_t)v;
+                    }
                 }
             }
         }
@@ -3603,7 +3626,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
                 float v = roundf(centroids_float[8*k + i]);
-                if (v < 1.0f) v = 1.0f;
+                if (v < 0.0f) v = 0.0f;
                 if (v > 127.0f) v = 127.0f;
                 pg[i] = (int8_t)v;
             }
