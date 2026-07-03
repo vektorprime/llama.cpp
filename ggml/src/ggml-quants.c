@@ -3946,6 +3946,39 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
         }
 
         float d = max_scale/31;
+        /* --- Gradient-based d refinement ---
+         * After all sub-blocks are quantized, refine the super-block scale d
+         * to minimize weighted reconstruction error across all 256 weights.
+         * This is a 1-D weighted least squares problem with a closed-form solution. */
+        {
+            float sum_wxq = 0.0f, sum_wqq = 0.0f;
+            for (int ib = 0; ib < QK_K/32; ++ib) {
+                const float * xb = xbl + 32*ib;
+                const float * qw = quant_weights + QK_K*ibl + 32*ib;
+                float sigma2_ib = 0.0f;
+                for (int i = 0; i < 32; ++i) sigma2_ib += xb[i]*xb[i];
+                sigma2_ib /= 32.0f;
+                /* Sub-block scale: 4-bit index lb from q2[2*ib+1] >> 28 */
+                int lb = (q2[2*ib+1] >> 28) & 0xf;
+                float s_factor = (0.5f + (float)lb) * 0.25f;
+                for (int k = 0; k < 4; ++k) {
+                    int grid_idx = (q2[2*ib+0] >> (8*k)) & 0xff;
+                    const int8_t * pg = (const int8_t *)(kgrid_q2xs + grid_idx);
+                    uint8_t signs = block_signs[k];
+                    for (int i = 0; i < 8; ++i) {
+                        float sign = (signs & (1 << i)) ? -1.0f : 1.0f;
+                        float q = s_factor * (float)pg[i] * sign;
+                        float w = qw[8*k+i] * sqrtf(sigma2_ib + xb[8*k+i]*xb[8*k+i]);
+                        sum_wxq += w * xb[8*k+i] * q;
+                        sum_wqq += w * q * q;
+                    }
+                }
+            }
+            if (sum_wqq > 1e-8f) {
+                float d_opt = sum_wxq / sum_wqq;
+                if (d_opt > 0.0f) d = d_opt;
+            }
+        }
         y[ibl].d = GGML_FP32_TO_FP16(d);
         float id = 1/d;
         for (int ib = 0; ib < QK_K/32; ++ib) {
