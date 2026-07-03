@@ -3545,10 +3545,10 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 int8_t * pg = (int8_t *)(trial_grid + 0);
                 for (int i = 0; i < 8; ++i) {
                     float v = samples[8*idx + i];
-                    v = roundf(v);
-                    if (v < 1.0f) v = 1.0f;
-                    if (v > 127.0f) v = 127.0f;
-                    pg[i] = (int8_t)v;
+                    int l = (int)roundf(v);
+                    if (l < 0) l = 0;
+                    if (l > 3) l = 3;
+                    pg[i] = (int8_t)(2*l + 1);
                 }
             }
 
@@ -3578,10 +3578,10 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 int8_t * pg = (int8_t *)(trial_grid + k);
                 for (int i = 0; i < 8; ++i) {
                     float v = samples[8*selected + i];
-                    v = roundf(v);
-                    if (v < 1.0f) v = 1.0f;
-                    if (v > 127.0f) v = 127.0f;
-                    pg[i] = (int8_t)v;
+                    int l = (int)roundf(v);
+                    if (l < 0) l = 0;
+                    if (l > 3) l = 3;
+                    pg[i] = (int8_t)(2*l + 1);
                 }
 
                 total_d2 = 0.0f;
@@ -3605,7 +3605,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         for (int k = 0; k < grid_size; ++k) {
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
-                centroids_float[8*k + i] = (float)pg[i];
+                centroids_float[8*k + i] = (float)(pg[i] - 1) / 2.0f;
             }
         }
 
@@ -3659,10 +3659,11 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 float fc = centroids_float[8*k + i];
                 float f_floor = floorf(fc);
                 float f_ceil  = ceilf(fc);
-                if (f_floor < 1.0f) f_floor = 1.0f;
-                if (f_ceil  > 127.0f) f_ceil = 127.0f;
+                if (f_floor < 0.0f) f_floor = 0.0f;
+                if (f_ceil  > 3.0f) f_ceil = 3.0f;
+                int best_l;
                 if (f_floor == f_ceil) {
-                    pg[i] = (int8_t)f_floor;
+                    best_l = (int)f_floor;
                 } else {
                     /* Compute weighted L2 error for floor vs ceil against assigned samples */
                     float err_floor = 0.0f, err_ceil = 0.0f;
@@ -3675,8 +3676,9 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                             err_ceil  += w * diff_c * diff_c;
                         }
                     }
-                    pg[i] = (err_floor <= err_ceil) ? (int8_t)f_floor : (int8_t)f_ceil;
+                    best_l = (err_floor <= err_ceil) ? (int)f_floor : (int)f_ceil;
                 }
+                pg[i] = (int8_t)(2*best_l + 1);
             }
         }
 
