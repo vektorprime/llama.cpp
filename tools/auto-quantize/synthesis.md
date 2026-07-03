@@ -62,3 +62,24 @@ After quantization, refine super-block scale `d` using gradient descent on recon
 - **Distance to Unsloth target**: 0.971 vs 0.721 = still **34% gap**
 - **Bottleneck**: The 256-entry 8D int8 codebook format fundamentally limits expressiveness. Unsloth likely uses a different quantization approach (mixed types: iq2_xxs + q4_K + q2_K + q5_K)
 - **Next frontier**: Joint scale+codebook optimization, or structural changes to the block format
+
+## Session 2026-07-03 continued -- 3 experiments testing H1/H2/H3
+
+Ran 4 experiments testing the top 3 hypotheses from earlier synthesis.
+
+### exp-004 (H1): Multi-round error-aware refinement
+**Result: NO CHANGE** -- KL = 0.970904 (identical to exp-003)
+
+### exp-005b (H2): Per-tensor-type codebooks  
+**Result: NO CHANGE** -- KL = 0.970904 (identical to exp-003)
+
+### exp-005 (H2+H3 UNSAFE): Catastrophic failure -- KL=12.35
+
+### exp-006b (H3 with safety clamping): REGRESSION -- KL=1.066 (+9.8%)
+
+### Conclusions
+- All three top hypotheses exhausted: no improvement found
+- The error-aware int8 snap at 0.971 KL appears to be a hard local optimum
+- H3 d refinement is fundamentally flawed: sub-block scale indices cannot be re-optimized post-hoc
+- To close 34% gap to Unsloth (0.721), more radical structural changes are needed
+- Next directions: joint grid+scale optimization, Unsloth grid warm-start, or block format changes
