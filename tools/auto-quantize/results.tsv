@@ -12,3 +12,6 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-02T18:00:24	exp-20260702-010	0982b922b86d79d39e924caffa1d13dafc88e1e1	0982b922b86d79d39e924caffa1d13dafc88e1e1	AQ-only mode (all tensors use AutoQuant algorithm)	success	12.747107	Q2_K			620.3	35.7	78.4	63.8	3533095.6088	0.20
 2026-07-02T19:50:00	exp-iq2xxs-ud	unsloth	unsloth	Unsloth IQ2_XXS mixed types (q4_K attn_qkv/attn_v, q2_K ffn_down blk0-2, q5_K token_embd, rest iq2_xxs)	success	0.720715	2	32	false	iq2_xxs	512	200	733	0	0	0	0
 2026-07-02T20:00:00	exp-iq2xxs-our	local	local	Our IQ2_XXS matching Unsloth types (layer 24 uses q4_K due to missing imatrix)	success	0.993390	2	32	false	iq2_xxs	512	200	776	0	0	0	0
+2026-07-03T07:10:00	exp-20260703-001	4d65df895	0858b30ec	float-space K-means: train centroids as floats (no int8 rounding during 20 iters), snap to int8 at end only	success	0.993424	IQ2_XXS			786.3	637.1	820.0	125.0	34.756	55.890
+2026-07-03T08:00:00	exp-20260703-002	967eb43e5	4d65df895	error-aware int8 snap + data-driven init + allow-zero centroids + 40 iters/5 trials	success	0.971159	IQ2_XXS			786.3	1853.8	820.0	125.0	33.946	56.500
+2026-07-03T08:40:00	exp-20260703-003	a982d7659	967eb43e5	L1 distance metric for K-means assignment and quantization search (on top of exp-002 improvements)	success	0.970904	IQ2_XXS			786.3	1852.0	820.0	125.0	33.753	55.625
