@@ -3520,7 +3520,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         free(sample_weights);
         return;
     }
-    float samples_scale = 126.0f / samples_max;
+    float samples_scale = 3.0f / samples_max;
     for (int64_t t = 0; t < 8 * n_samples; ++t) {
         samples[t] *= samples_scale;
     }
@@ -3743,6 +3743,18 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
 
                     pg[i] = best_val;
                 }
+            }
+        }
+
+        /* Convert centroids to valid IQ2_XXS L-values (pg = 2*L+1, L ∈ {0,1,2,3}) */
+        for (int k = 0; k < grid_size; ++k) {
+            int8_t * pg = (int8_t *)(trial_grid + k);
+            for (int i = 0; i < 8; ++i) {
+                int val = pg[i];
+                int l = (val - 1) / 2;
+                if (l < 0) l = 0;
+                if (l > 3) l = 3;
+                pg[i] = (int8_t)(2*l + 1);
             }
         }
 
