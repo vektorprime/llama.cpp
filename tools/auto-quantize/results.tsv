@@ -16,3 +16,6 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-03T08:00:00	exp-20260703-002	967eb43e5	4d65df895	error-aware int8 snap + data-driven init + allow-zero centroids + 40 iters/5 trials	success	0.971159	IQ2_XXS			786.3	1853.8	820.0	125.0	33.946	56.500
 2026-07-03T08:40:00	exp-20260703-003	a982d7659	967eb43e5	L1 distance metric for K-means assignment and quantization search (on top of exp-002 improvements)	success	0.970904	IQ2_XXS			786.3	1852.0	820.0	125.0	33.753	55.625
 2026-07-03T14:32:32	exp-20260703-004	a982d7659	967eb43e5	multi-round error-aware refinement: 3 rounds of re-assign + +/-1 GD per centroid dim after initial snap	success	0.970904	IQ2_XXS			786.3	2178.5	820.0	125.0	33.753	55.625
+2026-07-03T15:52:36	exp-20260703-005	24ea54132	c87edbcf8	H1+H2+H3 combined: per-tensor-type codebooks + d refinement (BROKEN)	failed_broken	12.348151	IQ2_XXS			786.3	2168.5	820.0	125.0	2393220.8	0.02
+2026-07-03T15:52:36	exp-20260703-005b	2c26b1904	c87edbcf8	H1+H2: per-tensor-type codebooks with multi-round refinement, H3 reverted	success	0.970904	IQ2_XXS			786.3	2164.9	820.0	125.0	33.753	55.625
+2026-07-03T16:32:15	exp-20260703-006b	ce4e3d98f	2c26b1904	H1+H2+safe-H3: d refinement with 0.8x-1.2x grid search (REGRESSION)	success	1.066343	IQ2_XXS			786.3	2173.7	820.0	125.0	38.121	53.961
