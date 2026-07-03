@@ -3523,46 +3523,20 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
             }
         } else {
+            /* --- Data-driven init: pick distinct random samples per centroid, no E8 bias --- */
             unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
-            if (trial == 1 || trial == 3) {
-                /* --- Quantile-based init: sort samples per dimension, pick evenly spaced --- */
+            for (int k = 0; k < grid_size; ++k) {
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 17;
+                rng_state ^= rng_state << 5;
+                int64_t sample_idx = rng_state % n_samples;
+                int8_t * pg = (int8_t *)(trial_grid + k);
                 for (int i = 0; i < 8; ++i) {
-                    float * col = (float *)malloc(n_samples * sizeof(float));
-                    for (int64_t s = 0; s < n_samples; ++s) col[s] = samples[8*s + i];
-                    /* Simple sort */
-                    for (int64_t a = 1; a < n_samples; ++a) {
-                        float key = col[a]; int64_t b = a - 1;
-                        while (b >= 0 && col[b] > key) { col[b+1] = col[b]; b--; }
-                        col[b+1] = key;
-                    }
-                    for (int k = 0; k < grid_size; ++k) {
-                        int64_t qidx = (int64_t)((float)k / (float)(grid_size - 1) * (float)(n_samples - 1));
-                        float v = col[qidx];
-                        rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
-                        v += ((float)(int)(rng_state & 0x1F)) / 64.0f - 0.25f; /* small jitter */
-                        v = roundf(v);
-                        if (v < 0.0f) v = 0.0f;
-                        if (v > 127.0f) v = 127.0f;
-                        int8_t * pg = (int8_t *)(trial_grid + k);
-                        pg[i] = (int8_t)v;
-                    }
-                    free(col);
-                }
-            } else {
-                /* --- Random-sample init: pick distinct random samples per centroid --- */
-                for (int k = 0; k < grid_size; ++k) {
-                    rng_state ^= rng_state << 13;
-                    rng_state ^= rng_state >> 17;
-                    rng_state ^= rng_state << 5;
-                    int64_t sample_idx = rng_state % n_samples;
-                    int8_t * pg = (int8_t *)(trial_grid + k);
-                    for (int i = 0; i < 8; ++i) {
-                        float v = samples[8*sample_idx + i];
-                        v = roundf(v);
-                        if (v < 0.0f) v = 0.0f;
-                        if (v > 127.0f) v = 127.0f;
-                        pg[i] = (int8_t)v;
-                    }
+                    float v = samples[8*sample_idx + i];
+                    v = roundf(v);
+                    if (v < 0.0f) v = 0.0f;
+                    if (v > 127.0f) v = 127.0f;
+                    pg[i] = (int8_t)v;
                 }
             }
         }
@@ -3621,14 +3595,31 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         }
 
-        /* Snap float centroids to int8 (final step only) */
+        /* --- Error-aware int8 snap: try round-up and round-down, pick lower error --- */
         for (int k = 0; k < grid_size; ++k) {
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
-                float v = roundf(centroids_float[8*k + i]);
-                if (v < 0.0f) v = 0.0f;
-                if (v > 127.0f) v = 127.0f;
-                pg[i] = (int8_t)v;
+                float fc = centroids_float[8*k + i];
+                float f_floor = floorf(fc);
+                float f_ceil  = ceilf(fc);
+                if (f_floor < 0.0f) f_floor = 0.0f;
+                if (f_ceil  > 127.0f) f_ceil = 127.0f;
+                if (f_floor == f_ceil) {
+                    pg[i] = (int8_t)f_floor;
+                } else {
+                    /* Compute weighted L2 error for floor vs ceil against assigned samples */
+                    float err_floor = 0.0f, err_ceil = 0.0f;
+                    for (int64_t s = 0; s < n_samples; ++s) {
+                        if (assignments[s] == k) {
+                            float diff_f = f_floor - samples[8*s + i];
+                            float diff_c = f_ceil  - samples[8*s + i];
+                            float w = sample_weights[8*s + i];
+                            err_floor += w * diff_f * diff_f;
+                            err_ceil  += w * diff_c * diff_c;
+                        }
+                    }
+                    pg[i] = (err_floor <= err_ceil) ? (int8_t)f_floor : (int8_t)f_ceil;
+                }
             }
         }
 
