@@ -35,7 +35,21 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 
 **Expected**: KL reduction of 2-5%.
 
-### exp-20260703-006: Gradient-based super-block scale refinement (PENDING)
+### exp-20260703-006: Gradient-based super-block scale refinement (REGRESSION)
 **Hypothesis**: After quantization, refine super-block scale d via weighted least squares to minimize reconstruction error. This is a 1-D closed-form optimization.
 
-**Expected**: KL reduction of 1-3%.
+**Result**: KL = 1.066 (regression). Post-hoc d refinement is fundamentally flawed because sub-block scale indices are already locked in.
+
+### exp-20260703-007: K-means++ initialization + more thorough convergence (RESULT: MAJOR WIN — NEAR-UNSLOTH)
+**Hypothesis**: The previous K-means initialization (random sampling) combined with only 40 iterations and 5 trials insufficiently explores the grid space. K-means++ initialization (probabilistic farthest-first seeding) ensures initial centroids span the weight distribution, reducing poor local minima convergence. Increasing to 60 iterations and 7 trials provides more thorough optimization.
+
+**Result**: KL = **0.723834** (PPL=26.455, Same top p=60.339%). **25% reduction from 0.971 to 0.724!** Nearly matches Unsloth reference (0.721, PPL=26.44, Same top p=60.19%). The K-means++ initialization was the critical change — it produces grids that actually outperform the E8 lattice by a wide margin where previous approaches couldn't.
+
+**Lesson**: The E8 lattice warm-start and random initialization both bias the optimization toward suboptimal grid configurations. K-means++ with more thorough convergence discovers fundamentally better codebook arrangements. The synthesis conclusions that "all three top hypotheses are exhausted" and "more radical structural changes are needed" were premature — the solution was a better initialization, not a different algorithm.
+
+### exp-20260703-008: Per-tensor codebooks with K-means++ init
+**Hypothesis**: The per-category codebook sharing (ATTN/MLP/OTHER) was designed before K-means++ init existed. Now that K-means++ consistently produces good grids (exp-007), different tensors should produce genuinely different grids specialized to their own weight distributions. Removing the category sharing should allow each tensor to learn its own optimal grid independently.
+
+**Expected**: KL improvement from 0.724 → 0.722 or better. Per-tensor specialization should beat per-category aggregation.
+
+**Risk**: The per-category approach might provide beneficial data aggregation (averaging noise across multiple tensors). If KL regresses, revert.
