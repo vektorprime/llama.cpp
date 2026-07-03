@@ -3623,6 +3623,72 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         }
 
+        /* --- Multi-round error-aware refinement ---
+         * After the initial snap, re-assign samples and do +/-1 gradient descent
+         * per centroid dimension to escape local minima. 3 rounds of refinement. */
+        const int refine_rounds = 3;
+        for (int round = 0; round < refine_rounds; ++round) {
+            /* Step 1: Re-assign all samples to nearest snapped centroid */
+            for (int64_t s = 0; s < n_samples; ++s) {
+                float best_d1 = FLT_MAX;
+                int best_k = 0;
+                const int8_t * pg_all = (const int8_t *)trial_grid;
+                for (int k = 0; k < grid_size; ++k) {
+                    float d1 = 0;
+                    for (int i = 0; i < 8; ++i) {
+                        float diff = (float)pg_all[8*k + i] - samples[8*s + i];
+                        d1 += sample_weights[8*s + i] * fabsf(diff);
+                    }
+                    if (d1 < best_d1) { best_d1 = d1; best_k = k; }
+                }
+                assignments[s] = (int8_t)best_k;
+            }
+
+            /* Step 2: Per-centroid gradient descent - try +/-1 per dimension */
+            for (int k = 0; k < grid_size; ++k) {
+                int8_t * pg = (int8_t *)(trial_grid + k);
+                for (int i = 0; i < 8; ++i) {
+                    int8_t cur_val = pg[i];
+                    int8_t best_val = cur_val;
+
+                    /* Compute current error for this centroid-dim against its samples */
+                    float cur_err = 0.0f;
+                    for (int64_t s = 0; s < n_samples; ++s) {
+                        if (assignments[s] == k) {
+                            float diff = (float)cur_val - samples[8*s + i];
+                            cur_err += sample_weights[8*s + i] * diff * diff;
+                        }
+                    }
+
+                    /* Try -1 */
+                    if (cur_val > 0) {
+                        float try_err = 0.0f;
+                        for (int64_t s = 0; s < n_samples; ++s) {
+                            if (assignments[s] == k) {
+                                float diff = (float)(cur_val - 1) - samples[8*s + i];
+                                try_err += sample_weights[8*s + i] * diff * diff;
+                            }
+                        }
+                        if (try_err < cur_err) { best_val = cur_val - 1; cur_err = try_err; }
+                    }
+
+                    /* Try +1 */
+                    if (cur_val < 127) {
+                        float try_err = 0.0f;
+                        for (int64_t s = 0; s < n_samples; ++s) {
+                            if (assignments[s] == k) {
+                                float diff = (float)(best_val + 1) - samples[8*s + i];
+                                try_err += sample_weights[8*s + i] * diff * diff;
+                            }
+                        }
+                        if (try_err < cur_err) { best_val = best_val + 1; }
+                    }
+
+                    pg[i] = best_val;
+                }
+            }
+        }
+
         /* Evaluate trial error using snapped int8 grid (what the quantizer will actually use) */
         float trial_error = 0.0f;
         for (int64_t s = 0; s < n_samples; ++s) {
