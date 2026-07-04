@@ -3663,19 +3663,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     /* else: empty cluster — leave centroid unchanged */
                 }
             }
-
-            /* Annealing noise: decaying perturbation to escape local minima */
-            unsigned int noise_rng = (unsigned int)(iter * 31337u + 12345u);
-            float noise_scale = 0.3f * (1.0f - (float)iter / kmeans_iters);
-            for (int k = 0; k < grid_size; ++k) {
-                for (int i = 0; i < 8; ++i) {
-                    noise_rng = noise_rng * 1103515245u + 12345u;
-                    float noise = ((float)(noise_rng & 0x7FFF) / 32768.0f - 1.0f) * noise_scale;
-                    centroids_float[8*k + i] += noise;
-                    if (centroids_float[8*k + i] < 0.0f) centroids_float[8*k + i] = 0.0f;
-                    if (centroids_float[8*k + i] > 127.0f) centroids_float[8*k + i] = 127.0f;
-                }
-            }
         }
 
         /* --- Error-aware int8 snap: try round-up and round-down, pick lower error --- */
