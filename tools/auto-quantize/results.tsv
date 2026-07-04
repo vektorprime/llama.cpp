@@ -21,3 +21,12 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-03T16:32:15	exp-20260703-006b	ce4e3d98f	2c26b1904	H1+H2+safe-H3: d refinement with 0.8x-1.2x grid search (REGRESSION)	success	1.066343	IQ2_XXS			786.3	2173.7	820.0	125.0	38.121	53.961
 2026-07-03T18:50:51	exp-20260703-007	c91a404b3	9315a2965	K-means++ init + 60 iters + 7 trials — KL 0.724, nearly matches Unsloth target 0.721	near-unsloth	0.723834	IQ2_XXS			765.3	3119	230	445	26.455	60.339
 2026-07-04T00:00:00	exp-20260703-008	8f6662382	827f21974	Per-tensor codebooks with K-means++ init — remove per-category grid sharing, all 7 trials K-means++ independently	regression	12.404808	IQ2_XXS			754.89	2344	230	445	2531803.52	0.020
+2026-07-04T14:58:00	exp-009	8d925094c	01ba9071a	Reduced K-means iterations 60→40 — 46% faster quantize (28min vs 52min), no quality loss	near-unsloth	0.723834	IQ2_XXS			754.89	1676	64	445	26.455	60.339
+2026-07-04T15:48:00	exp-010	c5fdbf956	8d925094c	More K-means trials 7→12 — null, identical KL	cancelled	0.723834	IQ2_XXS			754.89	2806	64	445	26.455	60.339
+2026-07-04T16:19:00	exp-011	75ca690ac	c8b8040c5	Activation-weighted K-means++ init — null, identical KL	cancelled	0.723834	IQ2_XXS			754.89	1682	64	445	26.455	60.339
+2026-07-04T17:16:00	exp-012	b26db43b6	c0ca0329c	Double K-means samples 16384→32768 — null, identical KL	cancelled	0.723834	IQ2_XXS			754.89	3246	64	445	26.455	60.339
+2026-07-04T17:46:00	exp-013	efcc7b667	04eddb780	Tensor-name-hash RNG seed — null, identical KL	cancelled	0.723834	IQ2_XXS			754.89	1684	64	445	26.455	60.339
+2026-07-04T18:17:00	exp-014	01ed5a125	246b6847c	Remove activation weighting from K-means — null, identical KL	cancelled	0.723834	IQ2_XXS			754.89	1681	64	445	26.455	60.339
+2026-07-04T18:47:00	exp-015	682b09a14	d3e02e569	L2 distance for K-means assignment — null, identical KL	cancelled	0.723834	IQ2_XXS			754.89	1688	64	445	26.455	60.339
+2026-07-04T19:58:00	exp-016	e114b14a6	0ac098dbb	Remove per-category codebook sharing — CATASTROPHIC regression	regression	12.307392	IQ2_XXS			754.89	2138	64		2321311.30	0.020
+
