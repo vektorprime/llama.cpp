@@ -3599,94 +3599,19 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             free(min_d2);
         }
 
-        float * centroids_float = (float *)calloc(grid_size * 8, sizeof(float));
-        float * weight_sums    = (float *)calloc(grid_size * 8, sizeof(float));
-        GGML_ASSERT(centroids_float && weight_sums);
-
-        for (int k = 0; k < grid_size; ++k) {
-            int8_t * pg = (int8_t *)(trial_grid + k);
-            for (int i = 0; i < 8; ++i) {
-                centroids_float[8*k + i] = (float)pg[i];
-            }
-        }
-
         int8_t * assignments = (int8_t *)malloc(n_samples * sizeof(int8_t));
         GGML_ASSERT(assignments);
 
-        float * new_centroids  = (float *)calloc(grid_size * 8, sizeof(float));
-        float * new_wt_sums    = (float *)calloc(grid_size * 8, sizeof(float));
-        GGML_ASSERT(new_centroids && new_wt_sums);
+        float * acc_vals = (float *)calloc(grid_size * 8, sizeof(float));
+        float * acc_wts  = (float *)calloc(grid_size * 8, sizeof(float));
+        GGML_ASSERT(acc_vals && acc_wts);
 
-        /* --- Float-space K-means: train centroids as floats, snap to int8 only at the end --- */
+        /* Int8-space K-means: train centroids as int8 directly, no float intermediate.
+         * Assignment uses L1, update rounds weighted mean to nearest int and clamps. */
         for (int iter = 0; iter < kmeans_iters; ++iter) {
-            memset(new_centroids, 0, grid_size * 8 * sizeof(float));
-            memset(new_wt_sums, 0, grid_size * 8 * sizeof(float));
+            memset(acc_vals, 0, grid_size * 8 * sizeof(float));
+            memset(acc_wts, 0, grid_size * 8 * sizeof(float));
 
-            for (int64_t s = 0; s < n_samples; ++s) {
-                float best_d1 = FLT_MAX;
-                int best_k = 0;
-                for (int k = 0; k < grid_size; ++k) {
-                    float d1 = 0;
-                    for (int i = 0; i < 8; ++i) {
-                        float diff = centroids_float[8*k + i] - samples[8*s + i];
-                        d1 += sample_weights[8*s + i] * fabsf(diff);
-                    }
-                    if (d1 < best_d1) { best_d1 = d1; best_k = k; }
-                }
-                assignments[s] = (int8_t)best_k;
-                for (int i = 0; i < 8; ++i) {
-                    float w = sample_weights[8*s + i];
-                    new_centroids[8*best_k + i] += samples[8*s + i] * w;
-                    new_wt_sums[8*best_k + i] += w;
-                }
-            }
-
-            /* Update centroids from accumulator — no rounding, keep as float */
-            for (int k = 0; k < grid_size; ++k) {
-                for (int i = 0; i < 8; ++i) {
-                    float ws = new_wt_sums[8*k + i];
-                    if (ws > 0.0f) {
-                        centroids_float[8*k + i] = new_centroids[8*k + i] / ws;
-                    }
-                    /* else: empty cluster — leave centroid unchanged */
-                }
-            }
-        }
-
-        /* --- Error-aware int8 snap: try round-up and round-down, pick lower error --- */
-        for (int k = 0; k < grid_size; ++k) {
-            int8_t * pg = (int8_t *)(trial_grid + k);
-            for (int i = 0; i < 8; ++i) {
-                float fc = centroids_float[8*k + i];
-                float f_floor = floorf(fc);
-                float f_ceil  = ceilf(fc);
-                if (f_floor < 0.0f) f_floor = 0.0f;
-                if (f_ceil  > 127.0f) f_ceil = 127.0f;
-                if (f_floor == f_ceil) {
-                    pg[i] = (int8_t)f_floor;
-                } else {
-                    /* Compute weighted L2 error for floor vs ceil against assigned samples */
-                    float err_floor = 0.0f, err_ceil = 0.0f;
-                    for (int64_t s = 0; s < n_samples; ++s) {
-                        if (assignments[s] == k) {
-                            float diff_f = f_floor - samples[8*s + i];
-                            float diff_c = f_ceil  - samples[8*s + i];
-                            float w = sample_weights[8*s + i];
-                            err_floor += w * diff_f * diff_f;
-                            err_ceil  += w * diff_c * diff_c;
-                        }
-                    }
-                    pg[i] = (err_floor <= err_ceil) ? (int8_t)f_floor : (int8_t)f_ceil;
-                }
-            }
-        }
-
-        /* --- Multi-round error-aware refinement ---
-         * After the initial snap, re-assign samples and do +/-1 gradient descent
-         * per centroid dimension to escape local minima. 3 rounds of refinement. */
-        const int refine_rounds = 0;
-        for (int round = 0; round < refine_rounds; ++round) {
-            /* Step 1: Re-assign all samples to nearest snapped centroid */
             for (int64_t s = 0; s < n_samples; ++s) {
                 float best_d1 = FLT_MAX;
                 int best_k = 0;
@@ -3700,77 +3625,44 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
                 assignments[s] = (int8_t)best_k;
+                for (int i = 0; i < 8; ++i) {
+                    float w = sample_weights[8*s + i];
+                    acc_vals[8*best_k + i] += samples[8*s + i] * w;
+                    acc_wts[8*best_k + i]  += w;
+                }
             }
 
-            /* Step 2: Per-centroid gradient descent - try +/-1 per dimension */
             for (int k = 0; k < grid_size; ++k) {
                 int8_t * pg = (int8_t *)(trial_grid + k);
                 for (int i = 0; i < 8; ++i) {
-                    int8_t cur_val = pg[i];
-                    int8_t best_val = cur_val;
-
-                    /* Compute current error for this centroid-dim against its samples */
-                    float cur_err = 0.0f;
-                    for (int64_t s = 0; s < n_samples; ++s) {
-                        if (assignments[s] == k) {
-                            float diff = (float)cur_val - samples[8*s + i];
-                            cur_err += sample_weights[8*s + i] * diff * diff;
-                        }
+                    float ws = acc_wts[8*k + i];
+                    if (ws > 0.0f) {
+                        float mean = acc_vals[8*k + i] / ws;
+                        int v = (int)roundf(mean);
+                        if (v < 0) v = 0;
+                        if (v > 127) v = 127;
+                        pg[i] = (int8_t)v;
                     }
-
-                    /* Try -1 */
-                    if (cur_val > 0) {
-                        float try_err = 0.0f;
-                        for (int64_t s = 0; s < n_samples; ++s) {
-                            if (assignments[s] == k) {
-                                float diff = (float)(cur_val - 1) - samples[8*s + i];
-                                try_err += sample_weights[8*s + i] * diff * diff;
-                            }
-                        }
-                        if (try_err < cur_err) { best_val = cur_val - 1; cur_err = try_err; }
-                    }
-
-                    /* Try +1 */
-                    if (cur_val < 127) {
-                        float try_err = 0.0f;
-                        for (int64_t s = 0; s < n_samples; ++s) {
-                            if (assignments[s] == k) {
-                                float diff = (float)(best_val + 1) - samples[8*s + i];
-                                try_err += sample_weights[8*s + i] * diff * diff;
-                            }
-                        }
-                        if (try_err < cur_err) { best_val = best_val + 1; }
-                    }
-
-                    pg[i] = best_val;
                 }
             }
         }
 
-        /* Evaluate trial error using snapped int8 grid (what the quantizer will actually use) */
         float trial_error = 0.0f;
         for (int64_t s = 0; s < n_samples; ++s) {
-            const int8_t * pg = (const int8_t *)trial_grid;
-            int k = assignments[s];
-            float d1 = 0;
+            const int8_t * pg = (const int8_t *)(trial_grid + assignments[s]);
             for (int i = 0; i < 8; ++i) {
-                float diff = (float)pg[8*k + i] - samples[8*s + i];
-                d1 += sample_weights[8*s + i] * fabsf(diff);
+                float diff = (float)pg[i] - samples[8*s + i];
+                trial_error += sample_weights[8*s + i] * diff * diff;
             }
-            trial_error += d1;
         }
-
-        free(new_wt_sums);
-        free(new_centroids);
-
         if (trial_error < best_error) {
             best_error = trial_error;
             memcpy(best_grid, trial_grid, grid_size * sizeof(uint64_t));
         }
 
         free(assignments);
-        free(weight_sums);
-        free(centroids_float);
+        free(acc_vals);
+        free(acc_wts);
         free(trial_grid);
     }
 
