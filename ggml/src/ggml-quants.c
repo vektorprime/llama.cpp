@@ -3485,23 +3485,11 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     const int gindex = 0;
     const int kmeans_iters = 100;
 
-    /* --- Per-tensor-type codebooks ---
-     * Classify tensor by name into attention (attn_*), MLP (ffn_*), or other.
-     * Maintain separate shared grids per category so that each type trains
-     * a grid optimized for its own weight distribution. */
-    enum tensor_type_category { TENSOR_ATTN, TENSOR_MLP, TENSOR_OTHER };
-    enum tensor_type_category tcat = TENSOR_OTHER;
-    if (tensor_name) {
-        if (strstr(tensor_name, "attn_")) {
-            tcat = TENSOR_ATTN;
-        } else if (strstr(tensor_name, "ffn_")) {
-            tcat = TENSOR_MLP;
-        }
-    }
-    /* Per-category shared grids: one per category, refined across all tensors of that type */
-    static uint64_t * per_cat_grid[3] = { NULL, NULL, NULL };
-    static int per_cat_tensor_count[3] = { 0, 0, 0 };
-    per_cat_tensor_count[tcat]++;
+    /* Single global grid: shared across ALL IQ2_XXS tensors regardless of type.
+     * More training data from diverse tensor types may produce a better grid. */
+    static uint64_t * global_grid = NULL;
+    static int global_tensor_count = 0;
+    global_tensor_count++;
 
     const int num_trials = 1;
     const int max_samples = 16384;
@@ -3536,8 +3524,8 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
 
         if (trial == 0) {
             /* Per-category warm-start: use shared grid for this tensor type if available */
-            if (per_cat_grid[tcat]) {
-                memcpy(trial_grid, per_cat_grid[tcat], grid_size * sizeof(uint64_t));
+            if (global_grid) {
+                memcpy(trial_grid, global_grid, grid_size * sizeof(uint64_t));
             } else if (iq2_data[gindex].grid) {
                 memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
             } else {
@@ -3787,12 +3775,12 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     }
 
     /* Store learned grid per category for subsequent tensors of the same type */
-    if (per_cat_grid[tcat]) {
-        free(per_cat_grid[tcat]);
+    if (global_grid) {
+        free(global_grid);
     }
-    per_cat_grid[tcat] = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
-    GGML_ASSERT(per_cat_grid[tcat]);
-    memcpy(per_cat_grid[tcat], best_grid, grid_size * sizeof(uint64_t));
+    global_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
+    GGML_ASSERT(global_grid);
+    memcpy(global_grid, best_grid, grid_size * sizeof(uint64_t));
 
     free(samples);
     free(sample_weights);
