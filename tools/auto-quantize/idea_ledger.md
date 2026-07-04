@@ -44,8 +44,3 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Hypothesis**: K-means++ initialization produces better-spread initial centroids than random initialization. Since centroids start closer to their final positions, fewer iterations are needed for convergence. Reducing from 60→40 iterations should maintain the same grid quality while cutting quantize time by ~30%.
 
 **Expected**: KL stays at 0.724 (no regression) while quantize time drops from ~52 min to ~35 min.
-**Result**: KL=0.723834 identical to exp-007. Confirmed — 28 min (46% faster).
-
-### exp-010: More K-means trials (7→12) — NULL, reverted
-### exp-011: Activation-weighted K-means++ init — NULL, reverted
-### exp-012: Double K-means samples (16384→32768) — better coverage of weight distribution
