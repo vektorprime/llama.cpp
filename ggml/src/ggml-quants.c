@@ -3485,24 +3485,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     const int gindex = 0;
     const int kmeans_iters = 40;
 
-    /* --- Per-tensor-type codebooks ---
-     * Classify tensor by name into attention (attn_*), MLP (ffn_*), or other.
-     * Maintain separate shared grids per category so that each type trains
-     * a grid optimized for its own weight distribution. */
-    enum tensor_type_category { TENSOR_ATTN, TENSOR_MLP, TENSOR_OTHER };
-    enum tensor_type_category tcat = TENSOR_OTHER;
-    if (tensor_name) {
-        if (strstr(tensor_name, "attn_")) {
-            tcat = TENSOR_ATTN;
-        } else if (strstr(tensor_name, "ffn_")) {
-            tcat = TENSOR_MLP;
-        }
-    }
-    /* Per-category shared grids: one per category, refined across all tensors of that type */
-    static uint64_t * per_cat_grid[3] = { NULL, NULL, NULL };
-    static int per_cat_tensor_count[3] = { 0, 0, 0 };
-    per_cat_tensor_count[tcat]++;
-
     const int num_trials = 7;
     const int max_samples = 16384;
 
@@ -3534,17 +3516,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         uint64_t * trial_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
         GGML_ASSERT(trial_grid);
 
-        if (trial == 0) {
-            /* Per-category warm-start: use shared grid for this tensor type if available */
-            if (per_cat_grid[tcat]) {
-                memcpy(trial_grid, per_cat_grid[tcat], grid_size * sizeof(uint64_t));
-            } else if (iq2_data[gindex].grid) {
-                memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
-            } else {
-                iq2xs_init_impl(GGML_TYPE_IQ2_XXS);
-                memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
-            }
-        } else {
+        {
             /* --- K-means++ initialization: probabilistic farthest-first sampling --- */
             unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
             float * min_d2 = (float *)malloc(n_samples * sizeof(float));
@@ -3785,14 +3757,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         free(centroids_float);
         free(trial_grid);
     }
-
-    /* Store learned grid per category for subsequent tensors of the same type */
-    if (per_cat_grid[tcat]) {
-        free(per_cat_grid[tcat]);
-    }
-    per_cat_grid[tcat] = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
-    GGML_ASSERT(per_cat_grid[tcat]);
-    memcpy(per_cat_grid[tcat], best_grid, grid_size * sizeof(uint64_t));
 
     free(samples);
     free(sample_weights);
