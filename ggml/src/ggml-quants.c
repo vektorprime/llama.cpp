@@ -3485,11 +3485,20 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     const int gindex = 0;
     const int kmeans_iters = 100;
 
-    /* Single global grid: shared across ALL IQ2_XXS tensors regardless of type.
-     * More training data from diverse tensor types may produce a better grid. */
-    static uint64_t * global_grid = NULL;
-    static int global_tensor_count = 0;
-    global_tensor_count++;
+    /* Depth-based grids: separate grids for early (blk.0-7), mid (blk.8-15),
+     * and late (blk.16-23) layers. Weight distributions shift with depth. */
+    int depth_cat = 0;
+    if (tensor_name) {
+        const char * blk = strstr(tensor_name, "blk.");
+        if (blk) {
+            int layer = atoi(blk + 4);
+            if (layer >= 16)      depth_cat = 2;
+            else if (layer >= 8)  depth_cat = 1;
+        }
+    }
+    static uint64_t * depth_grid[3] = { NULL, NULL, NULL };
+    static int depth_tensor_count[3] = { 0, 0, 0 };
+    depth_tensor_count[depth_cat]++;
 
     const int num_trials = 1;
     const int max_samples = 16384;
@@ -3524,8 +3533,8 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
 
         if (trial == 0) {
             /* Per-category warm-start: use shared grid for this tensor type if available */
-            if (global_grid) {
-                memcpy(trial_grid, global_grid, grid_size * sizeof(uint64_t));
+            if (depth_grid[depth_cat]) {
+                memcpy(trial_grid, depth_grid[depth_cat], grid_size * sizeof(uint64_t));
             } else if (iq2_data[gindex].grid) {
                 memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
             } else {
@@ -3775,12 +3784,12 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     }
 
     /* Store learned grid per category for subsequent tensors of the same type */
-    if (global_grid) {
-        free(global_grid);
+    if (depth_grid[depth_cat]) {
+        free(depth_grid[depth_cat]);
     }
-    global_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
-    GGML_ASSERT(global_grid);
-    memcpy(global_grid, best_grid, grid_size * sizeof(uint64_t));
+    depth_grid[depth_cat] = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
+    GGML_ASSERT(depth_grid[depth_cat]);
+    memcpy(depth_grid[depth_cat], best_grid, grid_size * sizeof(uint64_t));
 
     free(samples);
     free(sample_weights);
