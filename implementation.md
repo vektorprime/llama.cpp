@@ -665,11 +665,52 @@ The changes are listed in dependency order. Each phase results in a compilable c
 
 ### Phase 5: Verification
 
-| # | Test | Purpose |
-|---|---|---|
-| 24 | Quantize BF16 -> IQ2_XXS_V2, verify model loads | End-to-end pipeline |
-| 25 | Run KLD perplexity vs IQ2_XXS V1 baseline | Quality comparison |
-| 26 | Profile CUDA kernel timing vs V1 | Performance regression check |
+#### Build
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON -DGGML_BACKEND_DL=OFF
+cmake --build build --target test-quantize-fns -j$(nproc)
+cmake --build build --target test-backend-ops -j$(nproc)
+cmake --build build --target test-quantize-perf -j$(nproc)
+cmake --build build --target llama-quantize -j$(nproc)
+```
+
+#### Unit tests
+
+```bash
+./build/bin/test-quantize-fns -v           # quantize/dequant/dot-product for all types
+./build/bin/test-backend-ops               # dequant, mul_mat across CPU backend
+./build/bin/test-quantize-perf             # quantization benchmarks
+```
+
+#### End-to-end: Quantize BF16 -> IQ2_XXS_V2
+
+```bash
+llama-quantize \
+  /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf \
+  /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-USE-A-UNIQUE-NAME.gguf \
+  IQ2_XXS_V2
+```
+
+Replace `USE-A-UNIQUE-NAME` with a descriptive name.
+
+#### End-to-end: KLD perplexity (CUDA)
+
+Must use CUDA device 1 and the exact command below. Only change the model filename.
+
+```bash
+CUDA_VISIBLE_DEVICES=1 /home/user/llm/outlier_llama/llama.cpp/build/bin/llama-perplexity \
+  -m /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-USE-A-UNIQUE-NAME.gguf \
+  -f /home/user/llm/wikitext-2-raw/wiki.test.raw -t 8 -c 512 --chunks 200 \
+  -fa on --cache-type-k bf16 --cache-type-v bf16 --no-mmap -ngl 999 -np 1 \
+  --kl-divergence --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
+```
+
+Compare KLD and perplexity against the IQ2_XXS V1 baseline (generated with the same command but with the V1-quantized model).
+
+#### Profile CUDA kernel timing
+
+Compare V2 kernel times against V1 baseline in `llama-perplexity` output (token probabilities include timing breakdowns).
 
 ---
 
