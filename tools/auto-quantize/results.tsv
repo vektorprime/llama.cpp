@@ -38,4 +38,5 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-04T21:39:00	exp-023-nolearn	ce39c2298	ce39c2298	E8 lattice baseline (NO learning) with Unsloth-matched types — KL=0.725, learning only gives +0.13%	baseline	0.724789	IQ2_XXS			754.89	278	64	445	26.555	60.018
 2026-07-04T22:02:00	exp-024	455ce2684	dae04ff04	Direct int8-space K-means (no float, no snap, no refinement) — identical KL but slower, reverted	null_result	0.723834	IQ2_XXS			754.89	1068	64	445	26.455	60.339
 2026-07-04T22:04:00	exp-025	ab5280955	ab5280955	Quantize without --imatrix — fails: "this quantization requires an imatrix!"	failed_quantize	0.000000	IQ2_XXS					0.1		0.000	0.000
+2026-07-04T22:24:00	exp-026	6cd2e1c52	06b73efa8	Exhaustive codebook search during quant — WORSE (0.728), 2-bit kmap is optimal, int8 precision lost in quant	regression	0.727714	IQ2_XXS			754.89	955	64	445	26.623	60.157
 
