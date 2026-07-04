@@ -3503,7 +3503,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     static int per_cat_tensor_count[3] = { 0, 0, 0 };
     per_cat_tensor_count[tcat]++;
 
-    const int num_trials = 12;
+    const int num_trials = 7;
     const int max_samples = 16384;
 
     int64_t n_total = nrows * n_per_row;
