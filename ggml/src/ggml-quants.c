@@ -3518,7 +3518,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         free(sample_weights);
         return;
     }
-    float samples_scale = 126.0f / samples_max;
+    float samples_scale = 127.0f / samples_max;
     for (int64_t t = 0; t < 8 * n_samples; ++t) {
         samples[t] *= samples_scale;
     }
@@ -3544,7 +3544,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 for (int i = 0; i < 8; ++i) {
                     float v = samples[8*idx + i];
                     v = roundf(v);
-                    if (v < 1.0f) v = 1.0f;
+                    if (v < 0.0f) v = 0.0f;
                     if (v > 127.0f) v = 127.0f;
                     pg[i] = (int8_t)v;
                 }
@@ -3577,7 +3577,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 for (int i = 0; i < 8; ++i) {
                     float v = samples[8*selected + i];
                     v = roundf(v);
-                    if (v < 1.0f) v = 1.0f;
+                    if (v < 0.0f) v = 0.0f;
                     if (v > 127.0f) v = 127.0f;
                     pg[i] = (int8_t)v;
                 }
@@ -3657,7 +3657,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 float fc = centroids_float[8*k + i];
                 float f_floor = floorf(fc);
                 float f_ceil  = ceilf(fc);
-                if (f_floor < 1.0f) f_floor = 1.0f;
+                if (f_floor < 0.0f) f_floor = 0.0f;
                 if (f_ceil  > 127.0f) f_ceil = 127.0f;
                 if (f_floor == f_ceil) {
                     pg[i] = (int8_t)f_floor;
@@ -3716,7 +3716,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     }
 
                     /* Try -1 */
-                    if (cur_val > 1) {
+                    if (cur_val > 0) {
                         float try_err = 0.0f;
                         for (int64_t s = 0; s < n_samples; ++s) {
                             if (assignments[s] == k) {
