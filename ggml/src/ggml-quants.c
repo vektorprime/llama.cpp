@@ -3696,7 +3696,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         /* --- Multi-round error-aware refinement ---
          * After the initial snap, re-assign samples and do +/-1 gradient descent
          * per centroid dimension to escape local minima. 3 rounds of refinement. */
-        const int refine_rounds = 3;
+        const int refine_rounds = 0;
         for (int round = 0; round < refine_rounds; ++round) {
             /* Step 1: Re-assign all samples to nearest snapped centroid */
             for (int64_t s = 0; s < n_samples; ++s) {
