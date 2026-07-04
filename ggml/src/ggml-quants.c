@@ -3628,10 +3628,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 for (int k = 0; k < grid_size; ++k) {
                     float d1 = 0;
                     for (int i = 0; i < 8; ++i) {
-                        float fc = centroids_float[8*k + i];
-                        int l = (int)roundf((fc - 1.0f) / 2.0f);
-                        if (l < 0) l = 0; if (l > 3) l = 3;
-                        float diff = (2.0f * l + 1.0f) - samples[8*s + i];
+                        float diff = centroids_float[8*k + i] - samples[8*s + i];
                         d1 += sample_weights[8*s + i] * fabsf(diff);
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
