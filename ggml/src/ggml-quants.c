@@ -3546,13 +3546,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         } else {
             /* --- K-means++ initialization: probabilistic farthest-first sampling --- */
-            unsigned int name_hash = 5381u;
-            if (tensor_name) {
-                for (const char *p = tensor_name; *p; ++p) {
-                    name_hash = ((name_hash << 5) + name_hash) + (unsigned char)*p;
-                }
-            }
-            unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u + name_hash);
+            unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
             float * min_d2 = (float *)malloc(n_samples * sizeof(float));
             GGML_ASSERT(min_d2);
 
