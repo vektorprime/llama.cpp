@@ -31,4 +31,7 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-04T19:58:00	exp-016	e114b14a6	0ac098dbb	Remove per-category codebook sharing — CATASTROPHIC regression	regression	12.307392	IQ2_XXS			754.89	2138	64		2321311.30	0.020
 2026-07-04T20:13:00	exp-017	f1fe67fb7	a5e46daac	Single-trial 100-iter warm-start only (no K-means++) — same KL, 63% faster (10.3min vs 28min)	near-unsloth	0.723834	IQ2_XXS			754.89	620	64	445	26.455	60.339
 2026-07-04T20:25:00	exp-018	9396a90e0	f1fe67fb7	Remove multi-round refinement (0 rounds) — no quality loss, 9.6min (82% faster than exp-007)	near-unsloth	0.723834	IQ2_XXS			754.89	576	64	445	26.455	60.339
+2026-07-04T20:43:00	exp-019	e2f559ab9	9396a90e0	Annealing noise in K-means — quantize produced corrupted model, reverted	failed_quantize					754.89			
+2026-07-04T20:54:00	exp-020	c6b3c2bd7	319d511b8	Single global grid (no per-category) — same KL, simpler code	near-unsloth	0.723834	IQ2_XXS			754.89	578	64	445	26.455	60.339
+2026-07-04T21:18:00	exp-021	935aa17c3	c6b3c2bd7	256 K-means iterations — identical KL, 2.3x slower, reverted	cancelled	0.723834	IQ2_XXS			754.89	1303	64	445	26.455	60.339
 
