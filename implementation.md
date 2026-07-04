@@ -12,6 +12,17 @@ This is a new ggml type: `GGML_TYPE_IQ2_XXS_V2`. The block struct layout, block 
 - **No format change to GGUF.** The new type is used only at the ggml tensor level.
 - **Existing IQ2_XXS is unchanged.** V2 is an additive type.
 
+### Baseline: IQ2_XXS (Unsloth) on Qwen3.5-2B
+
+Results from the Unsloth UD IQ2_XXS benchmark. Used as quality baseline for V2 comparison.
+
+| Metric | Value |
+|---|---|
+| KL Divergence | 0.7207 |
+| PPL | 26.44 |
+| Same top P | 60.19% |
+| Model size | 733 MB |
+
 ---
 
 ## 1. New Type Declaration
