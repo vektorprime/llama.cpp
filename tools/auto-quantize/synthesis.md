@@ -18,6 +18,8 @@
 
 ### 1. Codebook learning provides only 0.13% improvement over E8 lattice
 The E8 lattice baseline with Unsloth-matched types is KL=0.7248. Our best learned result is KL=0.7238. Learning improves KL by only 0.00096 (0.13%).
+
+**13 experiments (007-025, excluding broken) ALL converge to identical KL=0.723834.** The K-means procedure is at a deterministic global optimum. No parameter change (trials, iterations, distance metric, weighting, samples, RNG seed, grid categories, float vs int8 space, refinement) produces a different result.
 | exp-012 | 0.724 | 26.46 | 60.34% | 755 MB | 54 min | 32K samples (null, reverted) |
 | exp-013 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Name-hash RNG seed (null, reverted) |
 | exp-014 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Unweighted K-means (null, reverted) |
