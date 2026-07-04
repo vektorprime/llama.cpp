@@ -3641,14 +3641,15 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     float d1 = 0;
                     for (int i = 0; i < 8; ++i) {
                         float diff = centroids_float[8*k + i] - samples[8*s + i];
-                        d1 += fabsf(diff);
+                        d1 += sample_weights[8*s + i] * fabsf(diff);
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
                 assignments[s] = (int8_t)best_k;
                 for (int i = 0; i < 8; ++i) {
-                    new_centroids[8*best_k + i] += samples[8*s + i];
-                    new_wt_sums[8*best_k + i] += 1.0f;
+                    float w = sample_weights[8*s + i];
+                    new_centroids[8*best_k + i] += samples[8*s + i] * w;
+                    new_wt_sums[8*best_k + i] += w;
                 }
             }
 
@@ -3682,8 +3683,9 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         if (assignments[s] == k) {
                             float diff_f = f_floor - samples[8*s + i];
                             float diff_c = f_ceil  - samples[8*s + i];
-                            err_floor += diff_f * diff_f;
-                            err_ceil  += diff_c * diff_c;
+                            float w = sample_weights[8*s + i];
+                            err_floor += w * diff_f * diff_f;
+                            err_ceil  += w * diff_c * diff_c;
                         }
                     }
                     pg[i] = (err_floor <= err_ceil) ? (int8_t)f_floor : (int8_t)f_ceil;
@@ -3705,7 +3707,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     float d1 = 0;
                     for (int i = 0; i < 8; ++i) {
                         float diff = (float)pg_all[8*k + i] - samples[8*s + i];
-                        d1 += fabsf(diff);
+                        d1 += sample_weights[8*s + i] * fabsf(diff);
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
@@ -3724,7 +3726,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     for (int64_t s = 0; s < n_samples; ++s) {
                         if (assignments[s] == k) {
                             float diff = (float)cur_val - samples[8*s + i];
-                            cur_err += diff * diff;
+                            cur_err += sample_weights[8*s + i] * diff * diff;
                         }
                     }
 
@@ -3734,7 +3736,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         for (int64_t s = 0; s < n_samples; ++s) {
                             if (assignments[s] == k) {
                                 float diff = (float)(cur_val - 1) - samples[8*s + i];
-                                try_err += diff * diff;
+                                try_err += sample_weights[8*s + i] * diff * diff;
                             }
                         }
                         if (try_err < cur_err) { best_val = cur_val - 1; cur_err = try_err; }
@@ -3746,7 +3748,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         for (int64_t s = 0; s < n_samples; ++s) {
                             if (assignments[s] == k) {
                                 float diff = (float)(best_val + 1) - samples[8*s + i];
-                                try_err += diff * diff;
+                                try_err += sample_weights[8*s + i] * diff * diff;
                             }
                         }
                         if (try_err < cur_err) { best_val = best_val + 1; }
