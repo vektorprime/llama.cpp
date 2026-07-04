@@ -3523,15 +3523,9 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         GGML_ASSERT(trial_grid);
 
         if (trial == 0) {
-            /* Per-category warm-start: use shared grid for this tensor type if available */
-            if (global_grid) {
-                memcpy(trial_grid, global_grid, grid_size * sizeof(uint64_t));
-            } else if (iq2_data[gindex].grid) {
-                memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
-            } else {
-                iq2xs_init_impl(GGML_TYPE_IQ2_XXS);
-                memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
-            }
+            /* Always start from E8 lattice — no cross-tensor warm-start */
+            iq2xs_init_impl(GGML_TYPE_IQ2_XXS);
+            memcpy(trial_grid, iq2_data[gindex].grid, grid_size * sizeof(uint64_t));
         } else {
             /* --- K-means++ initialization: probabilistic farthest-first sampling --- */
             unsigned int rng_state = (unsigned int)(trial * 10007u + 424242u);
