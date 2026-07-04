@@ -3940,26 +3940,8 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                         const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u] - 1;
                         grid_index = iq2_find_best_neighbour(neighbours, kgrid_q2xs, xval + 8*k, waux + 8*k, scale, L + 8*k);
                     }
-
-                    /* Exhaustive search: try all 256 codebook entries for best match */
-                    float best_err = FLT_MAX;
-                    int best_gi = grid_index;
-                    const int8_t * pg_best = (const int8_t *)(kgrid_q2xs + grid_index);
-                    for (int gi = 0; gi < 256; ++gi) {
-                        const int8_t * pg = (const int8_t *)(kgrid_q2xs + gi);
-                        float err = 0;
-                        for (int i = 0; i < 8; ++i) {
-                            float diff = xval[8*k+i] - scale * (float)pg[i];
-                            err += waux[8*k+i] * diff * diff;
-                        }
-                        if (err < best_err) {
-                            best_err = err;
-                            best_gi = gi;
-                            pg_best = pg;
-                        }
-                    }
-                    grid_index = best_gi;
-                    for (int i = 0; i < 8; ++i) L[8*k+i] = (pg_best[i] - 1)/2;
+                    const int8_t * pg = (const int8_t *)(kgrid_q2xs + grid_index);
+                    for (int i = 0; i < 8; ++i) L[8*k+i] = (pg[i] - 1)/2;
                 }
                 float sumqx = 0, sumq2 = 0;
                 for (int i = 0; i < 32; ++i) {
