@@ -3483,7 +3483,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         int64_t nrows, int64_t n_per_row, const char * tensor_name) {
     const int grid_size = 256;
     const int gindex = 0;
-    const int kmeans_iters = 100;
+    const int kmeans_iters = 256;
 
     /* Single global grid: shared across ALL IQ2_XXS tensors regardless of type.
      * More training data from diverse tensor types may produce a better grid. */
