@@ -3641,7 +3641,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     float d1 = 0;
                     for (int i = 0; i < 8; ++i) {
                         float diff = centroids_float[8*k + i] - samples[8*s + i];
-                        d1 += sample_weights[8*s + i] * diff * diff;
+                        d1 += sample_weights[8*s + i] * fabsf(diff);
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
@@ -3707,7 +3707,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     float d1 = 0;
                     for (int i = 0; i < 8; ++i) {
                         float diff = (float)pg_all[8*k + i] - samples[8*s + i];
-                        d1 += sample_weights[8*s + i] * diff * diff;
+                        d1 += sample_weights[8*s + i] * fabsf(diff);
                     }
                     if (d1 < best_d1) { best_d1 = d1; best_k = k; }
                 }
