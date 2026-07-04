@@ -3209,9 +3209,8 @@ void iq2xs_init_impl(enum ggml_type type) {
         aux64 = kgrid_q2xs[i];
         uint16_t index = 0;
         for (int k=0; k<8; ++k) {
-        uint16_t q = (aux8[k] - 1)/2;
-        if (q > 3) q = 3;
-        index |= (q << 2*k);
+            uint16_t q = (aux8[k] - 1)/2;
+            index |= (q << 2*k);
         }
         kmap_q2xs[index] = i;
     }
@@ -3360,9 +3359,8 @@ static void iq2xxs_rebuild_map_and_neighbours(void) {
         aux64 = kgrid_q2xs[i];
         uint16_t index = 0;
         for (int k = 0; k < 8; ++k) {
-        uint16_t q = (aux8[k] - 1)/2;
-        if (q > 3) q = 3;
-        index |= (q << 2*k);
+            uint16_t q = (aux8[k] - 1)/2;
+            index |= (q << 2*k);
         }
         kmap_q2xs[index] = i;
     }
