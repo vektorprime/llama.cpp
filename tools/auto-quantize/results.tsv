@@ -34,4 +34,6 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-04T20:43:00	exp-019	e2f559ab9	9396a90e0	Annealing noise in K-means — quantize produced corrupted model, reverted	failed_quantize					754.89			
 2026-07-04T20:54:00	exp-020	c6b3c2bd7	319d511b8	Single global grid (no per-category) — same KL, simpler code	near-unsloth	0.723834	IQ2_XXS			754.89	578	64	445	26.455	60.339
 2026-07-04T21:18:00	exp-021	935aa17c3	c6b3c2bd7	256 K-means iterations — identical KL, 2.3x slower, reverted	cancelled	0.723834	IQ2_XXS			754.89	1303	64	445	26.455	60.339
+2026-07-04T21:34:00	exp-022	e11d7cbad	ce39c2298	Depth-based grid categories (early/mid/late layers) — identical KL, reverted	null_result	0.723834	IQ2_XXS			754.89	617	64	445	26.455	60.339
+2026-07-04T21:39:00	exp-023-nolearn	ce39c2298	ce39c2298	E8 lattice baseline (NO learning) with Unsloth-matched types — KL=0.725, learning only gives +0.13%	baseline	0.724789	IQ2_XXS			754.89	278	64	445	26.555	60.018
 

@@ -1,18 +1,23 @@
 # IQ2_XXS Auto-Research Synthesis — Session 2026-07-04
 
-## Summary
+## CRITICAL FINDING (exp-023 no-learn)
 
-Two major breakthroughs: **K-means++ initialization** (exp-007) reduced KL from 0.971 → 0.724 (-25%), nearly matching Unsloth target 0.721. Then **iterations optimization** (exp-009) cut quantize time by 46% with no quality loss. Eight subsequent experiments attempting to close the remaining 0.003 gap all converged to the same optimal point.
+**The E8 lattice grid with Unsloth-matched types achieves KL=0.724789 — only 0.13% worse than our best learned KL of 0.723834.** Codebook learning provides a negligible benefit with the current type map. The remaining gap to Unsloth (0.721) is not about codebook initialization — it's a structural difference in the quantization pipeline itself (search algorithm, scale initialization, block partitioning).
 
-## Results Table
+## Results Table (key experiments)
 
-| Experiment | KL Divergence | PPL | Same Top P | Size | Q-Time | Key Technique |
-|-----------|--------------|-----|------------|------|--------|---------------|
-| **Unsloth target** | 0.721 | 26.44 | 60.25% | 733 MB | — | Reference |
-| exp-007 | **0.724** | **26.46** | **60.34%** | 765 MB | 52 min | K-means++ init (60 iters, 7 trials) |
-| exp-009 | **0.724** | **26.46** | **60.34%** | 755 MB | 28 min | 40 iters (46% faster, same quality) |
-| exp-010 | 0.724 | 26.46 | 60.34% | 755 MB | 47 min | 12 trials (null, reverted) |
-| exp-011 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Weighted K-means++ init (null, reverted) |
+| Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
+|-----------|--------------|-----|------------|--------|---------------|
+| **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
+| **E8 lattice (no learn)** | **0.7248** | 26.55 | 60.02% | 4.6 min | Pure E8 lattice, Unsloth-matched types |
+| **Best learned (exp-020)** | **0.7238** | 26.46 | 60.34% | 9.6 min | Single global grid, 100 iters, 1 trial |
+| exp-007 | 0.7238 | 26.46 | 60.34% | 52 min | K-means++ (7 trials, 60 iters, per-category) |
+| exp-009 | 0.7238 | 26.46 | 60.34% | 28 min | 40 iters (46% faster) |
+
+## Key Findings
+
+### 1. Codebook learning provides only 0.13% improvement over E8 lattice
+The E8 lattice baseline with Unsloth-matched types is KL=0.7248. Our best learned result is KL=0.7238. Learning improves KL by only 0.00096 (0.13%).
 | exp-012 | 0.724 | 26.46 | 60.34% | 755 MB | 54 min | 32K samples (null, reverted) |
 | exp-013 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Name-hash RNG seed (null, reverted) |
 | exp-014 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Unweighted K-means (null, reverted) |
