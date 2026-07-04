@@ -3505,12 +3505,19 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     GGML_ASSERT(samples && sample_weights);
 
     int64_t step = n_total / 8 / n_samples;
+    /* Compute sigma2 for quantization-matching weight formula */
+    double sumx2 = 0.0;
+    for (int64_t i = 0; i < n_total; ++i) sumx2 += (double)x[i] * (double)x[i];
+    float sigma2 = (float)(sumx2 / n_total);
+
     if (step < 1) step = 1;
     for (int64_t s = 0; s < n_samples; ++s) {
         int64_t idx = (s * step) % (n_total / 8);
         for (int k = 0; k < 8; ++k) {
-            samples[8*s + k] = fabsf(x[idx*8 + k]);
-            sample_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
+            float val = x[idx*8 + k];
+            samples[8*s + k] = fabsf(val);
+            float w = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
+            sample_weights[8*s + k] = w * sqrtf(sigma2 + val * val);
         }
     }
 
