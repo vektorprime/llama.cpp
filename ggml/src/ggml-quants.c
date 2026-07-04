@@ -3545,10 +3545,10 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 int8_t * pg = (int8_t *)(trial_grid + 0);
                 for (int i = 0; i < 8; ++i) {
                     float v = samples[8*idx + i];
-                    v = roundf(v);
-                    if (v < 0.0f) v = 0.0f;
-                    if (v > 127.0f) v = 127.0f;
-                    pg[i] = (int8_t)v;
+                    int l = (int)roundf((v - 1.0f) / 2.0f);
+                    if (l < 0) l = 0;
+                    if (l > 3) l = 3;
+                    pg[i] = (int8_t)(2*l + 1);
                 }
             }
 
@@ -3578,10 +3578,10 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 int8_t * pg = (int8_t *)(trial_grid + k);
                 for (int i = 0; i < 8; ++i) {
                     float v = samples[8*selected + i];
-                    v = roundf(v);
-                    if (v < 0.0f) v = 0.0f;
-                    if (v > 127.0f) v = 127.0f;
-                    pg[i] = (int8_t)v;
+                    int l = (int)roundf((v - 1.0f) / 2.0f);
+                    if (l < 0) l = 0;
+                    if (l > 3) l = 3;
+                    pg[i] = (int8_t)(2*l + 1);
                 }
 
                 total_d2 = 0.0f;
@@ -3641,43 +3641,31 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 }
             }
 
-            /* Update centroids from accumulator — no rounding, keep as float */
+            /* Update centroids — snap to odd values {1,3,5,7} for 2-bit compatibility */
             for (int k = 0; k < grid_size; ++k) {
                 for (int i = 0; i < 8; ++i) {
                     float ws = new_wt_sums[8*k + i];
                     if (ws > 0.0f) {
-                        centroids_float[8*k + i] = new_centroids[8*k + i] / ws;
+                        float mean = new_centroids[8*k + i] / ws;
+                        int l = (int)roundf((mean - 1.0f) / 2.0f);
+                        if (l < 0) l = 0;
+                        if (l > 3) l = 3;
+                        centroids_float[8*k + i] = 2.0f * l + 1.0f;
                     }
                     /* else: empty cluster — leave centroid unchanged */
                 }
             }
         }
 
-        /* --- Error-aware int8 snap: try round-up and round-down, pick lower error --- */
+        /* Snap float centroids to nearest valid 2-bit odd value {1,3,5,7} */
         for (int k = 0; k < grid_size; ++k) {
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
                 float fc = centroids_float[8*k + i];
-                float f_floor = floorf(fc);
-                float f_ceil  = ceilf(fc);
-                if (f_floor < 0.0f) f_floor = 0.0f;
-                if (f_ceil  > 127.0f) f_ceil = 127.0f;
-                if (f_floor == f_ceil) {
-                    pg[i] = (int8_t)f_floor;
-                } else {
-                    /* Compute weighted L2 error for floor vs ceil against assigned samples */
-                    float err_floor = 0.0f, err_ceil = 0.0f;
-                    for (int64_t s = 0; s < n_samples; ++s) {
-                        if (assignments[s] == k) {
-                            float diff_f = f_floor - samples[8*s + i];
-                            float diff_c = f_ceil  - samples[8*s + i];
-                            float w = sample_weights[8*s + i];
-                            err_floor += w * diff_f * diff_f;
-                            err_ceil  += w * diff_c * diff_c;
-                        }
-                    }
-                    pg[i] = (err_floor <= err_ceil) ? (int8_t)f_floor : (int8_t)f_ceil;
-                }
+                int l = (int)roundf((fc - 1.0f) / 2.0f);
+                if (l < 0) l = 0;
+                if (l > 3) l = 3;
+                pg[i] = (int8_t)(2*l + 1);
             }
         }
 
