@@ -2,6 +2,7 @@
 #include "llama-model.h"
 #include "llama-model-loader.h"
 #include "llama-ext.h"
+#include "gguf.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <regex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 // result of parsing --tensor-type option
 // (changes to this struct must be reflected in tools/quantize/quantize.cpp)
@@ -449,7 +451,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             else if (arch == LLM_ARCH_FALCON || nx % qk_k != 0) {
                 new_type = GGML_TYPE_Q8_0;
             }
-            else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS ||
+            else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS_V2 || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS ||
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_S   || ftype == LLAMA_FTYPE_MOSTLY_IQ2_S  || ftype == LLAMA_FTYPE_MOSTLY_IQ2_M   ||
                      ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q5_K;
@@ -470,7 +472,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
         if (qs.params->token_embedding_type < GGML_TYPE_COUNT) {
             new_type = qs.params->token_embedding_type;
         } else {
-            if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS ||
+            if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS_V2 || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS ||
                 ftype == LLAMA_FTYPE_MOSTLY_IQ1_S   || ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
                 new_type = GGML_TYPE_Q2_K;
             }
@@ -484,7 +486,7 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                 new_type = GGML_TYPE_Q4_K;
             }
         }
-    } else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ1_S ||
+    } else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS_V2 || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ1_S ||
                ftype == LLAMA_FTYPE_MOSTLY_IQ2_S || ftype == LLAMA_FTYPE_MOSTLY_IQ2_M    || ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
         if (category_is_attn_v(category)) {
             if (qs.model.hparams.n_gqa() >= 4 || qs.model.hparams.n_expert >= 4) new_type = GGML_TYPE_Q4_K;
@@ -771,6 +773,7 @@ static bool tensor_requires_imatrix(const char * tensor_name, const ggml_type ds
     switch (dst_type) {
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ2_XXS_V2:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ1_M:
@@ -818,6 +821,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_TQ1_0:   return GGML_TYPE_TQ1_0;
         case LLAMA_FTYPE_MOSTLY_TQ2_0:   return GGML_TYPE_TQ2_0;
         case LLAMA_FTYPE_MOSTLY_IQ2_XXS: return GGML_TYPE_IQ2_XXS;
+        case LLAMA_FTYPE_MOSTLY_IQ2_XXS_V2: return GGML_TYPE_IQ2_XXS_V2;
         case LLAMA_FTYPE_MOSTLY_IQ2_XS:  return GGML_TYPE_IQ2_XS;
         case LLAMA_FTYPE_MOSTLY_IQ2_S:   return GGML_TYPE_IQ2_XS;
         case LLAMA_FTYPE_MOSTLY_IQ2_M:   return GGML_TYPE_IQ2_S;
@@ -1055,6 +1059,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         }
     }
 
+    // Pre-register placeholder V2 scale params so metadata size accounts for them
+    for (size_t i = 0; i < tensors.size(); ++i) {
+        if (metadata[i].target_type == GGML_TYPE_IQ2_XXS_V2) {
+            std::string key = std::string(tensors[i]->tensor->name) + ".iq2_xxs_v2_scales";
+            float scales[2] = {1.0f, 1.0f/4095.0f};
+            gguf_set_arr_data(ctx_outs[0].get(), key.c_str(), GGUF_TYPE_FLOAT32, scales, 2);
+        }
+    }
+
     // Set split info if needed
     if (n_split > 1) {
         for (size_t i = 0; i < ctx_outs.size(); ++i) {
@@ -1141,7 +1154,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                ggml_type_name(tensor->type));
 
         const ggml_type cur_type = tensor->type;
-        const ggml_type new_type = tm.target_type;
+        ggml_type new_type = tm.target_type;
 
         // If we've decided to quantize to the same type the tensor is already
         // in then there's nothing to do.
@@ -1201,11 +1214,16 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     }
                 }
                 if (!imatrix && tm.requires_imatrix) {
-                    LLAMA_LOG_ERROR("\n\n============================================================\n");
-                    LLAMA_LOG_ERROR("Missing importance matrix for tensor %s in a very low-bit quantization\n", tensor->name);
-                    LLAMA_LOG_ERROR("The result will be garbage, so bailing out\n");
-                    LLAMA_LOG_ERROR("============================================================\n\n");
-                    throw std::runtime_error(format("Missing importance matrix for tensor %s in a very low-bit quantization", tensor->name));
+                    if (new_type == GGML_TYPE_IQ2_XXS_V2) {
+                        new_type = GGML_TYPE_Q2_K;
+                        LLAMA_LOG_INFO("fallback to %s for tensor %s (missing imatrix)\n", ggml_type_name(new_type), tensor->name);
+                    } else {
+                        LLAMA_LOG_ERROR("\n\n============================================================\n");
+                        LLAMA_LOG_ERROR("Missing importance matrix for tensor %s in a very low-bit quantization\n", tensor->name);
+                        LLAMA_LOG_ERROR("The result will be garbage, so bailing out\n");
+                        LLAMA_LOG_ERROR("============================================================\n\n");
+                        throw std::runtime_error(format("Missing importance matrix for tensor %s in a very low-bit quantization", tensor->name));
+                    }
                 }
 
                 float * f32_data;
@@ -1244,9 +1262,45 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                     void * new_data_03 = (char *)new_data + ggml_row_size(new_type, n_per_row) * i03 * nrows;
                     const float * imatrix_03 = imatrix ? imatrix + i03 * n_per_row : nullptr;
 
-                    new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
+                new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
+            }
+
+            // V2 post-processing: linear 12-bit scale encoding
+            if (new_type == GGML_TYPE_IQ2_XXS_V2 && new_size > 0) {
+                const size_t BLOCK_SZ = 66;
+                int64_t total_blocks = new_size / BLOCK_SZ;
+                uint8_t * data = (uint8_t *)new_data;
+
+                float d_min = INFINITY, d_max = -INFINITY;
+                for (int64_t bi = 0; bi < total_blocks; ++bi) {
+                    uint16_t d_raw;
+                    memcpy(&d_raw, data + bi * BLOCK_SZ, 2);
+                    float d_val = ggml_fp16_to_fp32(d_raw);
+                    if (d_val < d_min) d_min = d_val;
+                    if (d_val > d_max) d_max = d_val;
                 }
-                LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
+
+                if (d_max <= d_min) d_max = d_min + 1e-6f;
+                float scale_step = (d_max - d_min) / 4094.0f;
+
+                for (int64_t bi = 0; bi < total_blocks; ++bi) {
+                    uint16_t d_raw;
+                    memcpy(&d_raw, data + bi * BLOCK_SZ, 2);
+                    float d_val = ggml_fp16_to_fp32(d_raw);
+                    uint16_t d_idx = (uint16_t)((d_val - d_min) / scale_step + 0.5f);
+                    if (d_idx > 4094) d_idx = 4094;
+                    d_idx &= 0x0FFF;
+                    memcpy(data + bi * BLOCK_SZ, &d_idx, 2);
+                }
+
+                float scales[2] = {d_min, scale_step};
+                std::string key = std::string(metadata[i].name) + ".iq2_xxs_v2_scales";
+                gguf_set_arr_data(ctx_outs[cur_split].get(), key.c_str(), GGUF_TYPE_FLOAT32, scales, 2);
+
+                LLAMA_LOG_INFO("\n  V2 scales: min=%.6f max=%.6f", d_min, d_max);
+            }
+
+            LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
             }
             total_size_org += tensor_size;
             total_size_new += new_size;

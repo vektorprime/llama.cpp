@@ -64,6 +64,9 @@ GGML_API void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * 
 GGML_API void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 
 GGML_API void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_iq2_xxs_v2(const void * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k, const void * GGML_RESTRICT lut_extra);
+GGML_API void dequantize_row_iq2_xxs_v2_3(const void * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API void ggml_deq_iq2_xxs_v2_set_lut(const void * lut);
 GGML_API void dequantize_row_iq2_xs (const block_iq2_xs  * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_iq2_s  (const block_iq2_s   * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_iq3_xxs(const block_iq3_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
@@ -75,6 +78,7 @@ GGML_API void dequantize_row_iq3_s  (const block_iq3_s   * GGML_RESTRICT x, floa
 
 // Quantization utilizing an importance matrix (a.k.a. "Activation aWare Quantization")
 GGML_API size_t quantize_iq2_xxs(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+GGML_API size_t quantize_iq2_xxs_v2(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix, void ** lut_out, size_t * lut_size);
 GGML_API size_t quantize_iq2_xs (const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 GGML_API size_t quantize_iq2_s  (const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 GGML_API size_t quantize_iq3_xxs(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);

@@ -894,6 +894,78 @@ void ggml_vec_dot_iq2_xxs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
     *s = 0.125f * sumf;
 }
 
+static _Thread_local const void * iq2_xxs_v2_tl_lut = NULL;
+
+void ggml_vec_dot_iq2_xxs_v2_set_lut(const void * lut) {
+    iq2_xxs_v2_tl_lut = lut;
+}
+
+static void ggml_vec_dot_iq2_xxs_v2_q8_K_lut(
+    int n, float * GGML_RESTRICT s, size_t bs,
+    const void * GGML_RESTRICT vx, size_t bx,
+    const void * GGML_RESTRICT vy, size_t by,
+    int nrc, const void * GGML_RESTRICT extra) {
+    assert(n % QK_K == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_iq2_xxs * GGML_RESTRICT x = (const block_iq2_xxs *)vx;
+    const block_q8_K    * GGML_RESTRICT y = (const block_q8_K *)vy;
+
+    const int nb = n / QK_K;
+
+    const float * scales = (const float *)extra;
+    const float d_min = scales[0];
+    const float d_step = scales[1];
+
+    uint32_t aux32[2];
+    const uint8_t * aux8 = (const uint8_t *)aux32;
+
+    float sumf = 0.f;
+    for (int i = 0; i < nb; ++i) {
+        const uint16_t d_raw = x[i].d;
+        const uint16_t d_idx = d_raw & 0x0FFF;
+        const uint32_t d_ext = d_raw >> 12;
+
+        const float d = (d_min + d_idx * d_step) * y[i].d;
+
+        const uint16_t * GGML_RESTRICT q2 = x[i].qs;
+        const int8_t   * GGML_RESTRICT q8 = y[i].qs;
+        int32_t bsum = 0;
+        int saturated_count = 0;
+        for (int ib32 = 0; ib32 < QK_K/32; ++ib32) {
+            memcpy(aux32, q2, 2*sizeof(uint32_t));
+            q2 += 4;
+            int scale_4bit = (aux32[1] >> 28);
+            uint32_t ls;
+            if (scales && scale_4bit == 15 && (((x[i].d >> 12) >> saturated_count) & 1)) {
+                scale_4bit = 16;
+                saturated_count++;
+            }
+            ls = 2*scale_4bit + 1;
+            int32_t sumi = 0;
+            for (int l = 0; l < 4; ++l) {
+                const uint8_t * grid = (const uint8_t *)(iq2xxs_grid + aux8[l]);
+                const uint8_t  signs = ksigns_iq2xs[(aux32[1] >> 7*l) & 127];
+                for (int j = 0; j < 8; ++j) {
+                    sumi += grid[j] * q8[j] * (signs & kmask_iq2xs[j] ? -1 : 1);
+                }
+                q8 += 8;
+            }
+            bsum += sumi * ls;
+        }
+        sumf += d * bsum;
+    }
+    *s = 0.125f * sumf;
+}
+
+void ggml_vec_dot_iq2_xxs_v2_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_iq2_xxs_v2_q8_K_lut(n, s, bs, vx, bx, vy, by, nrc, iq2_xxs_v2_tl_lut);
+}
+
 void ggml_vec_dot_iq2_xs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);

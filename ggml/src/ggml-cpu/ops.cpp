@@ -5,6 +5,8 @@
 #include "binary-ops.h"
 #include "simd-gemm.h"
 #include "ggml.h"
+#include "ggml-quants.h"
+#include "quants.h"
 #include "unary-ops.h"
 #include "vec.h"
 
@@ -517,9 +519,16 @@ static void ggml_compute_forward_dup_from_q(
         const int64_t i10 = i - i13*ne10*ne11*ne12 - i12*ne10*ne11 - i11*ne10;
         const int64_t dst_offset = i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13;
 
-        dequantize_row_q(
-                (const void *) ((char *) src0->data + x_offset),
-                     (float *) ((char *)  dst->data + dst_offset), qk);
+        if (type == GGML_TYPE_IQ2_XXS_V2) {
+            dequantize_row_iq2_xxs_v2(
+                    (const void *) ((char *) src0->data + x_offset),
+                         (float *) ((char *)  dst->data + dst_offset), qk,
+                    src0->extra);
+        } else {
+            dequantize_row_q(
+                    (const void *) ((char *) src0->data + x_offset),
+                         (float *) ((char *)  dst->data + dst_offset), qk);
+        }
     }
 }
 
@@ -595,6 +604,10 @@ static void ggml_compute_forward_add_q_f32(
     const ggml_type dtype = dst->type;
     ggml_to_float_t const dequantize_row_q = ggml_get_type_traits(type)->to_float;
     ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dtype)->from_float;
+
+    if (type == GGML_TYPE_IQ2_XXS_V2) {
+        ggml_deq_iq2_xxs_v2_set_lut(src0->extra);
+    }
 
     // we don't support permuted src0 or src1
     GGML_ASSERT(nb00 == ggml_type_size(type));
@@ -4782,6 +4795,10 @@ static void ggml_compute_forward_get_rows_q(
     const ggml_type type = src0->type;
     ggml_to_float_t const dequantize_row_q = ggml_get_type_traits(type)->to_float;
 
+    if (type == GGML_TYPE_IQ2_XXS_V2) {
+        ggml_deq_iq2_xxs_v2_set_lut(src0->extra);
+    }
+
     assert(ne0  == nc);
     assert(ne02 == ne11);
     assert(nb00 == ggml_type_size(type));
@@ -8417,6 +8434,10 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
 
     const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
     const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+
+    if (k->type == GGML_TYPE_IQ2_XXS_V2) {
+        ggml_vec_dot_iq2_xxs_v2_set_lut(k->extra);
+    }
 
     ggml_type         const k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
     ggml_from_float_t const q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;

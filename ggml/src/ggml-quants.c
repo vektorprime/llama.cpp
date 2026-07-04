@@ -2439,6 +2439,58 @@ void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_
     }
 }
 
+void dequantize_row_iq2_xxs_v2(const void * GGML_RESTRICT vx, float * GGML_RESTRICT y, int64_t k, const void * GGML_RESTRICT lut_extra) {
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
+
+    const block_iq2_xxs * GGML_RESTRICT x = (const block_iq2_xxs *)vx;
+    const float * scales = (const float *)lut_extra;
+    const float d_min = scales[0];
+    const float d_step = scales[1];
+
+    uint32_t aux32[2];
+    const uint8_t * aux8 = (const uint8_t *)aux32;
+
+    for (int i = 0; i < nb; i++) {
+        const uint16_t d_raw = x[i].d;
+        const uint16_t d_idx = d_raw & 0x0FFF;
+        const uint32_t d_ext = d_raw >> 12;
+
+        const float d = d_min + d_idx * d_step;
+
+        int saturated_count = 0;
+
+        for (int ib32 = 0; ib32 < QK_K/32; ++ib32) {
+            memcpy(aux32, x[i].qs + 4*ib32, 2*sizeof(uint32_t));
+            int scale_4bit = (aux32[1] >> 28);
+            float db;
+            if (scale_4bit == 15 && (d_ext >> saturated_count) & 1) {
+                scale_4bit = 16;
+                saturated_count++;
+            }
+            db = d * (0.5f + scale_4bit) * 0.25f;
+            for (int l = 0; l < 4; ++l) {
+                const uint8_t * grid = (const uint8_t *)(iq2xxs_grid + aux8[l]);
+                const uint8_t  signs = ksigns_iq2xs[(aux32[1] >> 7*l) & 127];
+                for (int j = 0; j < 8; ++j) {
+                    y[j] = db * grid[j] * (signs & kmask_iq2xs[j] ? -1.f : 1.f);
+                }
+                y += 8;
+            }
+        }
+    }
+}
+
+static _Thread_local const void * iq2_xxs_v2_deq_lut = NULL;
+
+void ggml_deq_iq2_xxs_v2_set_lut(const void * lut) {
+    iq2_xxs_v2_deq_lut = lut;
+}
+
+void dequantize_row_iq2_xxs_v2_3(const void * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    dequantize_row_iq2_xxs_v2(x, y, k, iq2_xxs_v2_deq_lut);
+}
+
 // ====================== 2.3125 bpw (de)-quantization
 
 void dequantize_row_iq2_xs(const block_iq2_xs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
@@ -2759,15 +2811,15 @@ static iq2_entry_t iq2_data[4] = {
 };
 
 static inline int iq2_data_index(enum ggml_type type) {
-    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
-    return type == GGML_TYPE_IQ2_XXS ? 0 :
+    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XXS_V2 || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
+    return type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XXS_V2 ? 0 :
            type == GGML_TYPE_IQ2_XS  ? 1 :
            type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ? 2 : 3;
 }
 
 static inline int iq2_grid_size(enum ggml_type type) {
-    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
-    return type == GGML_TYPE_IQ2_XXS ? 256 :
+    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XXS_V2 || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
+    return type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XXS_V2 ? 256 :
            type == GGML_TYPE_IQ2_XS  ? 512 :
            type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ? NGRID_IQ1S : 1024;
 }
@@ -3186,7 +3238,7 @@ void iq2xs_init_impl(enum ggml_type type) {
 }
 
 void iq2xs_free_impl(enum ggml_type type) {
-    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
+    GGML_ASSERT(type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XXS_V2 || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_S);
     const int gindex = iq2_data_index(type);
     if (iq2_data[gindex].grid) {
         free(iq2_data[gindex].grid);       iq2_data[gindex].grid = NULL;
@@ -3585,6 +3637,24 @@ size_t quantize_iq2_xxs(const float * GGML_RESTRICT src, void * GGML_RESTRICT ds
         quantize_row_iq2_xxs_impl(src, qrow, n_per_row, quant_weights);
         src += n_per_row;
         qrow += nblock*sizeof(block_iq2_xxs);
+    }
+    return nrow * nblock * sizeof(block_iq2_xxs);
+}
+
+size_t quantize_iq2_xxs_v2(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights, void ** lut_out, size_t * lut_size) {
+    GGML_ASSERT(n_per_row%QK_K == 0);
+    int64_t nblock = n_per_row/QK_K;
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_iq2_xxs_impl(src, qrow, n_per_row, quant_weights);
+        src += n_per_row;
+        qrow += nblock*sizeof(block_iq2_xxs);
+    }
+    if (lut_out) {
+        *lut_out = NULL;
+    }
+    if (lut_size) {
+        *lut_size = 0;
     }
     return nrow * nblock * sizeof(block_iq2_xxs);
 }
@@ -5548,6 +5618,9 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_iq2_xxs, data, nb);
             } break;
+        case GGML_TYPE_IQ2_XXS_V2:
+            // d is a 12-bit LUT index, not FP16 - skip FP16 validation
+            break;
         case GGML_TYPE_IQ2_XS:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_iq2_xs, data, nb);

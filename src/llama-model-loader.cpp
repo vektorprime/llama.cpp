@@ -57,6 +57,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_TQ1_0:    return "TQ1_0 - 1.69 bpw ternary";
         case LLAMA_FTYPE_MOSTLY_TQ2_0:    return "TQ2_0 - 2.06 bpw ternary";
         case LLAMA_FTYPE_MOSTLY_IQ2_XXS:  return "IQ2_XXS - 2.0625 bpw";
+        case LLAMA_FTYPE_MOSTLY_IQ2_XXS_V2: return "IQ2_XXS_V2 - 2.0625 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ2_XS:   return "IQ2_XS - 2.3125 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ2_S:    return "IQ2_S - 2.5 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ2_M:    return "IQ2_M - 2.7 bpw";
@@ -752,6 +753,7 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_TQ1_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ1_0;   break;
             case GGML_TYPE_TQ2_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ2_0;   break;
             case GGML_TYPE_IQ2_XXS: ftype = LLAMA_FTYPE_MOSTLY_IQ2_XXS; break;
+            case GGML_TYPE_IQ2_XXS_V2: ftype = LLAMA_FTYPE_MOSTLY_IQ2_XXS_V2; break;
             case GGML_TYPE_IQ2_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ2_XS;  break;
             case GGML_TYPE_IQ2_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ2_S;   break;
             case GGML_TYPE_IQ3_XXS: ftype = LLAMA_FTYPE_MOSTLY_IQ3_XXS; break;
@@ -1276,6 +1278,20 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, cur);
     ggml_set_name(tensor, ggml_get_name(cur));
+
+    if (cur->type == GGML_TYPE_IQ2_XXS_V2) {
+        std::string key = std::string(tn.str()) + ".iq2_xxs_v2_scales";
+        int kid = gguf_find_key(metadata, key.c_str());
+        if (kid >= 0) {
+            size_t n = gguf_get_arr_n(metadata, kid);
+            const void * data = gguf_get_arr_data(metadata, kid);
+            if (data && n == 2) {
+                float * scales = (float *)malloc(2 * sizeof(float));
+                memcpy(scales, data, 2 * sizeof(float));
+                tensor->extra = scales;
+            }
+        }
+    }
 
     if (duplicated) {
         size_data += ggml_nbytes(cur);
