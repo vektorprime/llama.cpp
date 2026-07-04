@@ -3570,7 +3570,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 float d2 = 0.0f;
                 for (int i = 0; i < 8; ++i) {
                     float diff = (float)pg0[i] - samples[8*s + i];
-                    d2 += diff * diff;
+                    d2 += sample_weights[8*s + i] * diff * diff;
                 }
                 min_d2[s] = d2;
                 total_d2 += d2;
@@ -3601,7 +3601,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     float d2 = 0.0f;
                     for (int i = 0; i < 8; ++i) {
                         float diff = (float)pg[i] - samples[8*s + i];
-                        d2 += diff * diff;
+                        d2 += sample_weights[8*s + i] * diff * diff;
                     }
                     if (d2 < min_d2[s]) min_d2[s] = d2;
                     total_d2 += min_d2[s];
