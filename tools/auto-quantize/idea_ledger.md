@@ -39,3 +39,8 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Hypothesis**: After quantization, refine super-block scale d via weighted least squares to minimize reconstruction error. This is a 1-D closed-form optimization.
 
 **Expected**: KL reduction of 1-3%.
+
+### exp-009: Reduced K-means iterations — K-means++ converges faster
+**Hypothesis**: K-means++ initialization produces better-spread initial centroids than random initialization. Since centroids start closer to their final positions, fewer iterations are needed for convergence. Reducing from 60→40 iterations should maintain the same grid quality while cutting quantize time by ~30%.
+
+**Expected**: KL stays at 0.724 (no regression) while quantize time drops from ~52 min to ~35 min.

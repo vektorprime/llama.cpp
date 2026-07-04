@@ -19,3 +19,5 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-03T15:52:36	exp-20260703-005	24ea54132	c87edbcf8	H1+H2+H3 combined: per-tensor-type codebooks + d refinement (BROKEN)	failed_broken	12.348151	IQ2_XXS			786.3	2168.5	820.0	125.0	2393220.8	0.02
 2026-07-03T15:52:36	exp-20260703-005b	2c26b1904	c87edbcf8	H1+H2: per-tensor-type codebooks with multi-round refinement, H3 reverted	success	0.970904	IQ2_XXS			786.3	2164.9	820.0	125.0	33.753	55.625
 2026-07-03T16:32:15	exp-20260703-006b	ce4e3d98f	2c26b1904	H1+H2+safe-H3: d refinement with 0.8x-1.2x grid search (REGRESSION)	success	1.066343	IQ2_XXS			786.3	2173.7	820.0	125.0	38.121	53.961
+2026-07-03T18:50:51	exp-20260703-007	c91a404b3	9315a2965	K-means++ init + 60 iters + 7 trials — KL 0.724, nearly matches Unsloth target 0.721	near-unsloth	0.723834	IQ2_XXS			765.3	3119	230	445	26.455	60.339
+2026-07-04T00:00:00	exp-20260703-008	8f6662382	827f21974	Per-tensor codebooks with K-means++ init — remove per-category grid sharing, all 7 trials K-means++ independently	regression	12.404808	IQ2_XXS			754.89	2344	230	445	2531803.52	0.020

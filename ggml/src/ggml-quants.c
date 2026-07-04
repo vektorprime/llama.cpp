@@ -3483,7 +3483,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         int64_t nrows, int64_t n_per_row, const char * tensor_name) {
     const int grid_size = 256;
     const int gindex = 0;
-    const int kmeans_iters = 60;
+    const int kmeans_iters = 40;
 
     /* --- Per-tensor-type codebooks ---
      * Classify tensor by name into attention (attn_*), MLP (ffn_*), or other.
