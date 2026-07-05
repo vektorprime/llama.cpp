@@ -1692,6 +1692,10 @@ static void ggml_cuda_op_mul_mat_cublas(
         // convert src0 and src1 to fp16, multiply as fp16, convert dst to fp32
         ggml_cuda_pool_alloc<half> src0_as_f16(ctx.pool(id));
         if (src0->type != GGML_TYPE_F16) {
+            if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+                const float * scales = (const float *)src0->extra;
+                iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+            }
             const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src0->type);
             GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = row_diff*ne00;

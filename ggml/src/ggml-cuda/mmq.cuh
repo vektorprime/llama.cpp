@@ -2856,8 +2856,16 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         }
 
         const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
-        const uint16_t d_raw = bxi->d;
+        const uint16_t d_raw = *(const uint16_t *)&bxi->d;
         const float d = g_iq2_xxs_v2_scale.x + (d_raw & 0x0FFF) * g_iq2_xxs_v2_scale.y;
+        if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+            const uint8_t * raw = (const uint8_t *)bxi;
+            printf("MMQ raw[0..15]=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                   raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
+            printf("MMQ d_raw=0x%04x d_idx=%u d_min=%.6e d_step=%.6e d=%.6e\n",
+                   d_raw, d_raw & 0x0FFF, g_iq2_xxs_v2_scale.x, g_iq2_xxs_v2_scale.y, d);
+        }
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*MMQ_MMA_TILE_X_K_Q8_0   + kqsx] = d * ls / 8; // (d * scale + d / 2) / 4
 #else

@@ -1229,9 +1229,14 @@ void ggml_cuda_mul_mat_vec_q(
 
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
 
-    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
-        const float * scales = (const float *)src0->extra;
-        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2) {
+        if (src0->extra) {
+            const float * scales = (const float *)src0->extra;
+            iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+        } else {
+            fprintf(stderr, "CUDA V2 MMVQ: src0->extra is NULL for tensor '%s'!\n",
+                    src0->name ? src0->name : "(null)");
+        }
     }
     mul_mat_vec_q_switch_type(
         src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
@@ -1264,9 +1269,14 @@ void ggml_cuda_op_mul_mat_vec_q(
     const int stride_col_y = src1_padded_row_size / QK8_1;
 
     ggml_cuda_mm_fusion_args_device fusion_local{};
-    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
-        const float * scales = (const float *)src0->extra;
-        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2) {
+        if (src0->extra) {
+            const float * scales = (const float *)src0->extra;
+            iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+        } else {
+            fprintf(stderr, "CUDA V2 MMVQ(split): src0->extra is NULL for tensor '%s'!\n",
+                    src0->name ? src0->name : "(null)");
+        }
     }
     mul_mat_vec_q_switch_type(
         src0_dd_i, src0->type, src1_ddq_i, nullptr, fusion_local, dst_dd_i, ne00, row_diff, src1_ncols, stride_row_x, stride_col_y, nrows_dst,

@@ -3088,7 +3088,7 @@ void iq2xs_init_impl(enum ggml_type type) {
     const int kmap_size = 43692;
     //const int nwant = type == GGML_TYPE_IQ1_S ? 3 : 2;
     const int nwant = type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ? 3 : type == GGML_TYPE_IQ2_S ? 1 : 2;
-    const uint16_t * kgrid = type == GGML_TYPE_IQ2_XXS ? kgrid_2bit_256 :
+    const uint16_t * kgrid = type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XXS_V2 ? kgrid_2bit_256 :
                              type == GGML_TYPE_IQ2_XS  ? kgrid_2bit_512 :
                              type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ? kgrid_1bit_2048 : kgrid_2bit_1024;
     uint64_t * kgrid_q2xs;

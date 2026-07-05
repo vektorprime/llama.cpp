@@ -1048,9 +1048,18 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_v2_q8_1(
 
     const float d_min  = g_iq2_xxs_v2_scale.x;
     const float d_step = g_iq2_xxs_v2_scale.y;
-    const uint16_t d_raw = bq2->d;
+    const uint16_t d_raw = *(const uint16_t *)&bq2->d; // reinterpret half bits as uint16
     const float d = (d_min + (d_raw & 0x0FFF) * d_step) * __low2float(bq8_1[iqs/2].ds);
-    return d * sumi;
+    float ret = d * sumi;
+    static __device__ int v2_call_count = 0;
+    if (threadIdx.x == 0 && blockIdx.x == 0 && kbx == 0 && iqs == 0) {
+        int call = atomicAdd(&v2_call_count, 1);
+        if (call < 5) {
+            printf("V2[%d]: d_recon=%.6e q8_scale=%.6e ret=%.6e\n",
+                   call, (d_min + (d_raw & 0x0FFF) * d_step), __low2float(bq8_1[iqs/2].ds), ret);
+        }
+    }
+    return ret;
 }
 
 #define VDR_IQ2_XS_Q8_1_MMVQ 2

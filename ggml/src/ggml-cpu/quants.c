@@ -871,6 +871,7 @@ void ggml_vec_dot_iq2_xxs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
     float sumf = 0.f;
     for (int i = 0; i < nb; ++i) {
         const float d = GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d;
+
         const uint16_t * GGML_RESTRICT q2 = x[i].qs;
         const int8_t   * GGML_RESTRICT q8 = y[i].qs;
         int32_t bsum = 0;
@@ -925,6 +926,7 @@ static void ggml_vec_dot_iq2_xxs_v2_q8_K_lut(
     const uint8_t * aux8 = (const uint8_t *)aux32;
 
     float sumf = 0.f;
+
     for (int i = 0; i < nb; ++i) {
         const uint16_t d_raw = x[i].d;
         const uint16_t d_idx = d_raw & 0x0FFF;
@@ -1109,7 +1111,9 @@ void ggml_vec_dot_iq3_xxs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs
         }
         sumf += d * bsum;
     }
-    *s = 0.25f * sumf;
+    fprintf(stderr, "[V1] sumf = %f\n", sumf);
+    *s = 0.125f * sumf;
+    fprintf(stderr, "[V1] *s = %f\n", *s);
 }
 
 void ggml_vec_dot_iq3_s_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {

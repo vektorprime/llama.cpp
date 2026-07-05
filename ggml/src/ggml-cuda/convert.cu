@@ -324,7 +324,7 @@ static __global__ void dequantize_block_iq2_xxs_v2(const void * __restrict__ vx,
     const uint8_t  * aux8 = (const uint8_t *)q2;
     const uint8_t  * grid = (const uint8_t *)(iq2xxs_grid + aux8[il]);
     const uint32_t aux32 = q2[2] | (q2[3] << 16);
-    const uint16_t d_raw = x[i].d;
+    const uint16_t d_raw = *(const uint16_t *)&x[i].d;
     const float d_base = g_iq2_xxs_v2_scale.x + (d_raw & 0x0FFF) * g_iq2_xxs_v2_scale.y;
     const float d = d_base * (0.5f + (aux32 >> 28)) * 0.25f;
     const uint8_t signs = ksigns_iq2xs[(aux32 >> 7*il) & 127];

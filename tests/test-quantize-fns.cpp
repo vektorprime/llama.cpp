@@ -9,6 +9,12 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <cstring>
+
+extern "C" {
+void ggml_vec_dot_iq2_xxs_v2_set_lut(const void * lut);
+void ggml_deq_iq2_xxs_v2_set_lut(const void * lut);
+}
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -102,6 +108,76 @@ static float dot_product_error(const ggml_type_traits * qfns, const ggml_type_tr
     return fabsf(result - dot_ref) / test_size;
 }
 
+// Test IQ2_XXS_V2 round-trip: V2 vec_dot must match V1 vec_dot within tolerance
+static bool test_iq2_xxs_v2_rtt(size_t test_size, const float * test_data, const float * test_data2) {
+    const auto * qfns_v1    = ggml_get_type_traits_cpu(GGML_TYPE_IQ2_XXS);
+    const auto * qfns_v2    = ggml_get_type_traits_cpu(GGML_TYPE_IQ2_XXS_V2);
+    const auto * qfns_q8_k  = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K);
+
+    // quantize test_data to IQ2_XXS (V1) using ggml_quantize_chunk
+    // IQ2_XXS requires an imatrix
+    std::vector<float> imatrix(test_size, 1.0f);
+    std::vector<uint8_t> tmp_q1(2*test_size);
+    ggml_quantize_chunk(GGML_TYPE_IQ2_XXS, test_data, tmp_q1.data(), 0, 1, test_size, imatrix.data());
+
+    // copy to V2 buffer
+    std::vector<uint8_t> tmp_q1_v2(tmp_q1);
+
+    // V2 post-processing: convert d to d_idx
+    float d_min = INFINITY, d_max = -INFINITY;
+    const int BLOCK_SZ = ggml_type_size(GGML_TYPE_IQ2_XXS); // 66
+    int n_blocks = ggml_row_size(GGML_TYPE_IQ2_XXS, test_size) / BLOCK_SZ;
+    fprintf(stderr, "DEBUG: n_blocks=%d, test_size=%zu\n", n_blocks, test_size); fflush(stderr);
+    for (int bi = 0; bi < n_blocks; bi++) {
+        uint16_t d_raw;
+        memcpy(&d_raw, tmp_q1_v2.data() + bi * BLOCK_SZ, 2);
+        float d_val = ggml_fp16_to_fp32(d_raw);
+        if (d_val < d_min) d_min = d_val;
+        if (d_val > d_max) d_max = d_val;
+    }
+    if (d_max <= d_min) d_max = d_min + 1e-6f;
+    float d_step = (d_max - d_min) / 4094.0f;
+
+    for (int bi = 0; bi < n_blocks; bi++) {
+        uint16_t d_raw;
+        memcpy(&d_raw, tmp_q1_v2.data() + bi * BLOCK_SZ, 2);
+        float d_val = ggml_fp16_to_fp32(d_raw);
+        uint16_t d_idx = (uint16_t)((d_val - d_min) / d_step + 0.5f);
+        if (d_idx > 4094) d_idx = 4094;
+        d_idx &= 0x0FFF;
+        memcpy(tmp_q1_v2.data() + bi * BLOCK_SZ, &d_idx, 2);
+    }
+
+    // Q8_K quantize test_data2
+    std::vector<uint8_t> tmp_q2(2*test_size);
+    qfns_q8_k->from_float(test_data2, tmp_q2.data(), test_size);
+
+    // V2 dot product
+    float scales[2] = {d_min, d_step};
+    ggml_vec_dot_iq2_xxs_v2_set_lut(scales);
+    float v2_result = INFINITY;
+    qfns_v2->vec_dot(test_size, &v2_result, 0, tmp_q1_v2.data(), 0, tmp_q2.data(), 0, 1);
+
+    // V1 dot product (should be almost identical)
+    float v1_result = INFINITY;
+    qfns_v1->vec_dot(test_size, &v1_result, 0, tmp_q1.data(), 0, tmp_q2.data(), 0, 1);
+
+    // reference FP32 dot product
+    const float dot_ref = dot_product(test_data, test_data2, test_size);
+
+    float v1_err = fabsf(v1_result - dot_ref) / test_size;
+    float v2_err = fabsf(v2_result - dot_ref) / test_size;
+    float v2v1_err = fabsf(v2_result - v1_result) / fmaxf(fabsf(v1_result), 1e-10f);
+
+    printf("  V1 dot vs ref error:   %f\n", v1_err);
+    printf("  V2 dot vs ref error:   %f\n", v2_err);
+    printf("  V2 vs V1 relative err: %f\n", v2v1_err);
+
+    bool fail = (v2v1_err > 0.001f);
+    printf("  IQ2_XXS_V2 round-trip: %s\n", RESULT_STR[fail]);
+    return fail;
+}
+
 int main(int argc, char * argv[]) {
     bool verbose = false;
     const size_t test_size = 32 * 128;
@@ -187,6 +263,18 @@ int main(int argc, char * argv[]) {
             }
         }
     }
+
+    // IQ2_XXS_V2 specific round-trip test
+    fprintf(stderr, "DEBUG: about to run V2 test...\n");
+    printf("DEBUG: about to run V2 test...\n");
+    fflush(stdout); fflush(stderr);
+    printf("\nTesting IQ2_XXS_V2 round-trip\n");
+    ggml_quantize_init(GGML_TYPE_IQ2_XXS_V2);
+    fprintf(stderr, "DEBUG: ggml_quantize_init done, running test...\n");
+    fflush(stderr);
+    num_failed += test_iq2_xxs_v2_rtt(test_size, test_data.data(), test_data2.data());
+    fprintf(stderr, "DEBUG: V2 test completed\n");
+    fflush(stderr);
 
     if (num_failed || verbose) {
         printf("%d tests failed\n", num_failed);
