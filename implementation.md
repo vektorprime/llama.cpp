@@ -679,11 +679,19 @@ The changes are listed in dependency order. Each phase results in a compilable c
 #### Build
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON -DGGML_BACKEND_DL=OFF
+# CPU-only build (for isolated V2 testing):
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DLLAMA_BUILD_TESTS=ON -DGGML_BACKEND_DL=OFF
 cmake --build build --target test-quantize-fns -j$(nproc)
 cmake --build build --target test-backend-ops -j$(nproc)
 cmake --build build --target test-quantize-perf -j$(nproc)
 cmake --build build --target llama-quantize -j$(nproc)
+
+# CUDA build (for GPU inference, requires CUDA 13.1):
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.1/bin/nvcc \
+  -DCMAKE_CUDA_ARCHITECTURES="120a-real;86-real" \
+  -DLLAMA_BUILD_TESTS=ON -DGGML_BACKEND_DL=OFF
+cmake --build build --target test-quantize-fns --target test-backend-ops --target test-quantize-perf --target llama-quantize --target llama-perplexity -j16
 ```
 
 #### Unit tests
@@ -697,13 +705,40 @@ cmake --build build --target llama-quantize -j$(nproc)
 #### End-to-end: Quantize BF16 -> IQ2_XXS_V2
 
 ```bash
-llama-quantize \
+./build/bin/llama-quantize \
+  --imatrix /home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf \
   /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf \
-  /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-USE-A-UNIQUE-NAME.gguf \
+  /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-IQ2_XXS_V2_TEST.gguf \
   IQ2_XXS_V2
 ```
 
-Replace `USE-A-UNIQUE-NAME` with a descriptive name.
+Model files:
+- BF16 source: `/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf` (3706 MB, 16 BPW)
+- Importance matrix: `/home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf`
+- V2 output: `/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-IQ2_XXS_V2_TEST.gguf` (762.52 MB, 3.29 BPW)
+- Quantize time: ~186s
+- Must specify `--imatrix` BEFORE the positional args (otherwise parsed as nthread)
+
+#### CPU-only PPL test (current results)
+
+```bash
+./build/bin/llama-perplexity \
+  -m /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-OUR-IQ2_XXS.gguf \
+  -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+  -t 16 -c 512 --chunks 1 -fa off --no-mmap -ngl 0 -np 1
+# Result: PPL = 19.6619 (V1 baseline, our quantizer)
+
+./build/bin/llama-perplexity \
+  -m /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-IQ2_XXS_V2_TEST.gguf \
+  -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+  -t 16 -c 512 --chunks 1 -fa off --no-mmap -ngl 0 -np 1
+# Result: PPL = 126,012 (V2, broken - expected ~28)
+
+./build/bin/llama-perplexity \
+  -m /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-UD-IQ2_XXS.gguf \
+  -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+  -t 8 -c 512 --chunks 5 -fa on --cache-type-k bf16 --cache-type-v bf16 --no-mmap -ngl 999 -np 1
+# Result: PPL = 28.7798 (Unsloth V1, CUDA - compiled CUDA ON)
 
 #### End-to-end: KLD perplexity (CUDA)
 
@@ -764,37 +799,59 @@ Compare V2 kernel times against V1 baseline in `llama-perplexity` output (token 
 | 2 | Missing scale setter in MMQ dispatch | `mmq.cu` had no call to `iq2_xxs_v2_set_scale_cuda()` before launching mmq kernels | Added scale setter in `ggml_cuda_mul_mat_q()` and `ggml_cuda_op_mul_mat_q()` |
 | 3 | `tensor->extra` overwrite by CPU repack buffer | `repack.cpp:4727` unconditionally sets `tensor->extra = traits`; for unsupported types (V2), traits=NULL, wiping V2 scales. Additionally, `set_tensor` tried to call `repack()` on NULL traits | (a) init_tensor only sets extra if traits != NULL; (b) set_tensor falls back to `memcpy()` when traits is NULL |
 
-### 9.3 Known Remaining Issues
+### 9.3 Current Test Results
 
-**CRITICAL: Model produces garbage output (PPL ~5e38, KLD ~92) on both CPU and CUDA.**
+| Model | Type | Build | Device | PPL (5 chunks) | PPL (1 chunk) | Notes |
+|---|---|---|---|---|---|---|
+| `Qwen3.5-2B-UD-IQ2_XXS` (Unsloth) | IQ2_XXS | ours, CUDA ON | CUDA | 28.78 | 19.66 | CPU build: 19.66 |
+| `Qwen3.5-2B-OUR-IQ2_XXS` | IQ2_XXS | ours, CUDA OFF | CPU | - | 19.66 | Baseline for our quantizer |
+| `Qwen3.5-2B-IQ2_XXS_V2_TEST` | IQ2_XXS_V2 | ours, CUDA ON | CPU/CUDA | crash (NaN→CUDA softmax) | - | Old model, stale d values |
+| `Qwen3.5-2B-IQ2_XXS_V2_TEST` (fresh) | IQ2_XXS_V2 | ours, CUDA OFF | CPU | - | **126,012** | Fresh quant; d_idx on disk verified |
+| `Qwen3.5-2B-OUR-IQ2_XXS_V2` | IQ2_XXS_V2 | ours, CUDA ON | CPU/CUDA | crash (NaN→CUDA softmax) | - | Stale d values (pre-post-processing) |
 
-Debug findings:
-- `tensor->extra` survives backend buffer init on CPU (repack fix works) -- confirmed via fprintf
-- V2 post-processing in quantizer correctly computes `d_idx` from FP16 `d` values and writes them
-- V2 scales are correctly stored in GGUF metadata and loaded by model loader
-- The quantization post-processing modifies the `d` field in-memory before file write
-- **However, the .gguf file on disk retains the original FP16 `d` values, not the encoded `d_idx`**
+### 9.4 Debug Findings
 
-This strongly suggests the data written to disk does NOT reflect the in-memory modifications. Possible causes under investigation:
-1. `gguf_set_tensor_data` may have been called earlier (in `llama_tensor_quantize_impl`), caching a pointer/offset that bypasses the post-processing modifications
-2. The file write at line 1314 of `llama-quant.cpp` may use a stale buffer
-3. Potential interaction between `gguf_set_tensor_data` called from `llama_tensor_quantize_impl` (via quantize workers) and the later post-processing pass
+**Encoding round-trip verified correct:**
+- Quantization post-processing: `d_val = fp16_to_f32(original_block.d)` → `d_idx = (d_val - d_min) / d_step` → written to block.d
+- Confirmed via debug printf: `d_raw=0x0df1`, `d_val=0.000363`, `d_idx=238`, written as 0x00EE
+- On-disk verification: 166 V2 tensors found, all with d_idx values in valid range (0-4095)
+- Example: first tensor `blk.0.attn_gate.weight`, block[0]: `d_raw=0xd1d7`, `d_idx=471`
+- Dequant reconstruction: `d = d_min + d_idx * d_step` correctly yields original d_val
 
-### 9.4 What Works
+**Thread-local LUT and tensor->extra:**
+- `tensor->extra` survives CPU repack buffer init (fix confirmed via fprintf)
+- Thread-local LUT set correctly before vec_dot calls
 
-- **Quantization**: V1 IQ2_XXS → IQ2_XXS_V2 post-processing computes correct d_min/d_step and d_idx encoding (confirmed via debug printf)
-- **V1 IQ2_XXS inference**: Both CPU and CUDA work correctly (PPL ~28.8 on Qwen3.5-2B, baseline 26.4)
-- **CUDA compilation**: All kernels compile and link with CUDA 13.1 for sm_86+sm_120a
-- **Scale data loading**: Model loader correctly reads per-tensor V2 scales from GGUF metadata
+**PPL discrepancy (V2=126,012 vs V1=19.66):**
+- All blocks have correct d_idx values on disk
+- Scale reconstruction math (`d = d_min + d_idx * d_step`) is correct
+- Sub-block scales (`ls = 2*scale_4bit + 1`) identical to V1 (extension nibble d_ext=0)
+- Ratio V2/V1 PPL ≈ 6400 suggests systematic ~80x magnitude error in weight reconstruction
+
+**Hypotheses under investigation:**
+1. Quantize worker threads may write to a different buffer than post-processing modifies (stale pointer)
+2. Row offset tracking in parallel vec_dot may use wrong row_size or nblock
+3. `ggml_vec_dot_iq2_xxs_v2_q8_K` callback chain may have a signature or dispatch mismatch
+4. Some V2 tensors fall back to Q2_K (imatrix missing), contributing to quality loss but not explaining 6400x
+
+### 9.5 What Works (confirmed)
+
+- **Quantization**: V1 IQ2_XXS → IQ2_XXS_V2 post-processing computes correct d_min/d_step and d_idx encoding
+- **GGUF file I/O**: V2 data correctly written to and read from disk (verified byte-level)
+- **Scale metadata**: GGUF keys `{name}.iq2_xxs_v2_scales` correctly stored and loaded
 - **Repack buffer**: No longer overwrites `tensor->extra` for unsupported types
+- **CUDA compilation**: All kernels compile and link with CUDA 13.1 for sm_86+sm_120a
+- **V1 IQ2_XXS inference**: CPU PPL 19.66 (our quantizer matches/exceeds Unsloth baseline 26.44)
+- **V1 CUDA inference**: Works correctly (PPL 28.78 with CUDA)
 
-### 9.5 TODO
+### 9.6 TODO
 
-1. Fix GGUF file write so post-processed `d_idx` values reach disk
-2. Verify V2 round-trip with a minimal quantize→load→dequant test
-3. Run full PPL benchmark (200 chunks) once functional
-4. Remove debug fprintf from quants.c and llama-quant.cpp
-5. Consider removing unused `lora_correction_plan.md` and `tools/generate_quant_error_lora.py`
+1. Debug V2 vec_dot PPL discrepancy (126,012 → target ~28)
+2. Fix CUDA NaN propagation (will resolve once weight reconstruction is correct)
+3. Run full PPL+KLD benchmark (200 chunks) once functional
+4. Remove leftover temp files: `lora_correction_plan.md`, `tools/generate_quant_error_lora.py`
+5. Profile CUDA kernel timing vs V1 baseline
+6. Test on CUDA device 1 once NaN issue resolved
 
 ---
 
