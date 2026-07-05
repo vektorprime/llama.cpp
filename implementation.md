@@ -798,61 +798,81 @@ Compare V2 kernel times against V1 baseline in `llama-perplexity` output (token 
 | 1 | `static __device__` variable in `common.cuh` | CUDA creates per-TU copies; setter in ggml-cuda.cu sets one copy, kernels in other .cu files read their zeroed copy → `d = 0` | Removed `static` keyword; CUDA linker merges non-static `__device__` definitions |
 | 2 | Missing scale setter in MMQ dispatch | `mmq.cu` had no call to `iq2_xxs_v2_set_scale_cuda()` before launching mmq kernels | Added scale setter in `ggml_cuda_mul_mat_q()` and `ggml_cuda_op_mul_mat_q()` |
 | 3 | `tensor->extra` overwrite by CPU repack buffer | `repack.cpp:4727` unconditionally sets `tensor->extra = traits`; for unsupported types (V2), traits=NULL, wiping V2 scales. Additionally, `set_tensor` tried to call `repack()` on NULL traits | (a) init_tensor only sets extra if traits != NULL; (b) set_tensor falls back to `memcpy()` when traits is NULL |
+| 4 | **Wrong quantization grid used for V2** | `iq2xs_init_impl()` in `ggml-quants.c:3091` had no `GGML_TYPE_IQ2_XXS_V2` case in the `kgrid` selection chain — fell through to default `kgrid_2bit_1024` (IQ2_S grid) instead of `kgrid_2bit_256` (IQ2_XXS grid). Quantizer encoded weights with wrong 1024-entry codebook while vec_dot decoded with correct 256-entry codebook. | Added `type == GGML_TYPE_IQ2_XXS_V2` to kgrid ternary chain alongside `IQ2_XXS` |
+| 5 | `half` → `uint16_t` implicit conversion on CUDA | `bq2->d` is `half` on CUDA device code; implicit conversion to `uint16_t` may lose/alter bits. Affected `vecdotq.cuh:1051`, `mmq.cuh:2859`, `convert.cu:327`. | Changed to `*(const uint16_t *)&bq2->d` (pointer cast) for raw bit access |
+| 6 | Missing scale setter in cuBLAS FP16 fallback | `ggml_cuda_op_mul_mat_cublas` FP16 path (line 1691) called `to_fp16_cuda` which runs `dequantize_block_iq2_xxs_v2` reading `g_iq2_xxs_v2_scale`, but setter was only called in the F32 else-branch | Added `iq2_xxs_v2_set_scale_cuda` call before `to_fp16_cuda` in the FP16 path |
 
 ### 9.3 Current Test Results
 
-| Model | Type | Build | Device | PPL (5 chunks) | PPL (1 chunk) | Notes |
+**CPU (CUDA OFF build or `-ngl 0`):**
+
+| Model | Type | PPL (1 chunk) | PPL (5 chunks KLD) | KLD | Same top p | Notes |
 |---|---|---|---|---|---|---|
-| `Qwen3.5-2B-UD-IQ2_XXS` (Unsloth) | IQ2_XXS | ours, CUDA ON | CUDA | 28.78 | 19.66 | CPU build: 19.66 |
-| `Qwen3.5-2B-OUR-IQ2_XXS` | IQ2_XXS | ours, CUDA OFF | CPU | - | 19.66 | Baseline for our quantizer |
-| `Qwen3.5-2B-IQ2_XXS_V2_TEST` | IQ2_XXS_V2 | ours, CUDA ON | CPU/CUDA | crash (NaN→CUDA softmax) | - | Old model, stale d values |
-| `Qwen3.5-2B-IQ2_XXS_V2_TEST` (fresh) | IQ2_XXS_V2 | ours, CUDA OFF | CPU | - | **126,012** | Fresh quant; d_idx on disk verified |
-| `Qwen3.5-2B-OUR-IQ2_XXS_V2` | IQ2_XXS_V2 | ours, CUDA ON | CPU/CUDA | crash (NaN→CUDA softmax) | - | Stale d values (pre-post-processing) |
+| `OUR-IQ2_XXS` | IQ2_XXS | 19.66 | ~29 (avg) | ~0.90 | ~55.5% | Baseline |
+| `IQ2_XXS_V2_FIXED` | IQ2_XXS_V2 | 19.72 | TBD | TBD | TBD | Fresh quant after kgrid fix (commit 2593b14) |
+
+**CUDA (`-ngl 999`):**
+
+| Model | Type | PPL (1 chunk) | Notes |
+|---|---|---|---|
+| `OUR-IQ2_XXS` | IQ2_XXS | 19.57 | Works |
+| `IQ2_XXS_V2_FIXED` | IQ2_XXS_V2 | ~10^40 | Broken — all individual components check out but model output is garbage |
 
 ### 9.4 Debug Findings
 
-**Encoding round-trip verified correct:**
-- Quantization post-processing: `d_val = fp16_to_f32(original_block.d)` → `d_idx = (d_val - d_min) / d_step` → written to block.d
-- Confirmed via debug printf: `d_raw=0x0df1`, `d_val=0.000363`, `d_idx=238`, written as 0x00EE
-- On-disk verification: 166 V2 tensors found, all with d_idx values in valid range (0-4095)
-- Example: first tensor `blk.0.attn_gate.weight`, block[0]: `d_raw=0xd1d7`, `d_idx=471`
-- Dequant reconstruction: `d = d_min + d_idx * d_step` correctly yields original d_val
+**CPU V2: now working correctly.**
+- V2 vec_dot round-trip test passes: V2 and V1 dot products match within 0.03% on synthetic data
+- 151 V2 tensors detected, all with valid non-NULL scale metadata
+- d_min ranges 2.09e-5 to 3.42e-4, d_step ranges 1.90e-7 to 2.98e-6 — all reasonable
+- Encoding verified: d_idx correctly written to disk, round-trip reconstruction matches original FP16 `d` values
+- PPL 19.72 matches V1's 19.66 confirming correct model behavior
 
-**Thread-local LUT and tensor->extra:**
-- `tensor->extra` survives CPU repack buffer init (fix confirmed via fprintf)
-- Thread-local LUT set correctly before vec_dot calls
+**CUDA V2: paradox — individual dot products correct but final output wrong.**
+- `vec_dot_iq2_xxs_v2_q8_1` produces d values matching V1 within 0.03% (verified via device printf)
+- `g_iq2_xxs_v2_scale` is never zero and is set before every kernel launch
+- `src0->extra` is never NULL in MMVQ dispatch (verified via fprintf)
+- Q8_1 encoding identical to V1 (`type_src0` is `GGML_UNUSED` in quantize kernel)
+- MMQ path not reached for any V2 tensor (MMQ setter/load_tiles printf never fired)
+- No cross-backend tensor copies observed (all tensors on CUDA backend)
+- V1 CUDA works on same build (PPL 19.57), confirming CUDA build is healthy
 
-**PPL discrepancy (V2=126,012 vs V1=19.66):**
-- All blocks have correct d_idx values on disk
-- Scale reconstruction math (`d = d_min + d_idx * d_step`) is correct
-- Sub-block scales (`ls = 2*scale_4bit + 1`) identical to V1 (extension nibble d_ext=0)
-- Ratio V2/V1 PPL ≈ 6400 suggests systematic ~80x magnitude error in weight reconstruction
-
-**Hypotheses under investigation:**
-1. Quantize worker threads may write to a different buffer than post-processing modifies (stale pointer)
-2. Row offset tracking in parallel vec_dot may use wrong row_size or nblock
-3. `ggml_vec_dot_iq2_xxs_v2_q8_K` callback chain may have a signature or dispatch mismatch
-4. Some V2 tensors fall back to Q2_K (imatrix missing), contributing to quality loss but not explaining 6400x
+**Remaining hypothesis for CUDA V2 failure:**
+- Something beyond individual MUL_MAT dot products is broken — possibly:
+  - Attention computation path (even with FA off, manual attention uses different dispatch)
+  - RMS norm or other non-MUL_MAT operations handling V2 intermediates incorrectly
+  - A single broken layer's activations corrupt downstream layers (cascading error)
+  - cuBLAS dequantize fallback path being hit for some operations (dequantize to FP16/FP32 before GEMM)
+  - `g_iq2_xxs_v2_scale` race condition across CUDA streams/graph splits
 
 ### 9.5 What Works (confirmed)
 
-- **Quantization**: V1 IQ2_XXS → IQ2_XXS_V2 post-processing computes correct d_min/d_step and d_idx encoding
-- **GGUF file I/O**: V2 data correctly written to and read from disk (verified byte-level)
-- **Scale metadata**: GGUF keys `{name}.iq2_xxs_v2_scales` correctly stored and loaded
-- **Repack buffer**: No longer overwrites `tensor->extra` for unsupported types
+- **CPU quantizer**: V1 → V2 post-processing (d_idx encoding, per-tensor d_min/d_step)
+- **CPU inference**: V2 model PPL 19.72 matches V1 (19.66)
+- **CPU vec_dot**: Round-trip test passes (V2 within 0.03% of V1)
+- **CUDA vec_dot**: Individual dot products match V1 (printf confirmed)
+- **CUDA scale setter**: Called correctly, values never zero, extra never NULL
+- **CUDA data**: V2 tensor data loaded correctly on GPU
 - **CUDA compilation**: All kernels compile and link with CUDA 13.1 for sm_86+sm_120a
-- **V1 IQ2_XXS inference**: CPU PPL 19.66 (our quantizer matches/exceeds Unsloth baseline 26.44)
-- **V1 CUDA inference**: Works correctly (PPL 28.78 with CUDA)
 
-### 9.6 TODO
+### 9.6 What's Broken
 
-1. Debug V2 vec_dot PPL discrepancy (126,012 → target ~28)
-2. Fix CUDA NaN propagation (will resolve once weight reconstruction is correct)
-3. Run full PPL+KLD benchmark (200 chunks) once functional
+- **CUDA V2 full inference**: PPL ~10^40 despite all components checking individually
+- **`llama-cli` on CUDA with V2**: Produces empty output tokens
+- V1 IQ2_XXS on same CUDA build works correctly
+
+### 9.7 TODO
+
+1. **CUDA V2 debugging** (priority):
+   - Trace intermediate activations after attention layers to find where corruption begins
+   - Test with `-fa off` and compare with `-fa on` to isolate FA path
+   - Force MMQ path or cuBLAS fallback to isolate broken path
+   - Add scale setter + check to all V2-using dispatch paths (not just MUL_MAT)
+   - Consider simplifying: use V1 vec_dot with per-tensor d-remapping as an alternative approach
+2. Run full PPL+KLD benchmark (200 chunks) for V2 CPU once CUDA is working
+3. Profile CUDA kernel timing vs V1 baseline
 4. Remove leftover temp files: `lora_correction_plan.md`, `tools/generate_quant_error_lora.py`
-5. Profile CUDA kernel timing vs V1 baseline
-6. Test on CUDA device 1 once NaN issue resolved
 
+---
 ---
 
 ## 10. Files NOT Modified (Out of Scope)
