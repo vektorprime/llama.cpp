@@ -16,6 +16,9 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type);
 
 to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type);
 
+void dequantize_row_iq2_xxs_v2_cuda_with_scale_f16(const void * vx, half * y, int64_t k, float d_min, float d_step, cudaStream_t stream);
+void dequantize_row_iq2_xxs_v2_cuda_with_scale_f32(const void * vx, float * y, int64_t k, float d_min, float d_step, cudaStream_t stream);
+
 // TODO more general support for non-contiguous inputs
 
 template<typename T>

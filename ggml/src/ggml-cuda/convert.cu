@@ -332,6 +332,28 @@ static __global__ void dequantize_block_iq2_xxs_v2(const void * __restrict__ vx,
 }
 
 template<typename dst_t>
+static __global__ void dequantize_block_iq2_xxs_v2_ex(const void * __restrict__ vx, dst_t * __restrict__ yy,
+                                                       const float d_min, const float d_step) {
+
+    const int64_t i   = blockIdx.x;
+    const block_iq2_xxs * x = (const block_iq2_xxs  *) vx;
+
+    const int64_t tid = threadIdx.x;
+    const int64_t il = tid/8; // 0...3
+    const int64_t ib = tid%8; // 0...7
+    dst_t * y = yy + i*QK_K + 32*ib + 8*il;
+    const uint16_t * q2 = x[i].qs + 4*ib;
+    const uint8_t  * aux8 = (const uint8_t *)q2;
+    const uint8_t  * grid = (const uint8_t *)(iq2xxs_grid + aux8[il]);
+    const uint32_t aux32 = q2[2] | (q2[3] << 16);
+    const uint16_t d_raw = *(const uint16_t *)&x[i].d;
+    const float d_base = d_min + (d_raw & 0x0FFF) * d_step;
+    const float d = d_base * (0.5f + (aux32 >> 28)) * 0.25f;
+    const uint8_t signs = ksigns_iq2xs[(aux32 >> 7*il) & 127];
+    for (int j = 0; j < 8; ++j) y[j] = d * grid[j] * (signs & kmask_iq2xs[j] ? -1.f : 1.f);
+}
+
+template<typename dst_t>
 static __global__ void dequantize_block_iq2_xs(const void * __restrict__ vx, dst_t * __restrict__ yy) {
 
     const int64_t i   = blockIdx.x;
@@ -588,6 +610,16 @@ template<typename dst_t>
 static void dequantize_row_iq2_xxs_v2_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = k / QK_K;
     dequantize_block_iq2_xxs_v2<<<nb, 32, 0, stream>>>(vx, y);
+}
+
+void dequantize_row_iq2_xxs_v2_cuda_with_scale_f16(const void * vx, half * y, int64_t k, float d_min, float d_step, cudaStream_t stream) {
+    const int nb = k / QK_K;
+    dequantize_block_iq2_xxs_v2_ex<half><<<nb, 32, 0, stream>>>(vx, y, d_min, d_step);
+}
+
+void dequantize_row_iq2_xxs_v2_cuda_with_scale_f32(const void * vx, float * y, int64_t k, float d_min, float d_step, cudaStream_t stream) {
+    const int nb = k / QK_K;
+    dequantize_block_iq2_xxs_v2_ex<float><<<nb, 32, 0, stream>>>(vx, y, d_min, d_step);
 }
 
 template<typename dst_t>

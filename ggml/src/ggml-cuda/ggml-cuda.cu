@@ -1700,7 +1700,12 @@ static void ggml_cuda_op_mul_mat_cublas(
             GGML_ASSERT(to_fp16_cuda != nullptr);
             size_t ne = row_diff*ne00;
             src0_as_f16.alloc(ne);
-            to_fp16_cuda(src0_dd_i, src0_as_f16.get(), ne, stream);
+            if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+                const float * scales = (const float *)src0->extra;
+                dequantize_row_iq2_xxs_v2_cuda_with_scale_f16(src0_dd_i, src0_as_f16.get(), ne, scales[0], scales[1], stream);
+            } else {
+                to_fp16_cuda(src0_dd_i, src0_as_f16.get(), ne, stream);
+            }
         }
         const half * src0_ptr = src0->type == GGML_TYPE_F16 ? (const half *) src0_dd_i : src0_as_f16.get();
 
@@ -1763,7 +1768,12 @@ static void ggml_cuda_op_mul_mat_cublas(
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(src0->type);
             GGML_ASSERT(to_fp32_cuda != nullptr);
             src0_ddq_as_f32.alloc(row_diff*ne00);
-            to_fp32_cuda(src0_dd_i, src0_ddq_as_f32.get(), row_diff*ne00, stream);
+            if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+                const float * scales = (const float *)src0->extra;
+                dequantize_row_iq2_xxs_v2_cuda_with_scale_f32(src0_dd_i, src0_ddq_as_f32.get(), row_diff*ne00, scales[0], scales[1], stream);
+            } else {
+                to_fp32_cuda(src0_dd_i, src0_ddq_as_f32.get(), row_diff*ne00, stream);
+            }
         }
         if (src1->type != GGML_TYPE_F32) {
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(src1->type);
