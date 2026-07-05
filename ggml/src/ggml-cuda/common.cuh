@@ -1057,11 +1057,26 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ2_XXS> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ2_XXS_V2> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = QR2_XXS;
+    static constexpr int qi = QI2_XXS;
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_IQ2_XS> {
     static constexpr int qk = QK_K;
     static constexpr int qr = QR2_XS;
     static constexpr int qi = QI2_XS;
 };
+
+// IQ2_XXS_V2 per-tensor scale parameters (d_min, d_step)
+__device__ float2 g_iq2_xxs_v2_scale;
+
+inline void iq2_xxs_v2_set_scale_cuda(float d_min, float d_step) {
+    float2 v = make_float2(d_min, d_step);
+    CUDA_CHECK(cudaMemcpyToSymbol(g_iq2_xxs_v2_scale, &v, sizeof(float2)));
+}
 
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_IQ2_S> {

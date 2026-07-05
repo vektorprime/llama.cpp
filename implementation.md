@@ -725,7 +725,80 @@ Compare V2 kernel times against V1 baseline in `llama-perplexity` output (token 
 
 ---
 
-## 9. Files NOT Modified (Out of Scope)
+## 9. Implementation Status & Known Issues
+
+### 9.1 Files Modified
+
+| File | Changes |
+|---|---|
+| `ggml/include/ggml.h` | Added `GGML_TYPE_IQ2_XXS_V2 = 42`, bumped `GGML_TYPE_COUNT` |
+| `ggml/src/ggml-common.h` | Type traits: `qr=QR2_XXS`, `qi=QI2_XXS`, and `block_iq2_xxs` mapping |
+| `ggml/src/ggml.c` | Type registration: name string, type size (`sizeof(block_iq2_xxs)`), blck size (QK_K), quantized flag, to_float dispatch |
+| `ggml/src/ggml-cpu/ops.cpp` | Dequant dispatch: `dequantize_row_iq2_xxs_v2` with lut_extra from `src0->extra` |
+| `ggml/src/ggml-cpu/ggml-cpu.c` | Vec_dot dispatch: `ggml_vec_dot_iq2_xxs_v2_set_lut(src0->extra)` before mul_mat, LLAMAFILE transpose handler, repack traits entry |
+| `ggml/src/ggml-quants.c` | `dequantize_row_iq2_xxs_v2()`, `ggml_vec_dot_iq2_xxs_v2_q8_K()`, `quantize_iq2_xxs_v2()`, thread-local LUT storage, FP16 validation skip |
+| `ggml/src/ggml-quants.h` | Declaration of V2 dequant/quant/vec_dot functions |
+| `ggml/src/ggml-cpu/quants.c` | `ggml_vec_dot_iq2_xxs_v2_q8_K_lut()`, `ggml_vec_dot_iq2_xxs_v2_q8_K()`, `quantize_row_iq2_xxs_v2_impl()` |
+| `ggml/src/ggml-cpu/repack.cpp` | Buffer init: only overwrite `extra` if repack traits != NULL; set_tensor: fallback to memcpy for NULL traits |
+| `include/llama.h` | `LLAMA_FTYPE_IQ2_XXS_V2 = 26` |
+| `src/llama-model-loader.cpp` | Set `tensor->extra` to V2 scale data {d_min, d_step} from GGUF metadata |
+| `src/llama-quant.cpp` | Post-processing: linear 12-bit scale encoding of V1 FP16 `d` fields, stores per-tensor scales in GGUF |
+| `tools/quantize/quantize.cpp` | Added `IQ2_XXS_V2` to type list |
+| `gguf-py/gguf/constants.py` | Added `IQ2_XXS_V2` to Python enum |
+| `ggml/src/ggml-cuda/common.cuh` | `ggml_cuda_type_traits<IQ2_XXS_V2>`, `__device__` variable `g_iq2_xxs_v2_scale`, setter function |
+| `ggml/src/ggml-cuda/vecdotq.cuh` | `VDR_IQ2_XXS_V2_Q8_1_MMVQ/MMQ`, `vec_dot_iq2_xxs_v2_q8_1()` |
+| `ggml/src/ggml-cuda/convert.cu` | `dequantize_block_iq2_xxs_v2` kernel + wrapper + dispatch entries for fp16/fp32 |
+| `ggml/src/ggml-cuda/mmq.cuh` | `load_tiles_iq2_xxs_v2`, `mmq_type_traits<IQ2_XXS_V2>`, layout/offset entries, extern decl |
+| `ggml/src/ggml-cuda/mmq.cu` | `mul_mat_q_case<IQ2_XXS_V2>` dispatch, mmq_supported list, scale setters |
+| `ggml/src/ggml-cuda/mmvq.cu` | All switch cases + batch tables + `should_use_small_k` + scale setters |
+| `ggml/src/ggml-cuda/ggml-cuda.cu` | `can_mul_mat` entry, scale setter in dequant dispatch |
+| `ggml/src/ggml-cuda/cpy.cu` | Scale setter in CPY dispatch |
+| `ggml/src/ggml-cuda/template-instances/generate_cu_files.py` | Added `IQ2_XXS_V2` to `TYPES_MMQ` |
+| `ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs_v2.cu` | **New file**: MMQ template instance |
+
+### 9.2 Bugs Fixed
+
+| # | Bug | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `static __device__` variable in `common.cuh` | CUDA creates per-TU copies; setter in ggml-cuda.cu sets one copy, kernels in other .cu files read their zeroed copy → `d = 0` | Removed `static` keyword; CUDA linker merges non-static `__device__` definitions |
+| 2 | Missing scale setter in MMQ dispatch | `mmq.cu` had no call to `iq2_xxs_v2_set_scale_cuda()` before launching mmq kernels | Added scale setter in `ggml_cuda_mul_mat_q()` and `ggml_cuda_op_mul_mat_q()` |
+| 3 | `tensor->extra` overwrite by CPU repack buffer | `repack.cpp:4727` unconditionally sets `tensor->extra = traits`; for unsupported types (V2), traits=NULL, wiping V2 scales. Additionally, `set_tensor` tried to call `repack()` on NULL traits | (a) init_tensor only sets extra if traits != NULL; (b) set_tensor falls back to `memcpy()` when traits is NULL |
+
+### 9.3 Known Remaining Issues
+
+**CRITICAL: Model produces garbage output (PPL ~5e38, KLD ~92) on both CPU and CUDA.**
+
+Debug findings:
+- `tensor->extra` survives backend buffer init on CPU (repack fix works) -- confirmed via fprintf
+- V2 post-processing in quantizer correctly computes `d_idx` from FP16 `d` values and writes them
+- V2 scales are correctly stored in GGUF metadata and loaded by model loader
+- The quantization post-processing modifies the `d` field in-memory before file write
+- **However, the .gguf file on disk retains the original FP16 `d` values, not the encoded `d_idx`**
+
+This strongly suggests the data written to disk does NOT reflect the in-memory modifications. Possible causes under investigation:
+1. `gguf_set_tensor_data` may have been called earlier (in `llama_tensor_quantize_impl`), caching a pointer/offset that bypasses the post-processing modifications
+2. The file write at line 1314 of `llama-quant.cpp` may use a stale buffer
+3. Potential interaction between `gguf_set_tensor_data` called from `llama_tensor_quantize_impl` (via quantize workers) and the later post-processing pass
+
+### 9.4 What Works
+
+- **Quantization**: V1 IQ2_XXS → IQ2_XXS_V2 post-processing computes correct d_min/d_step and d_idx encoding (confirmed via debug printf)
+- **V1 IQ2_XXS inference**: Both CPU and CUDA work correctly (PPL ~28.8 on Qwen3.5-2B, baseline 26.4)
+- **CUDA compilation**: All kernels compile and link with CUDA 13.1 for sm_86+sm_120a
+- **Scale data loading**: Model loader correctly reads per-tensor V2 scales from GGUF metadata
+- **Repack buffer**: No longer overwrites `tensor->extra` for unsupported types
+
+### 9.5 TODO
+
+1. Fix GGUF file write so post-processed `d_idx` values reach disk
+2. Verify V2 round-trip with a minimal quantize→load→dequant test
+3. Run full PPL benchmark (200 chunks) once functional
+4. Remove debug fprintf from quants.c and llama-quant.cpp
+5. Consider removing unused `lora_correction_plan.md` and `tools/generate_quant_error_lora.py`
+
+---
+
+## 10. Files NOT Modified (Out of Scope)
 
 Per "CPU and CUDA only" constraint, these backends are left with default/unsupported behavior for V2:
 

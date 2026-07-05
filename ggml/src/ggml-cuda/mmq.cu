@@ -47,6 +47,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
         case GGML_TYPE_IQ2_XXS:
             mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, args, stream);
             break;
+        case GGML_TYPE_IQ2_XXS_V2:
+            mul_mat_q_case<GGML_TYPE_IQ2_XXS_V2>(ctx, args, stream);
+            break;
         case GGML_TYPE_IQ2_XS:
             mul_mat_q_case<GGML_TYPE_IQ2_XS>(ctx, args, stream);
             break;
@@ -79,6 +82,11 @@ void ggml_cuda_mul_mat_q(
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
+
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+        const float * scales = (const float *)src0->extra;
+        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    }
 
     GGML_TENSOR_BINARY_OP_LOCALS;
 
@@ -246,6 +254,11 @@ void ggml_cuda_op_mul_mat_q(
     // nrows_dst == nrows of the matrix that the kernel writes into
     const int64_t nrows_dst = id == ctx.device ? ne0 : row_diff;
 
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+        const float * scales = (const float *)src0->extra;
+        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    }
+
     // The stream-k decomposition is only faster for recent NVIDIA GPUs.
     // Also its fixup needs to allocate a temporary buffer in the memory pool.
     // There are multiple parallel CUDA streams for src1_ncols != ne11 which would introduce a race condition for this buffer.
@@ -286,6 +299,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
         case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ2_XXS_V2:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS:

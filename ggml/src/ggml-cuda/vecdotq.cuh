@@ -982,6 +982,9 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
 #define VDR_IQ2_XXS_Q8_1_MMVQ 2
 #define VDR_IQ2_XXS_Q8_1_MMQ  2
 
+#define VDR_IQ2_XXS_V2_Q8_1_MMVQ 2
+#define VDR_IQ2_XXS_V2_Q8_1_MMQ  2
+
 static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
@@ -1011,6 +1014,42 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
     const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
     sumi = sumi * ls / 8;           // (sumi * scale + sumi / 2) / 4
     const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs/2].ds);
+    return d * sumi;
+}
+
+static __device__ __forceinline__ float vec_dot_iq2_xxs_v2_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_iq2_xxs * bq2 = (const block_iq2_xxs *) vbq + kbx;
+
+    const int q2 = get_int_b2(bq2->qs, iqs);
+    const uint8_t * aux8 = (const uint8_t *) &q2;
+    const uint32_t aux32 = get_int_b2(bq2->qs, iqs + 1);
+
+    int sumi = 0;
+#pragma unroll
+    for (int k0 = 0; k0 < 8; k0 += 2) {
+        const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
+        const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
+
+        const int signs0 = __vcmpne4(signs & 0x08040201, 0);
+        const int grid0 = __vsub4(grid_pos.x ^ signs0, signs0);
+        const int u0 = get_int_b4(bq8_1[iqs/2].qs, k0 + 0);
+        sumi = ggml_cuda_dp4a(grid0, u0, sumi);
+
+        const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+        const int grid1 = __vsub4(grid_pos.y ^ signs1, signs1);
+        const int u1 = get_int_b4(bq8_1[iqs/2].qs, k0 + 1);
+        sumi = ggml_cuda_dp4a(grid1, u1, sumi);
+    }
+
+    const int ls = aux32 >> 27 | 1;
+    sumi = sumi * ls / 8;
+
+    const float d_min  = g_iq2_xxs_v2_scale.x;
+    const float d_step = g_iq2_xxs_v2_scale.y;
+    const uint16_t d_raw = bq2->d;
+    const float d = (d_min + (d_raw & 0x0FFF) * d_step) * __low2float(bq8_1[iqs/2].ds);
     return d * sumi;
 }
 

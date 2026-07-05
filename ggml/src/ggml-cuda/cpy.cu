@@ -384,6 +384,11 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
     const int64_t ne = ggml_nelements(src0);
     GGML_ASSERT(ne == ggml_nelements(src1));
 
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+        const float * scales = (const float *)src0->extra;
+        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    }
+
     const int64_t ne00 = src0->ne[0];
     const int64_t ne01 = src0->ne[1];
     const int64_t ne02 = src0->ne[2];

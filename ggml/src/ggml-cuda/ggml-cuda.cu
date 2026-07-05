@@ -1752,6 +1752,10 @@ static void ggml_cuda_op_mul_mat_cublas(
         ggml_cuda_pool_alloc<float> src1_ddq_as_f32(ctx.pool(id));
 
         if (src0->type != GGML_TYPE_F32) {
+            if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+                const float * scales = (const float *)src0->extra;
+                iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+            }
             const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(src0->type);
             GGML_ASSERT(to_fp32_cuda != nullptr);
             src0_ddq_as_f32.alloc(row_diff*ne00);
@@ -5175,6 +5179,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ2_S:
                     case GGML_TYPE_IQ2_XS:
                     case GGML_TYPE_IQ2_XXS:
+                    case GGML_TYPE_IQ2_XXS_V2:
                     case GGML_TYPE_IQ3_S:
                     case GGML_TYPE_IQ3_XXS:
                     case GGML_TYPE_IQ4_NL:

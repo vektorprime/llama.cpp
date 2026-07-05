@@ -23,6 +23,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_Q5_K:    return vec_dot_q5_K_q8_1;
         case GGML_TYPE_Q6_K:    return vec_dot_q6_K_q8_1;
         case GGML_TYPE_IQ2_XXS: return vec_dot_iq2_xxs_q8_1;
+        case GGML_TYPE_IQ2_XXS_V2: return vec_dot_iq2_xxs_v2_q8_1;
         case GGML_TYPE_IQ2_XS:  return vec_dot_iq2_xs_q8_1;
         case GGML_TYPE_IQ2_S:   return vec_dot_iq2_s_q8_1;
         case GGML_TYPE_IQ3_XXS: return vec_dot_iq3_xxs_q8_1;
@@ -51,6 +52,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
         case GGML_TYPE_Q5_K:    return VDR_Q5_K_Q8_1_MMVQ;
         case GGML_TYPE_Q6_K:    return VDR_Q6_K_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_XXS: return VDR_IQ2_XXS_Q8_1_MMVQ;
+        case GGML_TYPE_IQ2_XXS_V2: return VDR_IQ2_XXS_V2_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_XS:  return VDR_IQ2_XS_Q8_1_MMVQ;
         case GGML_TYPE_IQ2_S:   return VDR_IQ2_S_Q8_1_MMVQ;
         case GGML_TYPE_IQ3_XXS: return VDR_IQ3_XXS_Q8_1_MMVQ;
@@ -116,6 +118,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_pascal_older(gg
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 5;
         case GGML_TYPE_IQ2_XXS: return 5;
+        case GGML_TYPE_IQ2_XXS_V2: return 5;
         case GGML_TYPE_IQ3_S:   return 4;
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 6;
@@ -156,6 +159,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_gcn(ggml_type t
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
         case GGML_TYPE_IQ2_XXS: return 4;
+        case GGML_TYPE_IQ2_XXS_V2: return 4;
         case GGML_TYPE_IQ3_S:   return 4;
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 6;
@@ -177,6 +181,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_cdna(ggml_type 
         case GGML_TYPE_IQ2_S:   return 5;
         case GGML_TYPE_IQ2_XS:  return 5;
         case GGML_TYPE_IQ2_XXS: return 5;
+        case GGML_TYPE_IQ2_XXS_V2: return 5;
         case GGML_TYPE_IQ3_S:   return 4;
         case GGML_TYPE_IQ3_XXS: return 5;
         default:                return MMVQ_MAX_BATCH_SIZE;
@@ -188,6 +193,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna1_rdna2(ggm
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
         case GGML_TYPE_IQ2_XXS: return 4;
+        case GGML_TYPE_IQ2_XXS_V2: return 4;
         case GGML_TYPE_IQ3_S:   return 4;
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_Q2_K:    return 7;
@@ -206,6 +212,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3(ggml_type
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
         case GGML_TYPE_IQ2_XXS: return 4;
+        case GGML_TYPE_IQ2_XXS_V2: return 4;
         case GGML_TYPE_IQ3_S:   return 4;
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 6;
@@ -224,6 +231,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
         case GGML_TYPE_IQ2_XXS: return 4;
+        case GGML_TYPE_IQ2_XXS_V2: return 4;
         case GGML_TYPE_IQ3_S:   return 4;
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 7;
@@ -301,6 +309,7 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                 case GGML_TYPE_IQ1_S:
                     return ne11 <= 5;
                 case GGML_TYPE_IQ2_XXS:
+                case GGML_TYPE_IQ2_XXS_V2:
                 case GGML_TYPE_IQ3_S:
                 case GGML_TYPE_IQ4_XS:
                     return ne11 <= 6;
@@ -849,9 +858,10 @@ static void mul_mat_vec_q_switch_ncols_dst(
             GGML_TYPE_IQ3_XXS,
             GGML_TYPE_IQ3_S,
         };
-        constexpr std::array<ggml_type, 8> iq_slow_other = {
-            GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M,   GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS,
-            GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S,   GGML_TYPE_IQ4_XS,
+        constexpr std::array<ggml_type, 9> iq_slow_other = {
+            GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M,   GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XXS_V2,
+            GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S,  GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S,
+            GGML_TYPE_IQ4_XS,
         };
         constexpr std::array<ggml_type, 3> slow_pascal = {
             GGML_TYPE_IQ3_S,
@@ -1066,6 +1076,12 @@ static void mul_mat_vec_q_switch_type(
                  nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
                  nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
             break;
+        case GGML_TYPE_IQ2_XXS_V2:
+            mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_IQ2_XXS_V2>
+                (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
+                 nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
+            break;
         case GGML_TYPE_IQ2_XS:
             mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_IQ2_XS>
                 (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
@@ -1213,6 +1229,10 @@ void ggml_cuda_mul_mat_vec_q(
 
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
 
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+        const float * scales = (const float *)src0->extra;
+        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    }
     mul_mat_vec_q_switch_type(
         src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
         ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
@@ -1244,6 +1264,10 @@ void ggml_cuda_op_mul_mat_vec_q(
     const int stride_col_y = src1_padded_row_size / QK8_1;
 
     ggml_cuda_mm_fusion_args_device fusion_local{};
+    if (src0->type == GGML_TYPE_IQ2_XXS_V2 && src0->extra) {
+        const float * scales = (const float *)src0->extra;
+        iq2_xxs_v2_set_scale_cuda(scales[0], scales[1]);
+    }
     mul_mat_vec_q_switch_type(
         src0_dd_i, src0->type, src1_ddq_i, nullptr, fusion_local, dst_dd_i, ne00, row_diff, src1_ncols, stride_row_x, stride_col_y, nrows_dst,
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, stream);

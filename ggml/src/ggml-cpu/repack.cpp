@@ -4724,7 +4724,10 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
 }
 
 static enum ggml_status ggml_backend_cpu_repack_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
-    tensor->extra = (void *) const_cast<ggml::cpu::tensor_traits *>(ggml_repack_get_optimal_repack_type(tensor));
+    const auto * traits = ggml_repack_get_optimal_repack_type(tensor);
+    if (traits) {
+        tensor->extra = (void *) const_cast<ggml::cpu::tensor_traits *>(traits);
+    }
 
     GGML_UNUSED(buffer);
     return GGML_STATUS_SUCCESS;
@@ -4736,9 +4739,13 @@ static void ggml_backend_cpu_repack_buffer_set_tensor(ggml_backend_buffer_t buff
     GGML_ASSERT(size == ggml_nbytes(tensor));
 
     auto tensor_traits = (ggml::cpu::repack::tensor_traits_base *) tensor->extra;
-    auto OK            = tensor_traits->repack(tensor, data, size);
+    if (tensor_traits) {
+        auto OK = tensor_traits->repack(tensor, data, size);
+        GGML_ASSERT(OK == 0);
+    } else {
+        memcpy((char *)tensor->data + offset, data, size);
+    }
 
-    GGML_ASSERT(OK == 0);
     GGML_UNUSED(buffer);
 }
 
