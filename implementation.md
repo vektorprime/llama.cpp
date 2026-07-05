@@ -856,19 +856,20 @@ Compare V2 kernel times against V1 baseline in `llama-perplexity` output (token 
 
 ### 9.6 What's Broken
 
-- **CUDA V2 full inference**: PPL ~10^40 despite all components checking individually
-- **`llama-cli` on CUDA with V2**: Produces empty output tokens
-- V1 IQ2_XXS on same CUDA build works correctly
+- **CUDA V2 full inference**: PPL improved from ~10^40 to 154,573 after fixes (target ~19.7)
+- **Root cause found**: `g_iq2_xxs_v2_scale` declared in common.cuh gets internal linkage (verified via `nm` showing `b` local BSS instead of `B` global). Each .cu TU compiles its own zeroed copy. The `cudaMemcpyToSymbol` setter writes to the calling TU's copy; kernels in other TUs read their own zeroed copy.
+  - **MMVQ path: WORKS** -- setter and vec_dot kernel are in same TU (mmvq.cu)
+  - **cuBLAS dequant path: FIXED** -- uses scale-aware kernel args instead of global
+  - **MMQ path: BROKEN** -- setter in mmq.cu, kernel in mmq-instance-*.cu (separate TUs); disabled for V2
 
 ### 9.7 TODO
 
 1. **CUDA V2 debugging** (priority):
-   - Trace intermediate activations after attention layers to find where corruption begins
-   - Test with `-fa off` and compare with `-fa on` to isolate FA path
-   - Force MMQ path or cuBLAS fallback to isolate broken path
-   - Add scale setter + check to all V2-using dispatch paths (not just MUL_MAT)
-   - Consider simplifying: use V1 vec_dot with per-tensor d-remapping as an alternative approach
-2. Run full PPL+KLD benchmark (200 chunks) for V2 CPU once CUDA is working
+   - Find remaining paths where V2 data is processed with zero scale (causing remaining PPL gap from 154,573 to ~20)
+   - Possible: GGML graph operations that dequantize V2 via `ggml_get_to_fp16_cuda`/`ggml_get_to_fp32_cuda` function pointer tables (returns `dequantize_row_iq2_xxs_v2_cuda` which reads the zero global)
+   - Fix MMQ path by piping d_min/d_step through mmq_args struct + kernel parameters (partial implementation complete, needs `load_tiles_iq2_xxs_v2` modification)
+   - Alternative: ensure `g_iq2_xxs_v2_scale` has external linkage (may be CUDA 13.1 linker issue)
+2. Run full PPL+KLD benchmark (200 chunks) for V2 CPU (CPU works, PPL 19.72)
 3. Profile CUDA kernel timing vs V1 baseline
 4. Remove leftover temp files: `lora_correction_plan.md`, `tools/generate_quant_error_lora.py`
 
