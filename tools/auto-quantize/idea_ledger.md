@@ -1338,3 +1338,19 @@ wtmp[i] = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.35f);
 **Expected**: Small KL improvement (Δ ~0.001-0.003 from 0.662001). The post-d neighbor search shares the same role as the pre-d neighbor search (centroid selection), so it should benefit from the same soft-weighting treatment.
 
 **Risk**: LOW — the error comparison still uses the sharp weight (0.35). Only the neighbor list centroid selection is softened. Revert is one line.
+
+**Result**: KL=0.687299 — REGRESSION (Δ = +0.025298, +3.8% from best 0.662001). The softened post-d wtmp degrades the refinement's ability to select the correct centroid at the quantized scale. Unlike the pre-d search (which has a correction step via post-d refinement), the post-d refinement is the FINAL selection — it needs sharp weighting to properly discriminate between near-identical centroids. **Reverted**.
+
+### exp-098: Finer waux — `powf(weight, 0.10)` (effective exponent 0.03, between sweet spot 0.06 and uniform 0.0)
+
+**Hypothesis**: The waux effective exponent has the trend: 0.15→0.06 improves (-0.62%), 0.0→regresses (+2.0%). The true optimum lies between 0.06 and 0.0. Trying powf(weight, 0.10) (eff 0.03) probes the midpoint between the sweet spot (0.06) and the overshoot (0.0).
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c:3862`:
+```c
+// Before:
+for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.20f);
+// After:
+for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.10f);
+```
+
+**Expected**: Small KL improvement (Δ ~0.0005-0.002 from 0.662001) or null if the optimum is a broad plateau around 0.06.
