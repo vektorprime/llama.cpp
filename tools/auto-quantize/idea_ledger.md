@@ -106,3 +106,21 @@ This aligns ALL three stages of the quantizer:
 
 **Motivation**: With nwant=8, the neighbor list is ~4x wider than default. A better selection criterion on this wider candidate pool should find centroids that produce lower overall quantization error. The metric alignment is principled — the quantizer should select centroids optimized for the same objective used in scale refinement.
 
+### exp-049: Superblock scale optimization minimizing weighted reconstruction error
+**Hypothesis**: The current `d = max_scale/31` maximizes dynamic range but doesn't consider:
+1. The imatrix importance weights of each sub-block
+2. The actual centroid values (grid indices are already chosen)
+3. The 4-bit scale quantization errors across all sub-blocks jointly
+
+By trying 9 candidates of `d` (±16% in 4% steps), computing the full 128-element weighted reconstruction error for each (using the already-chosen grid indices, centroid values, and sign bits), and picking the `d` with the lowest error, we can find a superblock scale that better balances quantization quality across all 4 sub-blocks of a superblock.
+
+This is different from exp-043 (wider scale search) because:
+- Exp-043 modified the per-sub-block scale CANDIDATE GRID (trying more `is` values)
+- This experiment optimizes the SUPERBLOCK scale `d` that ALL sub-blocks share, using the full reconstruction error
+
+The weight `w = qw[i] * sqrt(sigma2 + xb[i]^2)` correctly captures both imatrix importance and element magnitude, so the optimization naturally prioritizes important sub-blocks.
+
+**Implementation**: ~25 lines added after the inner ib loop, before the `d = max_scale/31` computation.
+
+**Expected**: Small KL improvement (0.0002-0.001) — the effect is modest since 4-bit scale quantization is already fine-grained, but the systematic optimization of `d` may reduce a consistent source of error, particularly for superblocks where sub-block scales are close to each other and the max-scale sub-block isn't the most important.
+
