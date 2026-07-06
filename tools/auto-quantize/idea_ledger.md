@@ -76,7 +76,8 @@
 | 079 | Per-8D-chunk sigma2 for weight formula (further localization) | regression (0.715862) |
 | **080** | **Softer weight formula exponent (powf 0.4 instead of sqrt 0.5)** | **IMPROVEMENT (0.682340)** |
 | **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
-| **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **PENDING** |
+| **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **IMPROVEMENT (0.666162)** |
+| **083** | **Further soften weight exponent to 0.25 (from 0.30)** | **PENDING** |
 
 ---
 
@@ -883,6 +884,29 @@ weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
 **Expected**: KL improvement (Δ ~0.003-0.006) from 0.668342. If the accelerating improvement trend continues, the gain could be comparable to or exceed the 2.05% from 0.4→0.35.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: 0.35f → 0.30f).
+
+---
+
+### exp-083: Further soften weight exponent to 0.25 (from 0.30)
+
+**Hypothesis**: The weight exponent reduction from 0.5→0.4→0.35→0.30 has produced consistent KL improvements:
+- 0.5→0.4: -1.27% (0.691085 → 0.682340)
+- 0.4→0.35: -2.05% (0.682340 → 0.668342)
+- 0.35→0.30: -0.33% (0.668342 → 0.666162)
+
+The diminishing returns from 0.35→0.30 (-0.33%) suggest the optimal exponent is near 0.30 or slightly below. Reducing further to exponent 0.25 should verify whether the curve has flattened or if there is still marginal headroom.
+
+The softer exponent continues to reduce the dominance of outlier elements in the weight formula. At 0.25, the magnitude-weighting is significantly softer than the original sqrt (0.5), giving the quantizer a very flat optimization landscape where per-element magnitude differences matter less. This may marginally improve the inter-element balance, but the effect is expected to be small or null if the true optimum is near 0.30.
+
+**Implementation**: Change up to 4 lines in `quantize_row_iq2_xxs_impl()`, all 0.30f/0.35f → 0.25f:
+- Line ~3861: `powf(..., 0.30f)` (weight computation)
+- Line ~4003: `powf(..., 0.35f)` → 0.25f (d optimization)
+- Line ~4046: `powf(..., 0.35f)` → 0.25f (post-d refinement)
+- Line ~4072: `powf(..., 0.35f)` → 0.25f (post-d refinement)
+
+**Expected**: Small KL improvement or null (Δ ~0.0001-0.001) from 0.666162. The diminishing returns make further improvement unlikely beyond 0.25. If null, the optimal exponent is confirmed at 0.30.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: 0.30f/0.35f → 0.25f).
 
 ---
 
