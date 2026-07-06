@@ -3600,16 +3600,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         float * weight_sums    = (float *)calloc(grid_size * 8, sizeof(float));
         GGML_ASSERT(centroids_float && weight_sums);
 
-        /* Save E8 float copy for regularization — preserves uniform coverage */
-        float * e8_centroids_float = (float *)malloc(grid_size * 8 * sizeof(float));
-        GGML_ASSERT(e8_centroids_float);
-        {
-            const int8_t * pg_e8 = (const int8_t *)trial_grid;
-            for (int i = 0; i < grid_size * 8; ++i) {
-                e8_centroids_float[i] = (float)pg_e8[i];
-            }
-        }
-
         for (int k = 0; k < grid_size; ++k) {
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
@@ -3656,15 +3646,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         centroids_float[8*k + i] = new_centroids[8*k + i] / ws;
                     }
                     /* else: empty cluster — leave centroid unchanged */
-                }
-            }
-
-            /* E8 regularization: blend 85% K-means + 15% E8 to maintain uniform coverage */
-            const float e8_reg_lambda = 0.15f;
-            for (int k = 0; k < grid_size; ++k) {
-                for (int i = 0; i < 8; ++i) {
-                    centroids_float[8*k + i] = (1.0f - e8_reg_lambda) * centroids_float[8*k + i]
-                                              + e8_reg_lambda * e8_centroids_float[8*k + i];
                 }
             }
         }
@@ -3787,7 +3768,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         free(assignments);
         free(weight_sums);
         free(centroids_float);
-        free(e8_centroids_float);
         free(trial_grid);
     }
 
