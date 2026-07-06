@@ -10,6 +10,7 @@
 | 103 | Change d optimization objective from sum to max-of-sub-block-errors | REGRESSION |
 | 104 | Tighter d optimization range ±15% at 0.5% step (61 candidates) | NULL |
 | 105 | Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug) | REGRESSION (0.731) |
+| 106 | Multi-tensor incremental K-means refinement (sequential) on 5 tensors after initial E8 warm-start | PENDING |
 
 ---
 
@@ -1670,3 +1671,40 @@ Note: we DON'T try flipping element 7 independently — element 7's sign is alwa
 **Files changed**: `ggml/src/ggml-quants.c` only — post-d refinement block (~30 lines added after line 4081).
 
 **Result**: KL=0.731314 — REGRESSION (Δ = +0.069313, +10.5% from best 0.662001). The sign re-evaluation with centroid-aware parity fix significantly worsens reconstruction. The original `min w*xb^2` criterion is already optimal regardless of centroid choice — picking a different flip based on centroid values at the quantized scale creates sign patterns that appear locally better but break the global balance of the superblock. The `w*xb^2` criterion is centroid-independent and correctly selects the element with minimum reconstruction impact regardless of which centroid is used. This confirms that the sign parity mechanism is fundamentally robust and should not be modified — the `ksigns_iq2xs` parity encoding combined with `min w*xb^2` produces the correct sign pattern for any centroid choice. **Reverted**.
+
+---
+
+## Session: 2026-07-06 (continued) — Multi-tensor incremental K-means refinement
+
+### exp-106: Multi-tensor sequential K-means refinement (incremental grid learning from 5 tensors)
+
+**Hypothesis**: The current grid is trained on a SINGLE IQ2_XXS tensor (the first one encountered) using E8 warm-start + 20 K-means iterations. After learning, `grid_learned=1` is set and ALL subsequent 94 IQ2_XXS tensors use this frozen grid. Different tensors have different weight distributions — attention tensors (attn_q, attn_k, attn_v, attn_output) vs MLP tensors (ffn_gate, ffn_up, ffn_down) have systematically different magnitude profiles and directional patterns. A grid optimized only for the first tensor's distribution may be suboptimal for the other 94.
+
+Previous cross-tensor experiments (exp-032, 036, 037) tried POOLED training — combining samples from multiple tensors and training a grid from scratch using K-means++ or normalization. These collapsed because: (a) K-means++ random init moved centroids away from the E8 attractor into degenerate configurations, (b) normalization destroyed magnitude diversity. **This experiment uses SEQUENTIAL refinement, which is fundamentally different:**
+
+1. **First tensor**: E8 warm-start + 20 K-means iterations (same as current). The grid stays near-E8.
+2. **Subsequent tensors (tensors 2-6, 5 total)**: Collect 16384 samples from each new tensor, REASSIGN samples to the EXISTING grid centroids, then run 5 ADDITIONAL K-means iterations. The grid starts from its current position (near-E8 from tensor 1), so it can only drift slightly — never collapsing.
+3. **After 5 additional tensors**: Grid is frozen (grid_learned=1).
+
+The sequential approach is safe because:
+- The E8 attractor dominates (established by tensor 1's 20 iterations)
+- Each refinement is limited (5 iterations) — too few for significant drift
+- The grid is never initialized randomly — it always starts from the previous near-E8 grid
+- Diverse tensor patterns can only IMPROVE centroid positions for patterns that are common across tensors
+
+**Why this hasn't been tried**: All prior cross-tensor experiments pooled samples and used random/K-means++ initialization, which caused catastrophic collapse. The sequential refinement approach is architecturally simpler and safer — it naturally preserves the near-E8 structure while incorporating diverse tensor patterns.
+
+**Implementation**: Modify `iq2xxs_learn_grid()` in `ggml/src/ggml-quants.c`:
+1. Replace `static int grid_learned = 0` with `static int refine_count = 0` and `static const int max_refine = 6` (tensor 1 + 5 refinements)
+2. Remove the early return `if (grid_learned) return` — instead check `if (refine_count >= max_refine) return`
+3. For the first tensor (refine_count == 0): unchanged (E8 warm-start, 20 iters, error-aware snap, rebuild map/neighbors)
+4. For subsequent tensors (refine_count 1-5): collect 16384 samples from new tensor, reassign to current grid centroids, run 5 K-means iterations in float space, error-aware snap, rebuild map/neighbors
+5. Increment refine_count each call
+
+The K-means loop for refinement is identical to the main loop but with 5 iterations instead of 20. Progressively the grid sees 6× more diverse training data than the current single-tensor approach.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.005, ~0.15-0.75% relative) from 0.662001. The grid should learn centroid positions that generalize better across tensor types. The improvement is bounded because the grid is already good (KL far below Unsloth), but additional training data can only improve centroid placement for edge patterns.
+
+**Risk**: LOW. The E8 warm-start constrains centroids near their current positions, preventing any collapse. The 5-iteration limit per tensor ensures drift is minimal. The extra time per refinement: 5 K-means iterations × 16384 samples × 8 dims ≈ 0.3s per tensor × 5 tensors ≈ 1.5s total. Well within the 7-min limit.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `iq2xxs_learn_grid()` (~20 lines modified).
