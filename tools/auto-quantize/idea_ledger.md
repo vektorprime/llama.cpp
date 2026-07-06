@@ -65,10 +65,3 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Expected**: KL reduction from 0.7162 to ~0.710-0.714. Cross-tensor diversity should produce a more generally useful grid.
 
 **Result**: KL=2.379 (CATASTROPHIC regression). Normalization destroyed the relative magnitude differences within each 8D chunk — all samples became near equal (~32 across all dims), centroids collapsed to nearly identical vectors, and the grid lost all discriminative power. The quantizer's per-superblock scale `d` cannot compensate for loss of codebook diversity. **Lesson**: Normalization across tensors is not viable; the grid must capture magnitude differences within each 8-element block to represent weight patterns.
-
-### exp-039: Density-aware centroid splitting (LBG VQ split)
-**Hypothesis**: K-means converges to a non-uniform allocation — some centroids capture many samples (high utilization) while others capture few (wasted capacity). By splitting over-utilized centroids (clone + perturb) into under-utilized slots and re-running K-means to settle, we reallocate codebook capacity to match data density. This is the classic LBG vector quantization split algorithm.
-
-**Implementation**: After 20 standard K-means iterations, compute assignment counts per centroid. If max_utilization > 2× the expected average (n_samples/grid_size), clone the max-util centroid into the min-util centroid slot with +1 perturbation in one dimension. Run 5 more K-means iterations to settle. Repeat up to 3 split rounds.
-
-**Expected**: Small KL improvement (0.001-0.005) as previously underutilized centroids get repurposed to cover denser regions of the weight space.
