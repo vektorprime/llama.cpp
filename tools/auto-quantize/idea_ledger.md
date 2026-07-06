@@ -10,7 +10,7 @@
 | 103 | Change d optimization objective from sum to max-of-sub-block-errors | REGRESSION |
 | 104 | Tighter d optimization range ±15% at 0.5% step (61 candidates) | NULL |
 | 105 | Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug) | REGRESSION (0.731) |
-| 106 | Multi-tensor incremental K-means refinement (sequential) on 5 tensors after initial E8 warm-start | PENDING |
+| 106 | Multi-tensor incremental K-means refinement (sequential) on 5 tensors after initial E8 warm-start | NULL (0.662001) |
 
 ---
 
@@ -1708,3 +1708,9 @@ The K-means loop for refinement is identical to the main loop but with 5 iterati
 **Risk**: LOW. The E8 warm-start constrains centroids near their current positions, preventing any collapse. The 5-iteration limit per tensor ensures drift is minimal. The extra time per refinement: 5 K-means iterations × 16384 samples × 8 dims ≈ 0.3s per tensor × 5 tensors ≈ 1.5s total. Well within the 7-min limit.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `iq2xxs_learn_grid()` (~20 lines modified).
+
+**Result**: KL=0.662001 — NULL (identical to best 0.662001). The multi-tensor sequential refinement made zero measurable difference — the grid is already at its E8 attractor fixed point after the first tensor's 20 K-means iterations. Additional 5 iterations on 5 more tensors (from different layers/types) did not shift any centroid positions. The E8 warm-start constrains centroids so tightly that diverse training data cannot move them.
+
+This confirms the synthesis finding: "With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection, weighting, and training data diversity don't matter. The codebook is essentially E8 with minor data-adaptive adjustments — and those adjustments are already optimal after a single tensor."
+
+**Reversion**: `git checkout -- ggml/src/ggml-quants.c` — code changes discarded (null result, no KL improvement).
