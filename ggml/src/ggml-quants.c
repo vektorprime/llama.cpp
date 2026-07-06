@@ -3650,19 +3650,21 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         }
 
-        /* --- Error-aware int8 snap: try round-up and round-down, pick lower error --- */
+        /* --- Error-aware int8 snap: try round-up and round-down, pick lower error ---
+         * Force all values to ODD [1,3,5,...,127] to prevent kmap collisions:
+         * the kmap uses (val-1)/2 which causes unsigned underflow for val=0 (maps to 127)
+         * and even/odd collision for val=2,4,6,... (maps same as val=1,3,5,...). */
         for (int k = 0; k < grid_size; ++k) {
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
                 float fc = centroids_float[8*k + i];
                 float f_floor = floorf(fc);
                 float f_ceil  = ceilf(fc);
-                if (f_floor < 0.0f) f_floor = 0.0f;
+                if (f_floor < 1.0f) f_floor = 1.0f;
                 if (f_ceil  > 127.0f) f_ceil = 127.0f;
                 if (f_floor == f_ceil) {
                     pg[i] = (int8_t)f_floor;
                 } else {
-                    /* Compute weighted L2 error for floor vs ceil against assigned samples */
                     float err_floor = 0.0f, err_ceil = 0.0f;
                     for (int64_t s = 0; s < n_samples; ++s) {
                         if (assignments[s] == k) {
@@ -3675,13 +3677,18 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     }
                     pg[i] = (err_floor <= err_ceil) ? (int8_t)f_floor : (int8_t)f_ceil;
                 }
+                /* Force odd: prevents kmap collisions between even/odd pairs */
+                if ((pg[i] & 1) == 0) {
+                    pg[i] = (pg[i] > 1) ? (pg[i] - 1) : 1;
+                }
             }
         }
 
         /* --- Multi-round error-aware refinement ---
-         * After the initial snap, re-assign samples and do +/-1 gradient descent
-         * per centroid dimension to escape local minima. 3 rounds of refinement. */
-        const int refine_rounds = 0;
+         * After the initial snap, re-assign samples and do +/-2 gradient descent
+         * per centroid dimension to escape local minima (odd-preserving: +/-2
+         * keeps values odd). 3 rounds of refinement. */
+        const int refine_rounds = 3;
         for (int round = 0; round < refine_rounds; ++round) {
             /* Step 1: Re-assign all samples to nearest snapped centroid */
             for (int64_t s = 0; s < n_samples; ++s) {
@@ -3699,14 +3706,14 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 assignments[s] = (int8_t)best_k;
             }
 
-            /* Step 2: Per-centroid gradient descent - try +/-1 per dimension */
+            /* Step 2: Per-centroid gradient descent - try +/-2 per dimension
+             * (odd-preserving: +/-2 keeps values odd, avoiding kmap collisions) */
             for (int k = 0; k < grid_size; ++k) {
                 int8_t * pg = (int8_t *)(trial_grid + k);
                 for (int i = 0; i < 8; ++i) {
                     int8_t cur_val = pg[i];
                     int8_t best_val = cur_val;
 
-                    /* Compute current error for this centroid-dim against its samples */
                     float cur_err = 0.0f;
                     for (int64_t s = 0; s < n_samples; ++s) {
                         if (assignments[s] == k) {
@@ -3715,28 +3722,28 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         }
                     }
 
-                    /* Try -1 */
-                    if (cur_val > 0) {
+                    /* Try -2 */
+                    if (cur_val > 2) {
                         float try_err = 0.0f;
                         for (int64_t s = 0; s < n_samples; ++s) {
                             if (assignments[s] == k) {
-                                float diff = (float)(cur_val - 1) - samples[8*s + i];
+                                float diff = (float)(cur_val - 2) - samples[8*s + i];
                                 try_err += sample_weights[8*s + i] * diff * diff;
                             }
                         }
-                        if (try_err < cur_err) { best_val = cur_val - 1; cur_err = try_err; }
+                        if (try_err < cur_err) { best_val = cur_val - 2; cur_err = try_err; }
                     }
 
-                    /* Try +1 */
-                    if (cur_val < 127) {
+                    /* Try +2 */
+                    if (cur_val < 126) {
                         float try_err = 0.0f;
                         for (int64_t s = 0; s < n_samples; ++s) {
                             if (assignments[s] == k) {
-                                float diff = (float)(best_val + 1) - samples[8*s + i];
+                                float diff = (float)(best_val + 2) - samples[8*s + i];
                                 try_err += sample_weights[8*s + i] * diff * diff;
                             }
                         }
-                        if (try_err < cur_err) { best_val = best_val + 1; }
+                        if (try_err < cur_err) { best_val = best_val + 2; }
                     }
 
                     pg[i] = best_val;

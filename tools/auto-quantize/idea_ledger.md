@@ -47,6 +47,11 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 
 ## Session: 2026-07-06
 
+### exp-038: Odd-only centroid enforcement + error-aware refinement with nwant=8
+**Hypothesis**: The kmap precomputation uses `(grid_val - 1) / 2` to compute 16-bit 2-bit indices. For even-valued centroids (e.g., 0,2,4,6...), this causes unsigned underflow (value 0→maps to odd-7 pattern) and kmap collisions (e.g., values 2 and 3 map to same 2-bit index, so one centroid entry is invisible in the direct-lookup path). This wastes codebook capacity and introduces reconstruction errors. Fix: force all centroid values to odd [1,3,5,...,127] by clamping min to 1 and applying `val = 1 + 2*((val+1)/2 - 1)` after snap. Also re-enable multi-round refinement (3 rounds) with ±2 steps (odd-preserving) — previously refinement with nwant=2 showed no benefit (exp-004), but with nwant=8 the better neighbor search may leverage refined centroids.
+
+**Expected**: KL reduction from 0.7162 to ~0.712-0.714. Fixing kmap collisions restores full 256-entry codebook utilization, and refinement with wider search finds better local minima.
+
 ### exp-033: Increase neighbor search depth nwant=2→4 for learned grids
 **Hypothesis**: The kmap fallback neighbor search uses `nwant=2` (2 unique distance levels) to find candidate grid points when a 2-bit pattern isn't directly in the map. For E8 lattices with regular structure, 2 levels suffice. But learned K-means grids lack this symmetry — nearby grid points span more distance levels. Increasing to `nwant=4` broadens the candidate pool during quantization, improving the probability of finding the true nearest-neighbor centroid for off-map patterns.
 
