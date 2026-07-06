@@ -91,3 +91,18 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 
 **Expected**: KL improvement from 0.716172 to ~0.712-0.715. By reducing outlier influence, centroids should converge to positions that reduce overall quantization error for the majority of superblocks.
 
+### exp-048: Align neighbor search criterion with scale refinement (dot-product instead of L1)
+**Hypothesis**: The neighbor search in `iq2_find_best_neighbour()` uses weighted L1 distance to select the best grid centroid for off-map 2-bit patterns. However, the downstream scale refinement uses a weighted least-squares dot-product criterion (`sumqx^2/sumq2`) that maximizes the SNR for the chosen centroid. This metric mismatch means the neighbor search can select a centroid whose optimal scale is suboptimal, while a different centroid (worse by L1 but better by dot-product) would yield lower MSE after scaling.
+
+**Change**: In `iq2_find_best_neighbour()`, replace the weighted L1 evaluation with the same dot-product criterion used by the scale refinement:
+- For each candidate centroid q, compute `sumqx = sum(w*xval[i]*q[i])` and `sumq2 = sum(w*q[i]^2)`
+- Score = `sumqx^2/sumq2`
+- Select the centroid with the highest score (equivalent to minimizing MSE after optimal scaling)
+
+This aligns ALL three stages of the quantizer:
+1. Kmap precomputation (Euclidean/L2)
+2. Neighbor grid index selection (now uses dot-product matching scale refinement)
+3. Scale refinement (dot-product)
+
+**Motivation**: With nwant=8, the neighbor list is ~4x wider than default. A better selection criterion on this wider candidate pool should find centroids that produce lower overall quantization error. The metric alignment is principled — the quantizer should select centroids optimized for the same objective used in scale refinement.
+
