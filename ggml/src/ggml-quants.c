@@ -3488,29 +3488,20 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     static int grid_learned = 0;
     if (grid_learned) return;
 
-    /* Cross-tensor accumulation: gather samples from first N tensors before
-     * K-means training. Single-tensor sampling biases the grid toward one
-     * tensor's distribution; multi-tensor pooling produces more general grids. */
-    static float * acc_samples = NULL;
-    static float * acc_weights = NULL;
-    static int64_t acc_count = 0;
-    static int acc_tensors = 0;
-    const int64_t MAX_ACC_SAMPLES = 131072;
-    const int ACCUMULATE_TENSORS = 4;
-    const int max_samples_per_tensor = 16384;
-    const int num_trials = 1;
+    /* Single global grid: shared across ALL IQ2_XXS tensors regardless of type.
+     * More training data from diverse tensor types may produce a better grid. */
+    static uint64_t * global_grid = NULL;
+    static int global_tensor_count = 0;
+    global_tensor_count++;
 
-    if (acc_count == 0) {
-        acc_samples = (float *)malloc(8 * MAX_ACC_SAMPLES * sizeof(float));
-        acc_weights = (float *)malloc(8 * MAX_ACC_SAMPLES * sizeof(float));
-        GGML_ASSERT(acc_samples && acc_weights);
-    }
+    const int num_trials = 1;
+    const int max_samples = 16384;
 
     int64_t n_total = nrows * n_per_row;
     if (n_total < grid_size * 8) return;
 
     int64_t n_samples = n_total / 8;
-    if (n_samples > max_samples_per_tensor) n_samples = max_samples_per_tensor;
+    if (n_samples > max_samples) n_samples = max_samples;
 
     float * samples = (float *)malloc(8 * n_samples * sizeof(float));
     float * sample_weights = (float *)malloc(8 * n_samples * sizeof(float));
@@ -3525,27 +3516,6 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             sample_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
         }
     }
-
-    /* Accumulate into shared pool */
-    int64_t room = MAX_ACC_SAMPLES - acc_count;
-    int64_t to_copy = n_samples < room ? n_samples : room;
-    if (to_copy > 0) {
-        memcpy(acc_samples + 8*acc_count, samples, 8*to_copy*sizeof(float));
-        memcpy(acc_weights + 8*acc_count, sample_weights, 8*to_copy*sizeof(float));
-        acc_count += to_copy;
-    }
-    acc_tensors++;
-
-    free(samples);
-    free(sample_weights);
-
-    /* Train only after accumulating samples from diverse tensor types */
-    if (acc_tensors < ACCUMULATE_TENSORS) return;
-
-    n_samples = acc_count;
-    samples = acc_samples;
-    sample_weights = acc_weights;
-    printf("iq2xxs_learn_grid: training on %ld samples from %d tensors\n", (long)n_samples, acc_tensors);
 
     uint64_t * best_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
     GGML_ASSERT(best_grid);
@@ -3801,18 +3771,22 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         free(trial_grid);
     }
 
-    /* Store learned grid for all subsequent tensors */
+    /* Store learned grid per category for subsequent tensors of the same type */
+    if (global_grid) {
+        free(global_grid);
+    }
+    global_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
+    GGML_ASSERT(global_grid);
+    memcpy(global_grid, best_grid, grid_size * sizeof(uint64_t));
+
+    free(samples);
+    free(sample_weights);
+
     free(iq2_data[gindex].grid);
     iq2_data[gindex].grid = best_grid;
 
     iq2xxs_rebuild_map_and_neighbours();
     grid_learned = 1;
-
-    free(acc_samples);
-    free(acc_weights);
-    acc_samples = NULL;
-    acc_weights = NULL;
-    acc_count = 0;
 }
 
 static int iq2_find_best_neighbour(const uint16_t * GGML_RESTRICT neighbours, const uint64_t * GGML_RESTRICT grid,
