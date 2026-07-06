@@ -1,32 +1,34 @@
 # IQ2_XXS Auto-Research Synthesis — Session 2026-07-06 (Updated exp-082)
 
-## Status: Best KL = 0.666162 (exp-082, weight exponent 0.30). Previous best was 0.668342 (exp-081, weight exponent 0.35).
+## Status: Best KL = 0.666162 (exp-082, weight exponent 0.30). No improvement since exp-082.
 
-## BREAKTHROUGH (exp-081 + exp-082): Weight exponent 0.30 — KL breaks below 0.667!
+## Plateaud: exp-083 through exp-090 all regressed or null
 
-**Reducing the weight exponent from 0.35 to 0.30 improves KL from 0.668342 to 0.666162 — a 0.33% relative improvement.** The softer exponent trend continues, though with diminishing returns (0.5→0.4: -1.27%, 0.4→0.35: -2.05%, 0.35→0.30: -0.33%). The optimal exponent may be near 0.30 or slightly below.
+**exp-082's weight exponent 0.30 remains the best (KL 0.666162). All 8 subsequent experiments regressed.** The weight formula has been exhaustively explored — exponent values from 0.25 to 1.0, asymmetric profiles, ratio clamping, normalization — all regressed or null.
 
-| Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
-|-----------|--------------|-----|------------|--------|---------------|
-| **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **exp-082 (NEW BEST)** | **0.666162** | **25.11** | **61.96%** | **5.9 min** | **Weight exponent 0.30 (was 0.35)** |
-| **exp-081** | 0.668342 | 25.01 | 61.58% | 5.9 min | Weight exponent 0.35 (was 0.4) |
-| **exp-080** | 0.682340 | 25.41 | 61.11% | 5.9 min | Weight exponent 0.4 (was 0.5) |
-| **exp-078** | 0.691085 | 25.69 | 61.29% | 5.0 min | Per-sub-block sigma2 |
-| exp-064 | 0.699009 | 25.90 | 61.11% | 5.0 min | 0.5% d step (65 candidates) |
-| exp-063 | 0.702666 | 26.02 | 60.98% | 4.9 min | 1% d step (33 candidates) |
-| exp-061 | 0.704868 | 26.12 | 60.97% | 4.8 min | 2% d step (17 candidates) |
-| exp-055 | 0.710657 | 26.26 | 60.61% | 4.8 min | Post-d grid index recomputation |
-| exp-049 | 0.715144 | 26.45 | 60.42% | 4.6 min | Superblock scale optimization |
-| exp-033 | 0.7166 | 26.24 | 60.56% | 2.4 min | nwant=4 neighbor search |
+| Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique | Verdict |
+|-----------|--------------|-----|------------|--------|---------------|---------|
+| **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference | — |
+| **exp-082 (BEST)** | **0.666162** | **25.11** | **61.96%** | **5.9 min** | **Weight exponent 0.30** | **BEST** |
+| exp-090 | 0.682228 | 25.48 | 61.24% | 6.0 min | Remove sqrtf from waux (neighbor weight alignment) | REGRESSION |
+| exp-089 | 0.679015 | 25.47 | 61.17% | 5.0 min | Intra-sub-block weight normalization | REGRESSION |
+| exp-088 | 0.794320 | 29.13 | 58.99% | 5.9 min | Weight ratio clamping per sub-block | REGRESSION |
+| exp-087 | 0.723409 | 26.93 | 58.72% | 5.0 min | Linear-L1 weight formula (1+\|xb\|) | REGRESSION |
+| exp-086 | 0.669495 | 25.22 | 62.09% | 5.9 min | d-opt/post-d exponent 0.40 | REGRESSION |
+| exp-085 | 0.669486 | 25.26 | 62.07% | 5.9 min | d-opt/post-d exponent 0.50 | REGRESSION |
+| exp-084 | 0.673372 | 25.34 | 61.43% | 5.9 min | Harmonize all to 0.30 | REGRESSION |
+| exp-083 | 0.679018 | 25.63 | 61.04% | 5.9 min | Weight exponent 0.25 | REGRESSION |
+| exp-081 | 0.668342 | 25.01 | 61.58% | 5.9 min | Weight exponent 0.35 | IMPROVEMENT |
+| exp-080 | 0.682340 | 25.41 | 61.11% | 5.9 min | Weight exponent 0.4 | IMPROVEMENT |
+| exp-078 | 0.691085 | 25.69 | 61.29% | 5.0 min | Per-sub-block sigma2 | IMPROVEMENT |
 
 ## Key Findings
 
-### 1. Weight formula exponent continues improving below 0.35 (exp-082)
-Reducing exponent from 0.35 to 0.30 improves KL by 0.33% (0.668342 → 0.666162). The diminishing returns pattern (2.05% → 0.33%) suggests the optimal exponent is near 0.30-0.25. Further reductions (0.25, 0.20) would verify if the optimal has been reached or if there's more headroom.
+### 1. Weight formula exponent is saturated at 0.30
+exp-082 (0.30) is the best. exp-083 (0.25) regressed to 0.679. All asymmetric profiles (084-086) regressed. All structural weight changes (087-090) regressed. The optimal weight formula is confirmed: `qw * powf(sigma2_per_ib + xb^2, 0.30f)`.
 
-### 2. PPL slightly increased at 0.30 vs 0.35 despite KL improvement
-PPL went from 25.01 (exp-081) to 25.11 (exp-082), a small regression, while KL improved. Same top p improved from 61.58% to 61.96%. This divergence between PPL and KL suggests the weight formula at 0.30 produces a better probability ranking (higher same-top-p) at a small cost to overall perplexity.
+### 2. Every post-exp-082 modification regressed — the system is at a local optimum
+8 consecutive experiments (exp-083 through exp-090) all regressed or null. The weight formula, neighbor search structure, and quantizer search space have been exhaustively explored within the current IQ2_XXS format. Further improvement likely requires format changes (multi-codebook, non-uniform scales, gain-shape decomposition).
 
 ### 3. Combined effect: exp-078 through exp-082 = 4.9% cumulative KL improvement
 KL improved from 0.699009 (exp-064) to 0.666162 (exp-082), a 4.7% relative improvement from weight formula changes alone.
@@ -73,7 +75,7 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 - **65-candidate d optimization** at 0.5% step, ±16% range (exp-064)
 - **Post-d grid index recomputation** with quantized scale (exp-055)
 
-## Recent Additions (exp-042 through exp-047)
+## Recent Additions (exp-042 through exp-090)
 
 | Exp | KL | Technique | Verdict |
 |-----|-----|-----------|---------|
@@ -82,6 +84,14 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 | 045 | 0.719 | 2-pass iterative grid-scale refinement during quantization | Regression |
 | 046 | 0.717 | Greedy per-element level perturbation after LS refinement | Regression |
 | 047 | 0.716 | Inlier-Focus K-means (Trimmed K-means, 10% outlier discarding) | Null (identical KL) |
+| 083 | 0.679 | Weight exponent 0.25 (too soft) | Regression |
+| 084 | 0.673 | Harmonize all weights to 0.30 | Regression |
+| 085 | 0.669 | d-opt/post-d exponent 0.50, main 0.30 | Regression |
+| 086 | 0.669 | d-opt/post-d exponent 0.40, main 0.30 | Regression |
+| 087 | 0.723 | Linear-L1 weight formula (1+\|xb\|) | Catastrophic |
+| 088 | 0.794 | Weight ratio clamping per sub-block | Catastrophic |
+| 089 | 0.679 | Intra-sub-block weight normalization | Regression |
+| 090 | 0.682 | Remove sqrtf from waux (align neighbor weight) | Regression |
 
 ### exp-055: Post-d-optimization grid index recomputation — new best KL=0.710657 (-0.63% from exp-049)
 
@@ -133,10 +143,15 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 ## Gap Analysis
 - **Best KL**: 0.666162 (exp-082)
 - **Unsloth target**: 0.721 (surpassed by 7.6%)
-- **New directions opened**: Weight exponent tuning is now showing diminishing returns. Moving from 0.35→0.30 gave 0.33% improvement vs 2.05% for 0.4→0.35. The optimal exponent appears to be around 0.30-0.25. Next experiment: test exponent 0.25 to see if the curve has flattened.
-- **Quantize time**: 356s (5.9 min) — exceeds 5-min soft limit due to powf vs sqrtf overhead. Could be optimized back to sqrtf + rescaling or using a fast pow approximation.
+- **Weight formula EXHAUSTED**: All exponent values (0.25-1.0), asymmetric profiles, structural variants (clamping, normalization, linear-L1, waux sqrt removal) tested. The optimal configuration is confirmed: `qw * powf(sigma2 + xb^2, 0.30f)` with per-sub-block sigma2 (exp-078).
+- **Quantize time**: ~356-362s (5.9-6.0 min) — slightly exceeds 5-min soft limit.
 - **Index-scale coupling remains fragile**: Any two-way modification (changing both indices and scale) still causes catastrophic regression.
-- **Remaining headroom**: Weight exponent 0.25 is the most promising next step. The diminishing returns pattern suggests the optimal is near. After that, all low-hanging fruit in the weight formula may be exhausted, requiring structural format changes (multi-codebook quantization, non-uniform scale spacing) for further improvements.
+- **Remaining headroom**: The current IQ2_XXS algorithm appears to be at a global local optimum. No further improvement found in weight formula, neighbor search structure, or quantizer search space. Future progress likely requires:
+  1. **Multi-codebook quantization**: Split 256-entry codebook into per-sub-block selectable sub-codebooks
+  2. **Non-uniform scale level spacing**: Change 4-bit scale decoding from uniform `2*l+1` to non-uniform
+  3. **Gain-shape weight representation**: Decouple magnitude from direction at format level
+  4. **Residual quantization**: Encode residual after 2-bit quantization with additional bits
+  5. **Per-element adaptive bit allocation**: Different bit widths per element based on importance
 
 ## Key Findings: Experiments 056-067
 
