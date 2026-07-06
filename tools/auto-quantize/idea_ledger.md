@@ -51,7 +51,7 @@
 | 054 | Post-d grid index recomputation (buggy) | catastrophic |
 | **055** | **Post-d grid index recomputation (corrected)** | **IMPROVEMENT (0.710657)** |
 | 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | REGRESSION (0.795) |
-| 057 | Fix odd-value forcing in kmap construction and neighbor search | PENDING |
+| 057 | Fix odd-value forcing in kmap construction and neighbor search | REGRESSION (0.712) |
 
 ---
 
@@ -288,4 +288,8 @@ By fixing all three to use odd-forced values (`2*((v-1)/2)+1`), the quantizer's 
 **Expected**: KL improvement from 0.710657. The fix aligns the quantizer's centroid evaluation with the actual inference-time decoding. Even-valued centroids (a minority but present due to error-aware snap) will now be correctly ranked and selected by the neighbor search, improving quantization quality. Expect ΔKL ~0.0003-0.0010.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — three edits in `iq2xxs_rebuild_map_and_neighbours()` and one edit in `iq2_find_best_neighbour()`.
+
+**Result**: KL=0.712151 (Δ = +0.001494, +0.21% from best 0.710657) — REGRESSION. The odd-forcing fix caused the neighbor list to change: centroids with the same odd-forced values but different raw values become indistinguishable in the neighbor list, reducing the effective codebook diversity. The kmap also has more collisions (multiple centroids map to the same 2-bit pattern after odd-forcing), forcing more patterns through the neighbor search path. The regression suggests that the raw-value-based neighbor list, while "buggy" for even-valued centroids, actually provides better codebook diversity by allowing the quantizer to distinguish between centroids that decode to the same odd values. Interestingly, centroids with value 0 (the main bug fix target) are extremely rare in the learned grid (since centroids barely drift from E8), so the fix had disproportionate negative effect on the neighbor list structure without providing meaningful benefit.
+
+**Reverted**. But the conceptual insight remains: the kmap/neighbor search uses raw centroid values, while inference uses odd-forced values. The key takeaway is that maintaining raw-value diversity in the neighbor list is MORE important than aligning with inference-time decoding — because centroids with the same odd-forced values but different raw values have the same decoded output, and the raw-value neighbor list acts as a useful tiebreaker that doesn't affect reconstruction quality.
 
