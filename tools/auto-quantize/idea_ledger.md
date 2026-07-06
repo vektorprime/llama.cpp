@@ -78,7 +78,7 @@
 | **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
 | **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **IMPROVEMENT (0.666162)** |
 | **083** | **Further soften weight exponent to 0.25 (from 0.30)** | **REGRESSION (0.679018, +1.93%)** |
-| **088** | **Weight ratio clamping per sub-block max/min ≤5** | **PENDING** |
+| **088** | **Weight ratio clamping per sub-block max/min ≤5** | **REGRESSION (0.794, +19.2%)** |
 
 ---
 
@@ -1036,4 +1036,6 @@ This preserves the ranking and relative spacing between elements while capping t
 **Expected**: KL improvement from 0.666162 (Δ ~0.002-0.005, ~0.3-0.8% relative). The effect may be modest because exp-082's exponent 0.30 already softens the weight profile considerably. But for the tail of sub-blocks with extreme outliers (common in attention tensors where a few elements dominate), clamping should improve overall balance.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~15 lines added after line 3861).
+
+**Result**: KL=0.794320 — REGRESSION (Δ = +0.128158, +19.2% from best 0.666162). Weight clamping per sub-block is actively harmful — it compresses the weight dynamic range, making the quantizer LESS selective. The exponent 0.30 already provides sufficient softening; adding clamping on top over-softens the weights, causing the d optimization and index selection to deprioritize important elements. The compression formula `min_w + (weight[i] - min_w) * scale` preserves ranking but reduces the absolute weight ratios that the quantizer's optimization relies on. Reducing a 10:1 ratio to 5:1 means the d optimization gives 2x more error tolerance to high-weight elements than it should. **Reverted**.
 
