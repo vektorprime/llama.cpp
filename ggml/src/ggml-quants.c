@@ -3858,7 +3858,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
             float s2 = 0.0f;
             for (int i = 0; i < 32; ++i) s2 += xb[i]*xb[i];
             sigma2_per_ib[ib] = s2 / 32.0f;
-            for (int i = 0; i < 32; ++i) weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.35f);
+            for (int i = 0; i < 32; ++i) weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
             for (int i = 0; i < 32; ++i) waux[i] = sqrtf(weight[i]);
             for (int k = 0; k < 4; ++k) {
                 int nflip = 0;
