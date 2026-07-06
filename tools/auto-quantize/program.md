@@ -10,20 +10,21 @@ Minimize **KL divergence** of IQ2_XXS-quantized models against the BF16 referenc
 by improving the quantization algorithm in `ggml/src/ggml-quants.c`.
 
 The IQ2_XXS type uses a 256-entry 8D codebook grid (stored as `uint64_t[256]`).
-The primary research direction is **per-tensor learned codebooks** — replacing
-the global E8-lattice grid with K-means-optimized grids per tensor, with
-companion `.iq2xxs_grids` GGUF file for storage and loading at inference time.
+The primary research direction is **per-category learned codebooks** — replacing
+the global E8-lattice grid with K-means++-optimized grids per tensor category
+(ATTN / MLP / OTHER), with companion `.iq2xxs_grids` GGUF file for storage and
+loading at inference time.
 
 ## Baselines
 
 | Experiment | KL | PPL | Same top P | Size | Notes |
 |-----------|-----|-----|------------|------|-------|
-| Unsloth UD-IQ2_XXS | **0.721** | 26.44 | 60.19% | 733 MB | Reference target — uses Unsloth's quantizer |
-| Our IQ2_XXS (Unsloth types) | **0.748** | 27.73 | 58.73% | 755 MB | Same type map as Unsloth, llama.cpp quantizer |
-| exp-002 best (error-aware + data-driven init) | 0.971 | 33.95 | 56.50% | 786 MB | Best per-tensor codebook learning result (OLD baseline types) |
+| Unsloth UD-IQ2_XXS | **0.721** | 26.44 | 60.19% | 733 MB | Reference target — Unsloth's quantizer |
+| **Our current best (exp-018)** | **0.724** | 26.46 | 60.34% | 755 MB | K-means++ init + per-category codebooks |
+| Our IQ2_XXS (Unsloth types, no learn) | 0.748 | 27.73 | 58.73% | 755 MB | Same type map, E8 lattice grid (no learning) |
 | Our IQ2_XXS (auto types, no learn) | 0.993 | 34.75 | 55.89% | 776 MB | Old baseline with auto-assigned types |
 
-**Current quantizer gap: KL Δ = 0.027 (3.8%)** — this is the target for codebook learning improvements.
+**Current quantizer gap: KL Δ = 0.003 (0.4%)** from Unsloth. K-means++ closed 98% of the gap.
 
 ## Models and Data
 
@@ -125,11 +126,10 @@ q8_0 (QK8_0=32) handles skinny matrices correctly — pads internally.
 
 ## IQ2_XXS Codebook Learning Protocol
 
-### Step 1: Quantize with K-means learning
+**Quantization with learning takes ~1 minute (exp-031 optimization: 9.4x speedup).**
+Always allow at least 5 minutes when running via sub-agent. Pass `-t 5m` to bash commands.
 
-**Quantization may take up to 30 minutes with learning enabled.** Always pass
-`--timeout`/`-t 120m` when running via sub-agent or automation, and do not
-kill the process unless it exceeds 120 minutes.
+### Step 1: Quantize with codebook learning (--iq2xxs-learn)
 
 ```bash
 rm -f /tmp/learned.gguf /tmp/learned.gguf.iq2xxs_grids
@@ -141,11 +141,16 @@ rm -f /tmp/learned.gguf /tmp/learned.gguf.iq2xxs_grids
   /tmp/learned.gguf IQ2_XXS
 ```
 
-This calls `iq2xxs_learn_grid()` in `ggml/src/ggml-quants.c` for each IQ2_XXS
-tensor BEFORE quantization. The learned grid replaces the global E8 lattice grid
-for that tensor. Grids are saved to `{output}.iq2xxs_grids` companion file.
+This calls `iq2xxs_learn_grid()` for each IQ2_XXS tensor BEFORE quantization,
+using per-category codebooks (ATTN/MLP/OTHER) with K-means++ initialization.
+Grids are saved to `{output}.iq2xxs_grids` companion file.
 
-### Step 2 (baseline, no learning):
+**Never remove per-category sharing.** Exp-008 and exp-016 both tried per-tensor
+(independent grids without category aggregation) and produced catastrophic
+regression (KL=12.4). The category aggregation across ~30 tensors provides
+essential sample diversity for stable K-means convergence.
+
+### Step 2: Baseline (E8 lattice grid, no learning):
 
 ```bash
 rm -f /tmp/quantized-model.gguf
