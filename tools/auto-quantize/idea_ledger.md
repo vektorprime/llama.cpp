@@ -69,7 +69,7 @@
 | 072 | Quantization-Aware Centroid Refinement (QAT) | REGRESSION (0.702) |
 | 073 | Joint d+level optimization (exhaustive level search during d opt) | CATASTROPHIC (1.078) |
 | 074 | Level-Perturbation Centroid Search (LPCS) | REGRESSION (0.752) |
-| 075 | L1 kmap/neighbor metric (align with L1 evaluation) | PENDING |
+| 075 | L1 kmap/neighbor metric (align with L1 evaluation) | null (0.699) |
 
 ---
 
