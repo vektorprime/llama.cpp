@@ -74,12 +74,3 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Result**: KL = 0.716172 (identical to exp-034 best). PPL = 26.216, Same top p = 60.492%. **Null result** — lambda=0.15 too weak. K-means starting from E8 already stays near E8 after 20 iterations; centroids barely drift. Regularization is redundant when warm-start is already E8.
 
 **Lesson**: E8 regularization is unnecessary because centroids don't drift far from E8 origins with current training (1 tensor, 20 iters, 16384 samples).
-
-### exp-045: 2-pass iterative grid-scale refinement during quantization
-**Hypothesis**: The scale refinement block (re-quantize at `id=1/scale`, then LS-optimize scale) runs once. For blocks where the LS scale refinement significantly shifts from the best candidate scale, the grid indices chosen with the pre-refinement scale may be suboptimal for the refined scale. Adding a second pass (re-quantize with refined scale, re-refine scale) performs coordinate descent between grid indices and scale, converging to a better joint optimum.
-
-**Implementation**: In `quantize_row_iq2_xxs_impl`, wrap the refinement block (lines 3927-3952) in a 2-iteration loop.
-
-**Expected**: Marginal KL improvement (0.0001-0.0005) for blocks with unusual weight distributions where scale refinement is large.
-
-Note: exp-043 tried a combined change (wider search ±12 step 0.2 + 2 iteration refinement) and regressed. This experiment keeps the search range unchanged and only adds the second refinement iteration — isolating the effect of iterative refinement.
