@@ -51,6 +51,7 @@
 | 054 | Post-d grid index recomputation (buggy) | catastrophic |
 | **055** | **Post-d grid index recomputation (corrected)** | **IMPROVEMENT (0.710657)** |
 | 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | REGRESSION (0.795) |
+| 057 | Fix odd-value forcing in kmap construction and neighbor search | PENDING |
 
 ---
 
@@ -271,4 +272,20 @@ Both steps are safe because: (a) d optimization only evaluates candidates withou
 **Expected**: Small KL improvement (Δ ~0.0005-0.002) from 0.710657. The coordinate descent should better align d with the actual quantized-scale grid indices.
 
 **Result**: KL=0.794917 — REGRESSION (Δ = +0.084260, +11.9% from best 0.710657). The second d optimization changed the superblock scale `d`, which changed all 4-bit scale levels `l` via `nearest_int(0.5*(id*scales[ib]-1))`. The post-d grid indices (G2) were optimized for the original quantized scale `d1*(2*l1+1)`. With `d2 ≠ d1`, the new scale `d2*(2*l2+1)` mismatched G2, causing higher error. The ±1 refinement further compounded the mismatch by independently adjusting sub-block levels, breaking the joint d balance. **Lesson**: Grid indices and quantized scale must be optimized jointly — changing d after grid selection invalidates the indices. This is the same failure mode as exp-045 (coordinate descent between grid and scale overfits).
+
+### exp-057: Fix odd-value forcing in kmap construction and neighbor search (correctness fix)
+**Hypothesis**: The kmap construction and neighbor search use raw int8 centroid values, but the actual inference-time decoding forces odd values via `2*((pg[i]-1)/2)+1`. For learned grids with even-valued centroids (allowed by error-aware snap), this causes:
+1. **kmap index computation** uses `(aux8[k]-1)/2` with `uint8_t` arithmetic. For centroid value 0, `(0-1)/2` wraps to 127 (out of range), making the centroid invisible to the kmap direct path. For values 2/4/6, the computation aliases with odd values 1/3/5, losing unique mapping.
+2. **Neighbor distance computation** in kmap building uses `(pg[k]-pos[k])^2` with raw values. For even centroids, the raw distance is larger than the odd-forced distance, causing overestimated distances that may exclude good centroid candidates from the neighbor list.
+3. **Neighbor scoring** in `iq2_find_best_neighbour()` evaluates `scale * pg[i]` (raw value) instead of `scale * odd_forced(pg[i])` (inference-time value). For even-valued centroids, the scaled reconstruction uses a value that differs from what inference actually produces.
+
+By fixing all three to use odd-forced values (`2*((v-1)/2)+1`), the quantizer's selection criteria match the actual inference-time decoding. This is a **correctness fix** — structurally different from all prior experiments (which modified K-means training, scale search, or neighbor depth).
+
+**Implementation**:
+1. `iq2xxs_rebuild_map_and_neighbours()`: Cast aux8 to int8_t before `(v-1)/2` to avoid unsigned wrap (line 3362). Use odd-forced `pg[k]` in neighbor distance (lines 3395, 3450).
+2. `iq2_find_best_neighbour()`: Use `2*((pg[i]-1)/2)+1` instead of raw `pg[i]` for reconstruction evaluation (line 3802).
+
+**Expected**: KL improvement from 0.710657. The fix aligns the quantizer's centroid evaluation with the actual inference-time decoding. Even-valued centroids (a minority but present due to error-aware snap) will now be correctly ranked and selected by the neighbor search, improving quantization quality. Expect ΔKL ~0.0003-0.0010.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — three edits in `iq2xxs_rebuild_map_and_neighbours()` and one edit in `iq2_find_best_neighbour()`.
 
