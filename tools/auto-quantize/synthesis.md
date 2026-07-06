@@ -32,7 +32,38 @@ Sharpening post-d from 0.35 to 0.40 (keeping d-opt at 0.35) produced KL 0.663748
 
 Changing the d optimization from sum-of-errors to max-of-sub-block-errors regressed KL to 0.673006 (+1.66%). The max objective is too conservative — it selects d to minimize the worst sub-block's error at the expense of the other three. The sum objective correctly balances all sub-blocks, finding d that minimizes total weighted reconstruction error.
 
-**9 consecutive experiments since exp-093 (KL 0.662001) without improvement**: exp-094 through exp-103 are all null or regression. This confirms the system is at a genuine local optimum within the current IQ2_XXS format and algorithm.
+### exp-104: Tighter d range ±15% — null
+
+Tightening the d optimization range from ±16% to ±15% (61 vs 65 candidates) produced KL 0.663061, within 0.25σ of best. The edge candidates at ±16% are rarely selected as optimal d — removing them has no measurable effect.
+
+**10 consecutive experiments since exp-093 (KL 0.662001) without improvement**: exp-094 through exp-104 are all null or regression. The system is at a genuine local optimum within the current IQ2_XXS format and algorithm.
+
+## Final Best Configuration (exp-093)
+
+| Parameter | Value |
+|-----------|-------|
+| KL divergence | **0.662001** |
+| PPL | 25.25 |
+| Same top p | 62.00% |
+| Model size | 754.89 MiB |
+| Quantize time | ~356s (5.9 min) |
+| Weight main exponent | 0.30 |
+| Weight d-opt/post-d exponent | 0.35 / 0.35 |
+| waux formula | `powf(weight, 0.20f)` (eff exp 0.06) |
+| sigma2 granularity | Per-sub-block (32 elem) |
+| d optimization | 65 candidates, 0.5% step, ±16% range |
+| Post-d refinement | Enabled (grid index recomputation with quantized scale) |
+| nwant | 8 |
+| K-means | Single global grid, E8 warm-start, 20 iters, 1 trial |
+| Grid learning | Single tensor, 16384 samples |
+
+## Future Directions (Format Changes Required)
+
+1. **Multi-codebook quantization**: Per-sub-block or per-tensor-type codebook selection
+2. **Non-uniform scale level spacing**: Replace uniform 2*l+1 decoding
+3. **Residual quantization**: Second pass encoding the residual
+4. **Per-element adaptive bit allocation**: Variable bit widths per element
+5. **Gain-shape weight representation**: Decouple magnitude from direction
 
 ## Plateau broken by waux softening
 
