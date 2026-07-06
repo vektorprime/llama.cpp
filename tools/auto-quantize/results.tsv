@@ -43,3 +43,4 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-04T22:55:00	exp-028	3f7f5db0e	3f4fcf6f0	K-means with 2-bit truncated distance — quantize crashed (incomplete model), reverted	failed_quantize					754.89			
 2026-07-04T22:58:00	exp-029	d6048d4f2	42fd67a4d	Match K-means weights to quant formula — quantize crashed, reverted	failed_quantize					754.89			
 
+2026-07-06T00:20:00	exp-032	7a46b77e20751fdc22096a7987e86626e85d271a	bb34cd08e	Accumulated cross-tensor K-means++ (65536 samples, 3 trials E8+2KMPP, 40 iters) — REGRESSION: KL worse than E8 baseline	regression	0.729535	IQ2_XXS			754.89	61.0		

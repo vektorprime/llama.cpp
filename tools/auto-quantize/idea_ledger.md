@@ -44,3 +44,10 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Hypothesis**: K-means++ initialization produces better-spread initial centroids than random initialization. Since centroids start closer to their final positions, fewer iterations are needed for convergence. Reducing from 60→40 iterations should maintain the same grid quality while cutting quantize time by ~30%.
 
 **Expected**: KL stays at 0.724 (no regression) while quantize time drops from ~52 min to ~35 min.
+
+## Session: 2026-07-06
+
+### exp-033: Increase neighbor search depth nwant=2→4 for learned grids
+**Hypothesis**: The kmap fallback neighbor search uses `nwant=2` (2 unique distance levels) to find candidate grid points when a 2-bit pattern isn't directly in the map. For E8 lattices with regular structure, 2 levels suffice. But learned K-means grids lack this symmetry — nearby grid points span more distance levels. Increasing to `nwant=4` broadens the candidate pool during quantization, improving the probability of finding the true nearest-neighbor centroid for off-map patterns.
+
+**Expected**: Small KL reduction (0.001-0.003) since learned grids may benefit from wider neighbor search during quantization.

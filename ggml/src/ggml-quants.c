@@ -3345,7 +3345,7 @@ static void iq2xxs_rebuild_map_and_neighbours(void) {
     const int gindex = 0;
     const int grid_size = 256;
     const int kmap_size = 43692;
-    const int nwant = 2;
+    const int nwant = 4;
 
     uint64_t * kgrid_q2xs = iq2_data[gindex].grid;
     GGML_ASSERT(kgrid_q2xs);
