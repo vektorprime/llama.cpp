@@ -4025,6 +4025,61 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
             l = MAX(0, MIN(15, l));
             q2[2*ib+1] |= ((uint32_t)l << 28);
         }
+
+        /* Post-d-optimization grid index refinement:
+         * Recompute each 8D chunk's grid indices using the final quantized scale
+         * d*(2*l+1) instead of the continuous scale used during initial quantization.
+         * Uses fabsf(xb[]) directly to avoid stale xval[] (bug fixed from exp-054). */
+        for (int ib = 0; ib < QK_K/32; ++ib) {
+            if (scales[ib] <= 0.0f) continue;
+            int l = (q2[2*ib+1] >> 28) & 0xF;
+            float scale_q = d * (2.0f*l + 1.0f);
+            float id_q = 1.0f / scale_q;
+            const float * xb = xbl + 32*ib;
+            const float * qw = quant_weights + QK_K*ibl + 32*ib;
+            for (int k = 0; k < 4; ++k) {
+                float wtmp[8];
+                float xabs[8];
+                for (int i = 0; i < 8; ++i) {
+                    xabs[i] = fabsf(xb[8*k+i]);
+                    wtmp[i] = qw[8*k+i] * sqrtf(sigma2 + xb[8*k+i]*xb[8*k+i]);
+                }
+                uint16_t u = 0;
+                for (int i = 0; i < 8; ++i) {
+                    int li = nearest_int(0.5f * (id_q * xabs[i] - 1.0f));
+                    li = MAX(0, MIN(kMaxQ-1, li));
+                    u |= (li << 2*i);
+                }
+                int new_gidx = kmap_q2xs[u];
+                if (new_gidx < 0) {
+                    int8_t Ltmp[8];
+                    const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u] - 1;
+                    new_gidx = iq2_find_best_neighbour(neighbours, kgrid_q2xs, xabs, wtmp, scale_q, Ltmp);
+                }
+                uint32_t old_gidx = (q2[2*ib+0] >> (8*k)) & 0xFF;
+                if (new_gidx != (int)old_gidx) {
+                    const int8_t * pg_new = (const int8_t *)(kgrid_q2xs + new_gidx);
+                    const int8_t * pg_old = (const int8_t *)(kgrid_q2xs + old_gidx);
+                    uint8_t signs_k = (q2[2*ib+1] >> (7*k)) & 0x7F;
+                    float err_new = 0.0f, err_old = 0.0f;
+                    for (int i = 0; i < 8; ++i) {
+                        float c_new = (float)(2 * ((pg_new[i] - 1) / 2) + 1);
+                        float c_old = (float)(2 * ((pg_old[i] - 1) / 2) + 1);
+                        if (signs_k & (1 << i)) { c_new = -c_new; c_old = -c_old; }
+                        float d_new = xb[8*k+i] - scale_q * c_new;
+                        float d_old = xb[8*k+i] - scale_q * c_old;
+                        float w = qw[8*k+i] * sqrtf(sigma2 + xb[8*k+i]*xb[8*k+i]);
+                        err_new += w * d_new * d_new;
+                        err_old += w * d_old * d_old;
+                    }
+                    if (err_new < err_old) {
+                        q2[2*ib+0] &= ~(0xFF << (8*k));
+                        q2[2*ib+0] |= ((uint32_t)new_gidx << (8*k));
+                    }
+                }
+            }
+        }
+
         memcpy(y[ibl].qs, q2, QK_K/4);
     }
 }
