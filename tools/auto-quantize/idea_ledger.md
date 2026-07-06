@@ -11,7 +11,7 @@
 | 104 | Tighter d optimization range ±15% at 0.5% step (61 candidates) | NULL |
 | 105 | Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug) | REGRESSION (0.731) |
 | 106 | Multi-tensor incremental K-means refinement (sequential) on 5 tensors after initial E8 warm-start | NULL (0.662001) |
-| 107 | Widen initial per-sub-block scale search (is-loop) from ±0.6 to ±1.2 range (25 candidates) | PENDING |
+| 107 | Widen initial per-sub-block scale search (is-loop) from ±0.6 to ±1.2 range (25 candidates) | FAILED (quantize timeout >7min) |
 
 ---
 
@@ -1744,3 +1744,7 @@ for (int is = -12; is <= 12; ++is) {
 **Risk**: LOW. One-line change, no coupling with other stages. Extra computation: 25/13 ≈ 1.9x more is evaluations per sub-block, negligible time cost.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — line 3900.
+
+**Result**: FAILED — quantize exceeded 7-minute hard limit (>480s). The wider is-loop (25 candidates vs 13) approximately doubled per-sub-block computation time. For 95 IQ2_XXS tensors × ~100 superblocks × 4 sub-blocks ≈ 38,000 sub-blocks, each with 25 instead of 13 scale candidates (each requiring kmap lookup + neighbor search for 4 chunks), the extra computation pushed total time beyond the 7-minute limit. **Reverted**.
+
+**Lesson**: The is-loop is a significant portion of the quantize time (each iteration does per-chunk kmap lookup and, for ~5% of off-map chunks, neighbor search). Doubling the range to 25 candidates added ~35% to total quantize time, crossing the 7-minute budget. The 13-candidate range (−6..6) is optimal for both quality AND time budget.
