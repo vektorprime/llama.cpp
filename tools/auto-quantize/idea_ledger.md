@@ -404,3 +404,5 @@ for (int is = -12; is <= 12; ++is) {  // ±24%, 2% step, 25 candidates
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
+**Result**: KL=0.712639 — REGRESSION (Δ = +0.007771, +1.1% from best 0.704868). The wider ±24% range includes d candidates that produce level quantization mismatched with the current grid indices. For superblocks where a far-from-center d is selected, the 4-bit levels computed from that d don't match the indices, causing higher reconstruction error. The ±16% range at 2% step (17 candidates, exp-061) is optimal — wide enough to cover the relevant d region but narrow enough to avoid selection of poorly-matched candidates. **Reverted**.
+
