@@ -28,6 +28,12 @@ The sigma2 baseline provides essential structure:
 
 Sharpening post-d from 0.35 to 0.40 (keeping d-opt at 0.35) produced KL 0.663748, within 0.4σ of best 0.662001. Null result. The post-d exponent is on a broad plateau — the asymmetry between main (0.30) and post-d (0.35) is already optimal.
 
+### exp-103: Max-of-sub-block-errors d objective — regression
+
+Changing the d optimization from sum-of-errors to max-of-sub-block-errors regressed KL to 0.673006 (+1.66%). The max objective is too conservative — it selects d to minimize the worst sub-block's error at the expense of the other three. The sum objective correctly balances all sub-blocks, finding d that minimizes total weighted reconstruction error.
+
+**9 consecutive experiments since exp-093 (KL 0.662001) without improvement**: exp-094 through exp-103 are all null or regression. This confirms the system is at a genuine local optimum within the current IQ2_XXS format and algorithm.
+
 ## Plateau broken by waux softening
 
 After 12 consecutive null/regression experiments (exp-083 through exp-095), **exp-093 broke the plateau** by softening the waux weight from `sqrtf(weight)` (effective exponent 0.15) to `powf(weight, 0.20)` (effective exponent 0.06). The neighbor search for off-map patterns (~5% of chunks) benefits from more uniform weighting, letting the global grid structure dominate centroid selection over noisy per-element importance estimates.
