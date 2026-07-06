@@ -69,6 +69,7 @@
 | 072 | Quantization-Aware Centroid Refinement (QAT) | REGRESSION (0.702) |
 | 073 | Joint d+level optimization (exhaustive level search during d opt) | CATASTROPHIC (1.078) |
 | 074 | Level-Perturbation Centroid Search (LPCS) | REGRESSION (0.752) |
+| 075 | L1 kmap/neighbor metric (align with L1 evaluation) | PENDING |
 
 ---
 
@@ -684,4 +685,37 @@ Cost: ~4-8 alternative centroid evaluations per 8D chunk via fast kmap lookup (O
 **Expected**: Small KL improvement (Δ ~0.001-0.003). The kmap L2 criterion is usually close to optimal, but for edge cases with non-uniform importance weights and the quantized scale mismatch, the perturbed-pattern centroid may reduce error. Effect compounds across 95 IQ2_XXS tensors × ~100 superblocks each.
 
 **Result**: KL=0.752031 — REGRESSION (Δ = +0.053022, +7.6% from best 0.699009). The level-perturbation search introduces noise into centroid selection. For each chunk, trying alternative 8-bit patterns (via ±1 level perturbation) finds centroids that are better by L2 distance to the perturbed pattern, but worse by weighted reconstruction error at the actual scale. The kmap's L2 criterion, despite being an imperfect proxy, is more robust than the perturbed-pattern approach because it directly selects the centroid that minimizes the mapping from the ACTUAL (not perturbed) pattern. The perturbation outer loop (p over 0..7, delta over ±1) generates patterns that are geometrically close to the correct pattern but map to centroids with mismatched magnitude profiles, increasing reconstruction error. **Reverted**.
+
+### exp-075: L1 distance for kmap and neighbor list construction (align with quantizer evaluation criterion)
+**Hypothesis**: The kmap/neighbor list for off-map 2-bit patterns is built using L2 (squared Euclidean) distance in `iq2xxs_rebuild_map_and_neighbours()`:
+```c
+d2 += (pg[k] - pos[k])*(pg[k] - pos[k]);
+```
+But the quantizer's `iq2_find_best_neighbour()` evaluates candidates by **weighted L1**:
+```c
+float diff = scale*q - xval[i];
+d1 += weight[i]*fabsf(diff);
+```
+
+This metric mismatch means the neighbor list is sorted by a criterion that differs from the evaluation criterion. With `nwant=8` truncation (8 unique distance levels), the L2-sorted list may exclude centroids that are closer by L1 and would score better in the evaluation. By switching to L1 distance for building the neighbor list, the sort order matches the evaluation criterion, ensuring that the first `nwant` L1-distance-levels contain the most promising candidates.
+
+**Why this hasn't been tried**: All prior experiments focused on:
+- Codebook training (K-means variants, init, distance metrics for assignment)
+- Scale optimization (d step/range, level selection, post-d refinement)
+- Neighbor search depth (nwant) and scoring (dot-product, odd-forced)
+- Alternative centroid selection (kmap2, level perturbation)
+
+The kmap/neighbor metric (L2) has been unchanged since the original E8 implementation. It was assumed optimal for the E8 lattice where L2 and L1 are highly correlated for centroid-on-grid patterns. With learned K-means grids where centroids can be at ANY int8 value (not just odd), L1 and L2 may disagree more frequently.
+
+**Implementation**: Two lines changed in `iq2xxs_rebuild_map_and_neighbours()`:
+```c
+// Before:
+d2 += (pg[k] - pos[k])*(pg[k] - pos[k]);
+// After:
+d2 += abs((int)pg[k] - (int)pos[k]);
+```
+
+**Expected**: Marginal KL improvement (Δ ~0.001-0.003) from 0.699009. The effect is limited because L1 and L2 rankings are correlated for integer-valued centroids, and most neighbors within nwant=8 distance levels are similar. But for edge cases where L1 and L2 disagree, the corrected sorting could find better centroids for off-map patterns.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — two lines in `iq2xxs_rebuild_map_and_neighbours()`.
 
