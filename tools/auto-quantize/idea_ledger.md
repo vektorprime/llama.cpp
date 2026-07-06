@@ -1219,6 +1219,8 @@ for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.20f);
 
 **Files changed**: `ggml/src/ggml-quants.c` only — line 3862.
 
+**Result**: KL=0.662001 — IMPROVEMENT (Δ = -0.004161, -0.62% from best 0.666162). NEW BEST RESULT. The softer waux (powf 0.20, effective exponent 0.06) significantly improves neighbor search for off-map patterns. The hypothesis is confirmed: the neighbor search benefits from more uniform weighting (effective exp 0.06) than the main quantization path (exp 0.30). Widening the asymmetry from pre-d neighbor (0.06) to main (0.30) to post-d refinement (0.35) provides better centroid selection at each stage for their respective roles. PPL slightly increased from 25.11 to 25.25, but KL improved and same-top-p improved from 61.96% to 62.00%. **KEPT — new best.**
+
 ---
 
 ## Session: 2026-07-06 (continued) — Quantizer indexing change
