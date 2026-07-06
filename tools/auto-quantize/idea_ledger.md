@@ -70,6 +70,7 @@
 | 073 | Joint d+level optimization (exhaustive level search during d opt) | CATASTROPHIC (1.078) |
 | 074 | Level-Perturbation Centroid Search (LPCS) | REGRESSION (0.752) |
 | 075 | L1 kmap/neighbor metric (align with L1 evaluation) | null (0.699) |
+| **076** | **Weight formula: qw*(sigma2+xb^2) instead of qw*sqrt(sigma2+xb^2)** | **(pending)** |
 
 ---
 
@@ -718,4 +719,33 @@ d2 += abs((int)pg[k] - (int)pos[k]);
 **Expected**: Marginal KL improvement (Δ ~0.001-0.003) from 0.699009. The effect is limited because L1 and L2 rankings are correlated for integer-valued centroids, and most neighbors within nwant=8 distance levels are similar. But for edge cases where L1 and L2 disagree, the corrected sorting could find better centroids for off-map patterns.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — two lines in `iq2xxs_rebuild_map_and_neighbours()`.
+
+---
+
+## Session: 2026-07-06 (continued) — Quantizer weight formula change
+
+### exp-076: Weight formula change — `qw * (sigma2 + xb^2)` instead of `qw * sqrt(sigma2 + xb^2)`
+**Hypothesis**: The quantizer's weight formula `weight[i] = qw[i] * sqrt(sigma2 + xb[i]^2)` combines imatrix importance with element magnitude via the RMS. This formula has been unchanged since the original implementation and has never been experimented with. By removing the `sqrtf()` and using `w[i] = qw[i] * (sigma2 + xb[i]^2)`, high-magnitude elements get proportionally MORE weight relative to low-magnitude elements. This sharpens the quantizer's focus on preserving the largest weight values, which contribute most to the model's output.
+
+This is fundamentally different from all prior experiments:
+- **No d optimization change**: The d loop (65 candidates, 0.5% step, ±16% range) stays unchanged
+- **No kmap change**: kmap construction and lookup stay unchanged  
+- **No K-means change**: Grid training (sample selection, assignment, centroid update) stays unchanged
+- **No level/scale change**: Level selection stays as `nearest_int`
+- It's a **coordinated change to the weight formula** that affects ALL stages of the quantizer uniformly (scale selection, neighbor search, d optimization, post-d refinement) — every component uses the same new formula via `weight[]` and `waux[]` derived from it.
+
+The change is minimal (remove `sqrtf(` in 4 places) but affects the fundamental trade-off: elements with larger `|xb|` contribute more to the weighted error, so the quantizer prioritizes them. Large weight values dominate the model's output, so better preserving them should reduce KL divergence.
+
+**Implementation**: Change 4 lines in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before:
+weight[i] = qw[i] * sqrtf(sigma2 + xb[i]*xb[i]);
+// After:
+weight[i] = qw[i] * (sigma2 + xb[i]*xb[i]);
+```
+And the 3 other occurrences (d optimization loop, post-d refinement).
+
+**Expected**: KL improvement from 0.699009. The effect is uncertain but this is a genuinely unexplored dimension. If it works, it suggests the sqrt was overly smoothing the weight distribution and the sharper formula better targets quantization effort. If it regresses, it confirms the RMS weight heuristic is optimal.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — 4 lines in `quantize_row_iq2_xxs_impl()`.
 
