@@ -86,7 +86,7 @@
 | 089 | Intra-sub-block weight normalization | REGRESSION (0.679) |
 | 090 | Remove sqrtf from waux (align neighbor weight) | REGRESSION (0.682) |
 | 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
-| **092** | **Adaptive weight exponent per sub-block via CV** | **PENDING** |
+| 092 | Adaptive weight exponent per sub-block via CV | REGRESSION (0.680, +2.1%) |
 
 ---
 
