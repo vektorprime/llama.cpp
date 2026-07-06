@@ -1071,3 +1071,37 @@ The key insight: the normalization applies uniformly to ALL four weight computat
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~10 lines added, 3 lines modified).
 
+---
+
+### exp-090: Remove sqrtf from waux — align neighbor search weight with rest of quantizer
+
+**Hypothesis**: The `waux` array is used exclusively in `iq2_find_best_neighbour()` for the off-map fallback neighbor search during grid index selection. Currently `waux[i] = sqrtf(weight[i])`, which gives the neighbor search HALF the weight exponent (0.15) of the level assignment and scale evaluation stages (0.30). This is an inconsistency:
+
+| Stage | Weight formula | Effective exponent |
+|-------|---------------|-------------------|
+| Level assignment (line 3892: `make_qp_quants`) | `weight[i]` | 0.30 |
+| Scale evaluation (line 3918-3949: `sumqx/sumq2`) | `weight[i]` | 0.30 |
+| **Neighbor search** (lines 3913, 3940) | `waux[i] = sqrtf(weight[i])` | **0.15** |
+| D optimization (line 4003) | original weight | 0.35 |
+| Post-d neighbor search (line 4058) | `wtmp[i]` | **0.35** (no sqrt) |
+
+The sqrt in waux is a historical artifact — the original `sqrtf(sigma2 + x^2)` time (exp-080 era) used sqrt for the weight itself, and the additional sqrtf on waux was carried forward without reconsideration. Now that we use `powf(..., 0.30f)` for `weight[i]`, the sqrt reduces the effective exponent to 0.15 — making the neighbor search nearly uniform in weighting, barely distinguishing between large and small elements.
+
+Critically, the **post-d refinement neighbor search (line 4058)** uses `wtmp[i] = qw[i] * powf(..., 0.35f)` DIRECTLY (no sqrt). So the same operation (neighbor search for grid index) uses different weighting in the main pass (sqrt) vs post-d (direct). This is structurally inconsistent.
+
+**Change**: Remove the sqrtf:
+```c
+// Before (line 3862):
+for (int i = 0; i < 32; ++i) waux[i] = sqrtf(weight[i]);
+// After:
+for (int i = 0; i < 32; ++i) waux[i] = weight[i];
+```
+
+**Expected**: The neighbor search now uses the same weight profile as the level assignment and scale stages. This should improve grid index selection for off-map patterns (which go through the neighbor search path), reducing the frequency of suboptimal index choices. KL improvement Δ ~0.0005-0.002.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — line 3862.
+
+---
+
+### exp-091: (Reserved)
+
