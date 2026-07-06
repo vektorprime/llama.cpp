@@ -72,7 +72,7 @@
 | 075 | L1 kmap/neighbor metric (align with L1 evaluation) | null (0.699) |
 | 076 | Weight formula: qw*(sigma2+xb^2) instead of qw*sqrt(sigma2+xb^2) | regression (0.837) |
 | 077 | Align K-means weights with quantizer (add sqrt factor) | null (0.699) |
-| **078** | **Per-sub-block sigma2 for adaptive weight formula** | **(pending)** |
+| **078** | **Per-sub-block sigma2 for adaptive weight formula** | **IMPROVEMENT (0.691085)** |
 
 ---
 

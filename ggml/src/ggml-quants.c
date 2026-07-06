@@ -3834,6 +3834,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
     block_iq2_xxs * y = vy;
 
     float scales[QK_K/32];
+    float sigma2_per_ib[QK_K/32];
     float weight[32];
     float xval[32];
     int8_t L[32];
@@ -3850,14 +3851,14 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
         float max_scale = 0;
 
         const float * xbl = x + QK_K*ibl;
-        float sumx2 = 0;
-        for (int i = 0; i < QK_K; ++i) sumx2 += xbl[i]*xbl[i];
-        float sigma2 = sumx2/QK_K;
 
         for (int ib = 0; ib < QK_K/32; ++ib) {
             const float * xb = xbl + 32*ib;
             const float * qw = quant_weights + QK_K*ibl + 32*ib;
-            for (int i = 0; i < 32; ++i) weight[i] = qw[i] * sqrtf(sigma2 + xb[i]*xb[i]);
+            float s2 = 0.0f;
+            for (int i = 0; i < 32; ++i) s2 += xb[i]*xb[i];
+            sigma2_per_ib[ib] = s2 / 32.0f;
+            for (int i = 0; i < 32; ++i) weight[i] = qw[i] * sqrtf(sigma2_per_ib[ib] + xb[i]*xb[i]);
             for (int i = 0; i < 32; ++i) waux[i] = sqrtf(weight[i]);
             for (int k = 0; k < 4; ++k) {
                 int nflip = 0;
@@ -3999,7 +4000,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                             if (signs_k & (1 << i)) cval = -cval;
                             float recon = scale_q * cval;
                             float diff = xb[8*k + i] - recon;
-                            float w = qw[8*k + i] * sqrtf(sigma2 + xb[8*k + i] * xb[8*k + i]);
+                            float w = qw[8*k + i] * sqrtf(sigma2_per_ib[ib] + xb[8*k + i] * xb[8*k + i]);
                             err += w * diff * diff;
                         }
                     }
@@ -4042,7 +4043,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                 float xabs[8];
                 for (int i = 0; i < 8; ++i) {
                     xabs[i] = fabsf(xb[8*k+i]);
-                    wtmp[i] = qw[8*k+i] * sqrtf(sigma2 + xb[8*k+i]*xb[8*k+i]);
+                    wtmp[i] = qw[8*k+i] * sqrtf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i]);
                 }
                 uint16_t u = 0;
                 for (int i = 0; i < 8; ++i) {
@@ -4068,7 +4069,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                         if (signs_k & (1 << i)) { c_new = -c_new; c_old = -c_old; }
                         float d_new = xb[8*k+i] - scale_q * c_new;
                         float d_old = xb[8*k+i] - scale_q * c_old;
-                        float w = qw[8*k+i] * sqrtf(sigma2 + xb[8*k+i]*xb[8*k+i]);
+                        float w = qw[8*k+i] * sqrtf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i]);
                         err_new += w * d_new * d_new;
                         err_old += w * d_old * d_old;
                     }
