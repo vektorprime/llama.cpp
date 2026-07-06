@@ -568,3 +568,22 @@ The structural blind spot: **For the ~96% of chunks with a DIRECT kmap match, th
 
 **Files changed**: `ggml/src/ggml-quants.c` only — ~40 lines added.
 
+### exp-070: Importance-weighted 2-bit level assignment during quantization
+**Hypothesis**: The 2-bit level `l_i = nearest_int(0.5*(id*xval-1))` that forms the kmap lookup pattern treats all 8 dimensions equally. However, per-dimension imatrix importance weights vary significantly (often 10x+ range within an 8D chunk). By boosting the effective value for high-importance dimensions before level assignment, the kmap centroid selection is biased toward centroids that better reconstruct important dimensions.
+
+**Implementation**: Multiply `xval[i]` by `(weight[i]/avg_w)^alpha` before computing the 2-bit level, where `weight[i]` is the full per-element weight (imatrix * sqrt(sigma2+x^2)) and `avg_w` is the arithmetic mean across the 8D chunk. alpha=0.3 for moderate effect. Applied in 3 places:
+1. Initial scale search level computation (line 3904)
+2. Final encoding level computation (line 3932)
+3. Post-d refinement level computation (line 4049)
+
+The neighbor search uses `waux[i] = sqrt(weight[i])` independently, preserving the weighted-L1 criterion. This is a one-way modification — the grid, kmap, inferface are unchanged.
+
+**Why this is different from all prior experiments**:
+- No experiment has modified the 2-bit LEVEL COMPUTATION to incorporate per-dimension importance
+- This changes centroid SELECTION during quantization, not grid training
+- One-way modification (only changes which centroid is selected for each 8D chunk)
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003). By biasing centroid selection toward important dimensions, the quantizer should better preserve the most critical weight values. alpha=0.3 is conservative enough to avoid excessive off-map patterns while providing meaningful weighting.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — ~10 lines added across 3 locations.
+
