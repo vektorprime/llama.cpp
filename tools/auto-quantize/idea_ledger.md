@@ -992,29 +992,15 @@ Increasing d opt/post-d from 0.35 to 0.40 widens the asymmetry gap from 0.05 to 
 
 ## Session: 2026-07-06 (continued) — Complete functional change to weight formula
 
-### exp-087: Linear-L1 magnitude weight formula (replace powf with 1+|xb|)
+### exp-087: Linear-L1 magnitude weight formula (replace powf with 1+|xb|) — REGRESSION
 
-**Hypothesis**: All prior weight formula experiments explored the power-law family `qw * (sigma2 + xb^2)^p`, varying exponent p from 1.0 down to 0.25. The optimal was p≈0.30. But this family has a fundamental structure: (1) shared sub-block sigma2 baseline, (2) squared magnitude xb^2, (3) power-law compression. Each of these was individually tuned but they're coupled — changing one changes the effective weighting profile.
+**Hypothesis**: All prior weight formula experiments explored the power-law family `qw * (sigma2 + xb^2)^p`, varying exponent p from 1.0 down to 0.25. The optimal was p≈0.30. A structurally different approach using linear-L1 magnitude `qw * (1 + |xb|)` could outperform the tuned power-law.
 
-A structurally different approach: use a **linear-L1 magnitude form** `qw * (1 + |xb|)` — no sigma2 baseline, no squaring, no power law. Just imatrix times per-element absolute magnitude with a constant floor of 1.
+**Implementation**: Replaced `powf(sigma2_per_ib + xb^2, 0.30f)` with `(1.0f + fabsf(xb[i]))` at all 4 weight formula locations. Removed `sigma2_per_ib` array and `s2` computation.
 
-The differences from the power-law family:
-1. **No sub-block coupling**: sigma2_per_ib tied all 4 sub-blocks together through a shared RMS baseline. The L1 form is per-element, so each element's weight depends only on its own magnitude, not the sub-block's global statistic. This decouples sub-blocks in the weight domain.
-2. **Linear growth**: |xb| grows linearly with element magnitude, unlike xb^2 which grows quadratically and then gets compressed through ^0.30. The linear form should give more weight to medium elements (|xb| ~1-10) relative to very large ones, compared to the power-law family.
-3. **No exponent tuning**: The form is parameter-free except for the floor constant (1). This removes a tuning axis entirely.
+**Result**: KL=0.723409 — CATASTROPHIC REGRESSION back to E8 baseline levels (0.7248). The linear-L1 form effectively disables all the per-sub-block sigma2 and exponent tuning benefits (exp-078 through exp-082). The power-law L2 form with tuned exponent is structurally necessary — the per-element adaptive weighting from `(sigma2_per_ib + xb^2)^p` provides essential selectivity that `(1 + |xb|)` completely lacks.
 
-The risk: L1 form may over-weight large elements or under-weight small ones. The `1+` floor prevents zero weight but may not be the right scaling for sub-blocks with very different intrinsic magnitudes. However, the quantizer's per-sub-block scale `d` and 4-bit levels already handle magnitude differences; the weight formula only needs to determine within-sub-block trade-offs, where absolute magnitude (not RMS-relative) is the natural metric.
+**Lesson**: The sigma2 baseline is critical — it provides a per-sub-block floor that prevents near-zero elements from getting zero weight (which `1+|xb|` does not adequately address because the `1+` constant is sub-block-agnostic). The power-law form with per-sub-block sigma2 is the correct family for this quantizer. **Reverted.**
 
-**Implementation**: 4 lines changed in `quantize_row_iq2_xxs_impl()` (ggml/src/ggml-quants.c):
-```c
-// Before: weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
-// After:  weight[i] = qw[i] * (1.0f + fabsf(xb[i]));
-```
-Same change at the d optimization (was exponent 0.35) and post-d refinement (was exponent 0.35). Also removed `sigma2_per_ib` array and `s2` computation loop.
-
-**Expected**: Uncertain — this is a fundamentally different functional form. Best case: the linear-L1 form is more robust across tensor types and improves KL. Worst case: the per-element weight without sub-block statistics loses information, and KL regresses. The outcome will reveal whether the power-law form's complexity is necessary or if a simpler linear form suffices.
-
-**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
-
----
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`. (Reverted)
 
