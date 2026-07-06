@@ -65,3 +65,11 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Expected**: KL reduction from 0.7162 to ~0.710-0.714. Cross-tensor diversity should produce a more generally useful grid.
 
 **Result**: KL=2.379 (CATASTROPHIC regression). Normalization destroyed the relative magnitude differences within each 8D chunk — all samples became near equal (~32 across all dims), centroids collapsed to nearly identical vectors, and the grid lost all discriminative power. The quantizer's per-superblock scale `d` cannot compensate for loss of codebook diversity. **Lesson**: Normalization across tensors is not viable; the grid must capture magnitude differences within each 8-element block to represent weight patterns.
+
+### exp-040: E8-regularized K-means — blend centroids 15% toward E8 after each iteration
+**Hypothesis**: The E8 lattice grid provides excellent uniform coverage of the 8D space — all 256 centroids are well-separated and evenly distributed. Standard K-means improves reconstruction error by moving centroids toward data-dense regions, but this sacrifices the uniform coverage that helps the neighbor search find good matches during actual quantization. By applying a soft regularization that pulls each centroid slightly toward its E8 origin position after every K-means update (85% K-means + 15% E8 blend), we preserve data adaptation while maintaining the E8-like diversity that prevents centroid collapse and ensures all 256 entries contribute useful patterns during quantization.
+
+**Implementation**: After the standard centroid update in each K-means iteration, blend:
+`centroids_float[k][i] = 0.85 * centroids_kmeans[k][i] + 0.15 * e8_float[k][i]`
+
+**Expected**: KL reduction from 0.7162 to ~0.712-0.714. The regularization should prevent centroid over-specialization while preserving the adaptation gains that improved over the E8 baseline.
