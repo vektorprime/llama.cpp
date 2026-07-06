@@ -52,6 +52,8 @@
 | **055** | **Post-d grid index recomputation (corrected)** | **IMPROVEMENT (0.710657)** |
 | 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | REGRESSION (0.795) |
 | 057 | Fix odd-value forcing in kmap construction and neighbor search | REGRESSION (0.712) |
+| 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
+| **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
 ---
 
@@ -306,4 +308,23 @@ By requiring each index change to also reduce error at ±3% nearby scales (3-sca
 5. Final post-d index refinement with new d and levels
 
 **Expected**: KL improvement from 0.710657. The robust indices avoid the overfitting trap of exp-056, while the closed-form d optimization finds a genuinely better superblock scale for the actual inference-time grid indices. The final index refinement ensures indices match the new d. Combined effect should exceed exp-055 alone.
+
+### exp-059: Odd-forced centroid scoring in neighbor search only (not kmap)
+**Hypothesis**: The neighbor search in `iq2_find_best_neighbour()` scores candidate centroids using raw `pg[i]` values, but the inference-time reconstruction uses odd-forced values `2*((pg[i]-1)/2)+1`. The downstream d optimization and post-d refinement also use odd-forced values. This means the neighbor search can select a centroid that appears optimal with raw values but is suboptimal with odd-forced values.
+
+Exp-057 tried to fix this by applying odd-forcing to BOTH kmap construction AND neighbor scoring, but regressed (KL=0.712151). The regression was attributed to odd-forcing in kmap construction, which reduced neighbor list diversity by conflating centroids with different raw values that decode to identical odd values.
+
+This experiment applies odd-forcing ONLY to the neighbor scoring in `iq2_find_best_neighbour()`, WITHOUT changing the kmap construction or neighbor list generation. The neighbor list remains diverse (raw-value based), but the selection criterion correctly accounts for inference-time odd-forcing.
+
+**Implementation**: One-line change in `iq2_find_best_neighbour()` (ggml/src/ggml-quants.c:3802):
+```c
+// Before:
+float q = pg[i];
+// After:
+float q = (float)(2 * ((pg[i] - 1) / 2) + 1);
+```
+
+**Expected**: Small KL improvement (Δ ~0.0002-0.001). The scoring alignment ensures the neighbor search selects centroids that truly minimize the weighted reconstruction error given the odd-forced inference decoding. The effect is small because most centroids are already odd-valued in practice (centroids barely drift from E8), but for the minority of even-valued centroids, this corrects an error in the selection criterion.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — one line in `iq2_find_best_neighbour()`.
 
