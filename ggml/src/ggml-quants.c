@@ -3488,19 +3488,11 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     static int grid_learned = 0;
     if (grid_learned) return;
 
-    /* Cross-tensor accumulation with per-tensor L1 normalization.
-     * Collect samples from up to 3 IQ2_XXS tensors, normalize each tensor's
-     * samples to mean_abs=32.0, then pool and run K-means on the combined set.
-     * Normalization aligns inter-tensor magnitude differences so the grid learns
-     * shape patterns robust to scale — quantizer's per-superblock scale d compensates. */
-    static float * pooled_samples = NULL;
-    static float * pooled_weights = NULL;
-    static int pooled_count = 0;
-    static int tensor_counter = 0;
-    static const int max_tensors = 3;
-    static const int max_pooled = 16384 * 3 * 8; /* 3 tensors x 16384 samples x 8 dims */
-
-    tensor_counter++;
+    /* Single global grid: shared across ALL IQ2_XXS tensors regardless of type.
+     * More training data from diverse tensor types may produce a better grid. */
+    static uint64_t * global_grid = NULL;
+    static int global_tensor_count = 0;
+    global_tensor_count++;
 
     const int num_trials = 1;
     const int max_samples = 16384;
@@ -3511,60 +3503,19 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     int64_t n_samples = n_total / 8;
     if (n_samples > max_samples) n_samples = max_samples;
 
-    /* Allocate pool on first call */
-    if (tensor_counter == 1) {
-        pooled_samples = (float *)malloc(max_pooled * sizeof(float));
-        pooled_weights = (float *)malloc(max_pooled * sizeof(float));
-        GGML_ASSERT(pooled_samples && pooled_weights);
-        pooled_count = 0;
-    }
-
-    /* Sample from this tensor (temp buffer) */
-    float * tensor_samples = (float *)malloc(8 * n_samples * sizeof(float));
-    float * tensor_weights = (float *)malloc(8 * n_samples * sizeof(float));
-    GGML_ASSERT(tensor_samples && tensor_weights);
+    float * samples = (float *)malloc(8 * n_samples * sizeof(float));
+    float * sample_weights = (float *)malloc(8 * n_samples * sizeof(float));
+    GGML_ASSERT(samples && sample_weights);
 
     int64_t step = n_total / 8 / n_samples;
     if (step < 1) step = 1;
-
-    /* First pass: read samples and compute mean L1 norm for normalization */
-    double total_abs = 0.0;
-    int64_t sampled = 0;
     for (int64_t s = 0; s < n_samples; ++s) {
         int64_t idx = (s * step) % (n_total / 8);
         for (int k = 0; k < 8; ++k) {
-            float val = fabsf(x[idx*8 + k]);
-            tensor_samples[8*s + k] = val;
-            tensor_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
-            total_abs += (double)val;
+            samples[8*s + k] = fabsf(x[idx*8 + k]);
+            sample_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
         }
-        sampled++;
     }
-    float mean_abs = (float)(total_abs / (double)(8 * sampled));
-    float norm_factor = 32.0f / (mean_abs + 1e-10f);
-
-    /* Normalize samples and add to pool */
-    int space = max_pooled - pooled_count;
-    int to_add = (int)(8 * n_samples);
-    if (to_add > space) to_add = space;
-    for (int i = 0; i < to_add; ++i) {
-        pooled_samples[pooled_count + i] = tensor_samples[i] * norm_factor;
-        pooled_weights[pooled_count + i] = tensor_weights[i];
-    }
-    pooled_count += to_add;
-
-    free(tensor_samples);
-    free(tensor_weights);
-
-    /* Don't run K-means until we've seen enough tensors */
-    if (tensor_counter < max_tensors) return;
-
-    /* Use pooled samples for K-means */
-    float * samples = pooled_samples;
-    float * sample_weights = pooled_weights;
-    n_samples = pooled_count / 8;
-
-    if (n_samples < grid_size) return;
 
     uint64_t * best_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
     GGML_ASSERT(best_grid);
@@ -3694,11 +3645,12 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                     if (ws > 0.0f) {
                         centroids_float[8*k + i] = new_centroids[8*k + i] / ws;
                     }
+                    /* else: empty cluster — leave centroid unchanged */
                 }
             }
         }
 
-        /* --- Error-aware int8 snap --- */
+        /* --- Error-aware int8 snap: try round-up and round-down, pick lower error --- */
         for (int k = 0; k < grid_size; ++k) {
             int8_t * pg = (int8_t *)(trial_grid + k);
             for (int i = 0; i < 8; ++i) {
@@ -3710,6 +3662,7 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 if (f_floor == f_ceil) {
                     pg[i] = (int8_t)f_floor;
                 } else {
+                    /* Compute weighted L2 error for floor vs ceil against assigned samples */
                     float err_floor = 0.0f, err_ceil = 0.0f;
                     for (int64_t s = 0; s < n_samples; ++s) {
                         if (assignments[s] == k) {
@@ -3725,8 +3678,12 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
             }
         }
 
+        /* --- Multi-round error-aware refinement ---
+         * After the initial snap, re-assign samples and do +/-1 gradient descent
+         * per centroid dimension to escape local minima. 3 rounds of refinement. */
         const int refine_rounds = 0;
         for (int round = 0; round < refine_rounds; ++round) {
+            /* Step 1: Re-assign all samples to nearest snapped centroid */
             for (int64_t s = 0; s < n_samples; ++s) {
                 float best_d1 = FLT_MAX;
                 int best_k = 0;
@@ -3741,11 +3698,15 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                 }
                 assignments[s] = (int8_t)best_k;
             }
+
+            /* Step 2: Per-centroid gradient descent - try +/-1 per dimension */
             for (int k = 0; k < grid_size; ++k) {
                 int8_t * pg = (int8_t *)(trial_grid + k);
                 for (int i = 0; i < 8; ++i) {
                     int8_t cur_val = pg[i];
                     int8_t best_val = cur_val;
+
+                    /* Compute current error for this centroid-dim against its samples */
                     float cur_err = 0.0f;
                     for (int64_t s = 0; s < n_samples; ++s) {
                         if (assignments[s] == k) {
@@ -3753,6 +3714,8 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                             cur_err += sample_weights[8*s + i] * diff * diff;
                         }
                     }
+
+                    /* Try -1 */
                     if (cur_val > 0) {
                         float try_err = 0.0f;
                         for (int64_t s = 0; s < n_samples; ++s) {
@@ -3763,6 +3726,8 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         }
                         if (try_err < cur_err) { best_val = cur_val - 1; cur_err = try_err; }
                     }
+
+                    /* Try +1 */
                     if (cur_val < 127) {
                         float try_err = 0.0f;
                         for (int64_t s = 0; s < n_samples; ++s) {
@@ -3773,11 +3738,13 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
                         }
                         if (try_err < cur_err) { best_val = best_val + 1; }
                     }
+
                     pg[i] = best_val;
                 }
             }
         }
 
+        /* Evaluate trial error using snapped int8 grid (what the quantizer will actually use) */
         float trial_error = 0.0f;
         for (int64_t s = 0; s < n_samples; ++s) {
             const int8_t * pg = (const int8_t *)trial_grid;
@@ -3804,8 +3771,16 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
         free(trial_grid);
     }
 
-    free(pooled_samples);
-    free(pooled_weights);
+    /* Store learned grid per category for subsequent tensors of the same type */
+    if (global_grid) {
+        free(global_grid);
+    }
+    global_grid = (uint64_t *)malloc(grid_size * sizeof(uint64_t));
+    GGML_ASSERT(global_grid);
+    memcpy(global_grid, best_grid, grid_size * sizeof(uint64_t));
+
+    free(samples);
+    free(sample_weights);
 
     free(iq2_data[gindex].grid);
     iq2_data[gindex].grid = best_grid;
