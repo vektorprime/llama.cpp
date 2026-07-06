@@ -185,3 +185,17 @@ This is a targeted refinement that costs ~1 additional pass (no scale search), a
 
 **Expected**: Small KL improvement (Δ ~0.0003-0.001). Grid indices optimal for continuous scales may misalign with quantized scales for some sub-blocks.
 
+**Result**: KL=1.071 — CATASTROPHIC REGRESSION. Implementation bug: used `xval` outside the ib loop where it was computed (stale data, only valid for the last ib processed). Fixed in exp-055 by using `fabsf(xb[i])` directly from the raw input.
+
+### exp-055: Post-d-optimization grid index recomputation with quantized scales (corrected)
+**Hypothesis**: Same as exp-054, but with correct implementation. The bug in exp-054 was using `xval[]` (which is scoped to the ib loop and stale outside it). Now using `fabsf(xb[i])` directly from `xbl + 32*ib` to ensure correct per-sub-block values.
+
+**Implementation**: After d optimization block in `quantize_row_iq2_xxs_impl`, add a refinement loop that:
+1. For each sub-block ib: read xb = xbl + 32*ib, recompute weights from qw+sigma2+xb^2
+2. Compute l and scale_q = d*(2*l+1), id_q = 1/scale_q
+3. For each 8D chunk: convert fabsf(xb) values to 2-bit codes using id_q, look up kmap or neighbor
+4. Compare to current grid index using weighted reconstruction error at scale_q
+5. Update if better
+
+**Expected**: Small improvement (Δ ~0.0002-0.001). The corrected implementation should demonstrate the true effect of matching grid indices to the quantized scale.
+
