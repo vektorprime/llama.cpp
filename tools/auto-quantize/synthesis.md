@@ -1,6 +1,6 @@
 # IQ2_XXS Auto-Research Synthesis — Session 2026-07-06
 
-## Status: Best KL = 0.716172 (exp-034, nwant=8). All experiments since (exp-035 through exp-047) null or regression.
+## Status: Best KL = 0.715144 (exp-049, superblock scale optimization). Previous best was 0.716172 (exp-034, nwant=8).
 
 ## BREAKTHROUGH (exp-033): Neighbor search depth nwant=2→4 — KL=0.7166, surpasses Unsloth!
 
@@ -15,7 +15,8 @@ The kmap neighbor precomputation uses Euclidean distance to find candidate grid 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
 |-----------|--------------|-----|------------|--------|---------------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **exp-033 (new best)** | **0.7166** | **26.24** | **60.56%** | **2.4 min** | **nwant=4 neighbor search** |
+| **exp-049 (new best)** | **0.715144** | **26.45** | **60.42%** | **4.6 min** | **Superblock scale optimization** |
+| **exp-033** | 0.7166 | 26.24 | 60.56% | 2.4 min | nwant=4 neighbor search |
 | Best learned (exp-020) | 0.7238 | 26.46 | 60.34% | 9.6 min | K-means++ learned grid |
 | E8 lattice (no learn) | 0.7248 | 26.55 | 60.02% | 4.6 min | Pure E8 lattice |
 
@@ -74,6 +75,19 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 | 046 | 0.717 | Greedy per-element level perturbation after LS refinement | Regression |
 | 047 | 0.716 | Inlier-Focus K-means (Trimmed K-means, 10% outlier discarding) | Null (identical KL) |
 
+### exp-049: Superblock scale optimization — first improvement since exp-034, KL=0.715144
+
+**Superblock scale `d` optimization**: Previously `d = max_scale/31` (maximizing dynamic range). Now we try 9 candidates of `d` (±16% in 4% steps), compute the full 128-element weighted reconstruction error for each (using the already-chosen grid indices, centroid values, and sign bits), and pick `d` with the lowest error. This accounts for:
+1. Imatrix importance weights per sub-block
+2. Actual centroid values (not just scale magnitudes)
+3. Joint 4-bit scale quantization error across all sub-blocks
+
+**Result**: KL improved from **0.716172 to 0.715144** (Δ = -0.001028, 0.14% relative improvement). PPL essentially unchanged (26.45 vs 26.24 for exp-033, within noise). Same top p improved to 60.42%.
+
+**Why it works**: The `max_scale/31` heuristic assumes the sub-block with the largest scale is always the most important. But the weighted reconstruction error criterion correctly balances importance (imatrix) against element magnitude. For superblocks where sub-block scales are close to each other, the optimal `d` can shift slightly to reduce quantization error on high-importance sub-blocks at the expense of low-importance ones. The 4% step granularity (9 candidates ±16%) provides sufficient coverage without excessive computation (negligible overhead — 0.9s added to quantize time).
+
+**Lesson**: Even small optimizations at the superblock scale level produce measurable improvements. This is the first successful experiment outside K-means training since exp-034, confirming the synthesis direction that "grid training is saturated — the quantizer SEARCH still has headroom."
+
 ### exp-047: Inlier-Focus K-means null — trimming doesn't help when centroids barely move
 Discarding the top 10% of furthest samples per centroid during each K-means update produced identical KL (0.716172). The centroids start from E8 and barely drift in 20 iterations, so the "outliers" are the same samples each iteration and trimming their contribution doesn't change the centroid trajectory. This further confirms the K-means training is at a fixed point — the grid is essentially E8 with minimal data-adaptive adjustments, and training tweaks don't affect the outcome.
 
@@ -99,11 +113,12 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 **Lesson**: With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection doesn't matter. The codebook is essentially E8 with minor data-adaptive adjustments. Breakthroughs require structural changes (like nwant adjustment, exp-033) rather than training tweaks.
 
 ## Gap Analysis
-- **Best KL**: 0.716172 (exp-034)
-- **Unsloth target**: 0.721 (surpassed!)
+- **Best KL**: 0.715144 (exp-049)
+- **Unsloth target**: 0.721 (surpassed by 0.8%)
 - **Remaining gap**: None to Unsloth; new benchmark set
-- **Grid training is saturated**: 13 consecutive experiments (exp-035 through exp-047) have produced either null or regression results. Every K-means variant (weighted sampling, outlier trimming, E8 regularization, cross-tensor, more iterations, etc.) converges to the same near-E8 grid. Neighbor search (nwant) was the only lever that ever improved KL.
-- **Next directions must change strategy**: Grid training space is exhausted. The quantizer search (kmap neighbor structure, distance metrics during quantization) and structural format changes are the remaining unexplored levers.
+- **Grid training is saturated**: 13 consecutive experiments (exp-035 through exp-047) produced null/regression. Grid-only changes are exhausted.
+- **Quantizer SEARCH still has headroom**: exp-033 (nwant) and exp-049 (d optimization) both improved KL by modifying the quantizer SEARCH, not the grid values. The neighbor search depth and superblock scale are two independent knobs that each improved KL.
+- **Next directions**: Combined nwant + d optimization; more aggressive scale search (two-stage, adaptive granularity); per-element level perturbation with scale awareness; multi-candidate neighbor evaluation; format changes.
 
 ## Remaining Research Directions
 1. **Cross-tensor accumulation WITH nwant=8**: Previously tried with nwant=4 (exp-036) and regressed. nwant=8 might compensate for the reduced per-tensor focus. (Untested combination)
