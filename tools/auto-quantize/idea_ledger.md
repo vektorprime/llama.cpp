@@ -1313,3 +1313,28 @@ for (int i = 0; i < 32; ++i) waux[i] = 1.0f;
 **Expected**: KL improvement (Δ ~0.001-0.003 from 0.662001). The extreme case tests whether zero effective weighting is optimal.
 
 **Risk**: LOW — only affects neighbor search (~5% of chunks). Post-d refinement still uses importance-aware wtmp.
+
+**Result**: KL=0.675383 — REGRESSION (Δ = +0.013382, +2.0% from best 0.662001). Uniform waux (effective exponent 0.0) overshoots the optimal. The waux effective exponent sweet spot is confirmed at 0.06 (powf 0.20). Going either softer (0.0, this experiment) or sharper (0.15 sqrt, 0.30 weight) from the sweet spot degrades KL. **Reverted**.
+
+### exp-097: Soften post-d refinement neighbor search weight — `wtmp = powf(wtmp, 0.20)` (effective 0.07, matching main waux)
+
+**Hypothesis**: The post-d refinement uses `wtmp[i] = qw[i] * powf(sigma2_ib + xb[i]^2, 0.35f)` for its neighbor search, giving effective exponent 0.35. This is much sharper than the main quantization's waux (effective 0.06). The asymmetry argument from exp-093 applies equally here: centroid selection (both pre-d and post-d) benefits from softer weighting that lets the grid structure dominate, while only the final error COMPARISON needs sharp weights.
+
+The post-d refinement has TWO weight uses:
+1. **Neighbor search** (line 4058): `iq2_find_best_neighbour(..., wtmp, ...)` — selects candidate centroids by weighted L1
+2. **Error comparison** (lines 4072-4074): `w *= diff^2` — decides whether the new centroid is better
+
+By softening ONLY the neighbor search weight (keeping the comparison sharp), the post-d refinement casts a wider net for candidate centroids while making the final decision with importance-aware precision.
+
+**Implementation**: One line change in `ggml/src/ggml-quants.c:4046`:
+```c
+// Before:
+wtmp[i] = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.35f);
+// After:
+{ float w_ = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.35f);
+   wtmp[i] = powf(w_, 0.20f); }
+```
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003 from 0.662001). The post-d neighbor search shares the same role as the pre-d neighbor search (centroid selection), so it should benefit from the same soft-weighting treatment.
+
+**Risk**: LOW — the error comparison still uses the sharp weight (0.35). Only the neighbor list centroid selection is softened. Revert is one line.
