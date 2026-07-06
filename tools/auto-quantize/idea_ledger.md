@@ -971,4 +971,22 @@ float w = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.30f);
 
 ---
 
+## Session: 2026-07-06 (continued) — D-opt/Post-d weight exponent 0.40
+
+### exp-086: Increase d-opt and post-d refinement weight exponent from 0.35 to 0.40, main stays at 0.30
+
+**Hypothesis**: The asymmetric weight profile (main=0.30, d opt/post-d=0.35) outperforms both uniform (all=0.30, KL=0.673) and wider asymmetry (main=0.30, d opt/post-d=0.50, KL=0.669). This suggests the optimal d opt/post-d exponent lies between 0.35 and 0.50.
+
+Increasing d opt/post-d from 0.35 to 0.40 widens the asymmetry gap from 0.05 to 0.10. The sharper weights for scale selection and index refinement may better prioritize high-magnitude elements during these critical steps, while maintaining the softer main quantization that gives balanced centroid selection across all elements.
+
+**Implementation**: 3 lines changed in `quantize_row_iq2_xxs_impl()` (ggml/src/ggml-quants.c):
+- Line 4003: d optimization weight: 0.35f → 0.40f
+- Line 4046: Post-d refinement candidate weight: 0.35f → 0.40f
+- Line 4072: Post-d refinement comparison weight: 0.35f → 0.40f
+
+**Expected**: Small KL improvement (Δ ~0.0003-0.001) from 0.666162.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
+
+---
 
