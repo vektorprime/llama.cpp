@@ -1257,6 +1257,34 @@ Previous experiments that tried recomputing levels after post-d refinement (exp-
 
 ---
 
-## Session: 2026-07-06 (continued) — Multi-pass centroid improvement
+## Session: 2026-07-06 (continued) — K-means training weight alignment with quantizer formula
 
-### exp-095: Iterative centroid refinement with post-quantization error feedback
+### exp-095: Align K-means training weights with full quantizer weight formula (per-sub-block sigma2 + powf exponent 0.30)
+
+**Hypothesis**: The K-means training in `iq2xxs_learn_grid()` uses only imatrix importance values for per-sample weights:
+```c
+sample_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
+```
+
+The quantizer's four weight-computation sites all use the augmented formula:
+```c
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
+```
+
+This misalignment means:
+1. **K-means centroid update** treats all samples equally (scaled by imatrix), while the quantizer's error evaluation prioritizes elements with large |xb| within high-variance sub-blocks.
+2. **K-means assignment** uses `imatrix * L1 distance`, but the quantizer's grid index selection uses `imatrix * powf(sigma2 + xb^2, 0.30) * (scale*c - x)^2` — a fundamentally different objective.
+3. The E8 warm-start dominates the K-means attractor, so imatrix-only weights barely move centroids. Adding the per-sub-block sigma2 + powf factor creates per-sample weight variation that depends on the LOCAL sub-block variance, not just the global column importance. This may nudge centroids toward positions that better serve the quantizer's actual objective.
+
+Exp-077 tried this approach with the OLD quantizer weight formula (`sqrt(sigma2 + xb^2)` with global sigma2) and got null (KL identical to baseline). Now that the quantizer uses per-sub-block sigma2 + exponent 0.30, the per-sample weight variation is larger and more localized — sub-blocks with different variance levels now get different weight multipliers, creating meaningful weight diversity that the old global-sigma2 approach lacked.
+
+**Implementation**: In `iq2xxs_learn_grid()` (ggml/src/ggml-quants.c):
+1. After computing step/n_samples, precompute `sigma2` per 32-element sub-block for the entire tensor.
+2. Modify the sample/weight collection loop to use the full weight formula: `sample_weights[k] = imatrix * powf(sigma2[sb] + val*val, 0.30f)`.
+3. The per-element weight now varies with both global importance (imatrix) AND local sub-block magnitude (sigma2 + val^2).
+
+**Expected**: Small KL improvement (Δ ~0.001-0.005, 0.15-0.75% relative) from 0.666162. Even a modest centroid shift could compound across 256 centroids × 95 tensors.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `iq2xxs_learn_grid()` (~15 lines added/modified).
+
+**Risk**: LOW. The change only affects K-means training (not the quantizer search). Even if the centroids move in an unhelpful direction, the post-d refinement and d optimization still use the correct quantizer weight formula. The effect is bounded by the extent of centroid drift from E8, which is small (20 iterations from warm-start).
