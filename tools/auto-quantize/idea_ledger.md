@@ -9,7 +9,7 @@
 | 102 | Sharpen post-d refinement weight exponent 0.35→0.40 (keep d-opt 0.35) | NULL |
 | 103 | Change d optimization objective from sum to max-of-sub-block-errors | REGRESSION |
 | 104 | Tighter d optimization range ±15% at 0.5% step (61 candidates) | NULL |
-| **105** | **Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug)** | **IN PROGRESS** |
+| 105 | Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug) | REGRESSION (0.731) |
 
 ---
 
@@ -1668,3 +1668,5 @@ Note: we DON'T try flipping element 7 independently — element 7's sign is alwa
 **Risk**: MODERATE. The sign parity has never been successfully modified (exp-053 regressed, exp-066 catastrophically regressed). If the sign re-evaluation systematically selects wrong patterns (same bug as exp-066), KL could regress by 10%+. However, using ksigns_iq2xs correctly ensures the reconstruction matches inference-time decoding. If this still regresses, it confirms that the original parity fix is already optimal for any centroid — the `w*xb^2` criterion is centroid-independent and picking a different flip based on centroid values overfits.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — post-d refinement block (~30 lines added after line 4081).
+
+**Result**: KL=0.731314 — REGRESSION (Δ = +0.069313, +10.5% from best 0.662001). The sign re-evaluation with centroid-aware parity fix significantly worsens reconstruction. The original `min w*xb^2` criterion is already optimal regardless of centroid choice — picking a different flip based on centroid values at the quantized scale creates sign patterns that appear locally better but break the global balance of the superblock. The `w*xb^2` criterion is centroid-independent and correctly selects the element with minimum reconstruction impact regardless of which centroid is used. This confirms that the sign parity mechanism is fundamentally robust and should not be modified — the `ksigns_iq2xs` parity encoding combined with `min w*xb^2` produces the correct sign pattern for any centroid choice. **Reverted**.
