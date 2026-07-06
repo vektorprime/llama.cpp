@@ -62,16 +62,33 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 - Error-aware int8 snap (allows any value 0-127, no odd constraint)
 - 0 rounds of multi-round refinement
 
+## Recent Additions (exp-039 through exp-041)
+
+| Exp | KL | Technique | Verdict |
+|-----|-----|-----------|---------|
+| 039 | 1.238 | Density-aware centroid splitting (LBG VQ) | Catastrophic regression |
+| 040 | 0.7162 | E8-regularized K-means (15% blend) | Null (identical) |
+| 041 | 0.7162 | Importance-weighted sample selection | Null (identical) |
+
+### exp-039: Density-aware centroid splitting destroyed diversity
+Over-utilized centroids split into under-utilized slots created near-duplicates, reducing grid diversity. Under-utilized centroids apparently provide unique patterns during quantization — removing them loses information.
+
+### exp-040: E8 regularization is redundant
+Blending centroids 15% toward E8 after each iteration had no effect because K-means starting from E8 barely drifts in 20 iterations. The centroid positions are already near-E8.
+
+### exp-041: Importance-weighted sampling doesn't change grid
+Changing sample selection from uniform stride to imatrix-proportional CDF sampling produced identical KL (0.7162). The K-means converges to the same attractor regardless of sampling distribution — the E8 warm-start dominates the trajectory.
+
+**Lesson**: With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection doesn't matter. The codebook is essentially E8 with minor data-adaptive adjustments. Breakthroughs require structural changes (like nwant adjustment, exp-033) rather than training tweaks.
+
 ## Gap Analysis
 - **Best KL**: 0.716172 (exp-034)
 - **Unsloth target**: 0.721 (surpassed!)
 - **Remaining gap**: None to Unsloth; new benchmark set
-- **Next directions**: Still open — neighbor search is maxed at nwant=8, grid training is
-  1-tensor E8-warm-start only. Cross-tensor and refinement approaches consistently regress.
+- **Next directions**: The grid training space is saturated — all K-means variants, sample approaches, and post-processing have been tried. Neighbor search (nwant) was the only successful lever. Future work should either (a) revisit cross-tensor accumulation with nwant=8, (b) try structural codebook changes (hybrid E8+learned), or (c) explore multi-scale quantization refinements.
 
 ## Remaining Research Directions
-1. **Even wider neighbor search**: Already at nwant=8; nwant=10+ may add more noise than signal
-2. **Per-tensor neighbor lists**: Different nwant per tensor category — untried
-3. **More K-means iterations with nwant=8**: 20 iters is conservative; 40-60 iters untested at nwant=8
-4. **Cross-tensor accumulation WITHOUT normalization**: Raw pooling from 2-3 tensors with nwant=8 — previously tried with nwant=4 and regressed; worth re-testing with nwant=8
-5. **Grid pruning**: Remove redundant centroids (kmap collisions) post-training to ensure all 256 entries are unique at the 2-bit level — prune then re-fill with split of highest-error centroid
+1. **Cross-tensor accumulation WITH nwant=8**: Previously tried with nwant=4 (exp-036) and regressed. nwant=8 might compensate for the reduced per-tensor focus.
+2. **Hybrid E8+K-means grid**: Replace low-count centroids with their E8 equivalents to maintain coverage diversity.
+3. **Multi-scale quantization**: After grid quantization, refine the super-block scale `d` per tensor using least-squares.
+4. **Grid deduplication**: Ensure all 256 kmap entries are unique by perturbing colliding centroids (theoretical; exp-038's odd-only approach over-constrained).
