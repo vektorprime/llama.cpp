@@ -50,6 +50,7 @@
 | 053 | Sign parity fix re-evaluation | regression |
 | 054 | Post-d grid index recomputation (buggy) | catastrophic |
 | **055** | **Post-d grid index recomputation (corrected)** | **IMPROVEMENT (0.710657)** |
+| 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | PENDING |
 
 ---
 
@@ -253,4 +254,19 @@ This is a targeted refinement that costs ~1 additional pass (no scale search), a
 **Expected**: Small improvement (Δ ~0.0002-0.001). The corrected implementation should demonstrate the true effect of matching grid indices to the quantized scale.
 
 **Result**: KL=0.710657 — IMPROVEMENT (Δ = −0.004487 from 0.715144). The post-d-optimization grid index recomputation works: grid indices chosen for the continuous per-sub-block scale were indeed suboptimal for the final quantized scale `d*(2*l+1)`. The corrected implementation matches grid indices to the actual inference-time scale, reducing quantization error. This is the new best result.
+
+### exp-056: Post-d coordinate descent (second d optimization + per-sub-block ±1 level refinement)
+**Hypothesis**: After the post-d grid index recomputation (exp-055 updates grid indices for the quantized scale), the superblock scale `d` from the first d optimization pass (exp-049) was chosen to minimize the weighted reconstruction error using the OLD grid indices (G1). The index recomputation replaced some indices with G2 (optimized for quantized scale `d*(2*l+1)`). With G2's different centroid values, the optimal `d` likely differs from the first-pass optimal. By running a **second d optimization with the updated grid indices G2**, we can find a better `d` for the actual indices used at inference.
+
+Furthermore, the 4-bit scale level `l = nearest_int(0.5*(id*scales[ib]-1))` minimizes the scale quantization error `|scales[ib] - d*(2*l+1)|`, but does NOT minimize the full weighted reconstruction error of the sub-block's elements with the chosen grid indices. For each sub-block, evaluating `l-1, l, l+1` with fixed `d` and grid indices G2 and picking the best by weighted reconstruction error can find levels that better match the importance-weighted element distribution.
+
+This is a two-step coordinate descent after the existing exp-055 pass:
+1. **Second d optimization**: Same 9-candidate (±16% in 4% steps) sweep as exp-049, but evaluating error with current grid indices (G2) instead of original G1.
+2. **Per-sub-block ±1 level refinement**: For each sub-block, compute weighted reconstruction error at `l-1, l, l+1` using current `d` and grid indices. Pick the level with minimum error.
+
+Both steps are safe because: (a) d optimization only evaluates candidates without changing indices, (b) ±1 level refinement is bounded far tighter than the all-16-level search that regressed in exp-050 (where overfitting destroyed inter-sub-block scale relationships).
+
+**Implementation**: ~40 lines added after the post-d grid index recomputation block (after line 4081) in `quantize_row_iq2_xxs_impl`.
+
+**Expected**: Small KL improvement (Δ ~0.0005-0.002) from 0.710657. The coordinate descent should better align d with the actual quantized-scale grid indices.
 
