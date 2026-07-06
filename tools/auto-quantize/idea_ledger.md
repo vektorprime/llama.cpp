@@ -64,6 +64,11 @@
 | 067 | Narrower d optimization range (±8% at 0.5% step, 33 candidates) | REGRESSION (0.702) |
 | 068 | Quantizer-aware K-means assignment (scale-aware dot-product criterion) | CATASTROPHIC (12.31) |
 | 069 | Second-best centroid evaluation (kmap2) — structural change | REGRESSION (0.752) |
+| 070 | Importance-weighted 2-bit level assignment (alpha=0.3) | REGRESSION (0.743) |
+| 071 | Exhaustive 4-bit level search replacing nearest-int | CATASTROPHIC (1.077) |
+| 072 | Quantization-Aware Centroid Refinement (QAT) | REGRESSION (0.702) |
+| 073 | Joint d+level optimization (exhaustive level search during d opt) | CATASTROPHIC (1.078) |
+| 074 | Level-Perturbation Centroid Search (LPCS) | REGRESSION (0.752) |
 
 ---
 
@@ -677,4 +682,6 @@ This is fundamentally different from exp-069 (kmap2) because:
 Cost: ~4-8 alternative centroid evaluations per 8D chunk via fast kmap lookup (O(1)). Total: ~0.5s added per tensor, negligible.
 
 **Expected**: Small KL improvement (Δ ~0.001-0.003). The kmap L2 criterion is usually close to optimal, but for edge cases with non-uniform importance weights and the quantized scale mismatch, the perturbed-pattern centroid may reduce error. Effect compounds across 95 IQ2_XXS tensors × ~100 superblocks each.
+
+**Result**: KL=0.752031 — REGRESSION (Δ = +0.053022, +7.6% from best 0.699009). The level-perturbation search introduces noise into centroid selection. For each chunk, trying alternative 8-bit patterns (via ±1 level perturbation) finds centroids that are better by L2 distance to the perturbed pattern, but worse by weighted reconstruction error at the actual scale. The kmap's L2 criterion, despite being an imperfect proxy, is more robust than the perturbed-pattern approach because it directly selects the centroid that minimizes the mapping from the ACTUAL (not perturbed) pattern. The perturbation outer loop (p over 0..7, delta over ±1) generates patterns that are geometrically close to the correct pattern but map to centroids with mismatched magnitude profiles, increasing reconstruction error. **Reverted**.
 
