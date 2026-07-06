@@ -1,6 +1,6 @@
 # IQ2_XXS Auto-Research Synthesis — Session 2026-07-06
 
-## Status: Best KL = 0.715144 (exp-049, superblock scale optimization). Previous best was 0.716172 (exp-034, nwant=8).
+## Status: Best KL = 0.710657 (exp-055, post-d-optimization grid index recomputation). Previous best was 0.715144 (exp-049).
 
 ## BREAKTHROUGH (exp-033): Neighbor search depth nwant=2→4 — KL=0.7166, surpasses Unsloth!
 
@@ -15,7 +15,8 @@ The kmap neighbor precomputation uses Euclidean distance to find candidate grid 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
 |-----------|--------------|-----|------------|--------|---------------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **exp-049 (new best)** | **0.715144** | **26.45** | **60.42%** | **4.6 min** | **Superblock scale optimization** |
+| **exp-055 (new best)** | **0.710657** | **26.26** | **60.61%** | **4.8 min** | **Post-d-optimization grid index recomputation** |
+| **exp-049** | 0.715144 | 26.45 | 60.42% | 4.6 min | Superblock scale optimization |
 | **exp-033** | 0.7166 | 26.24 | 60.56% | 2.4 min | nwant=4 neighbor search |
 | Best learned (exp-020) | 0.7238 | 26.46 | 60.34% | 9.6 min | K-means++ learned grid |
 | E8 lattice (no learn) | 0.7248 | 26.55 | 60.02% | 4.6 min | Pure E8 lattice |
@@ -74,6 +75,16 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 | 045 | 0.719 | 2-pass iterative grid-scale refinement during quantization | Regression |
 | 046 | 0.717 | Greedy per-element level perturbation after LS refinement | Regression |
 | 047 | 0.716 | Inlier-Focus K-means (Trimmed K-means, 10% outlier discarding) | Null (identical KL) |
+
+### exp-055: Post-d-optimization grid index recomputation — new best KL=0.710657 (-0.63% from exp-049)
+
+**Grid indices chosen with continuous sub-block scales are suboptimal for the final quantized scale `d*(2*l+1)`.** After the superblock `d` optimization (exp-049), recompute each 8D chunk's 2-bit codes and grid indices using the actual quantized scale. This second-pass refinement uses `fabsf(xb)` (absolute values from raw input) to avoid the stale-xval bug that caused exp-054's catastrophic regression (KL=1.071).
+
+**Result**: KL improved from 0.715144 to 0.710657. PPL dropped from 26.45 to 26.26. Same top p improved to 60.61%. Quantize time unchanged (~4.8 min).
+
+**Why it works**: The initial grid index selection chooses centroids that minimize weighted L1 error under a continuous per-sub-block scale. But the final storage quantizes the sub-block scale to 4 bits via `l = nearest_int(0.5*(id*scale-1))`. The quantized scale `d*(2*l+1)` can differ from the optimal continuous scale by several percent. Re-selecting centroids with the actual quantized scale (via kmap lookup or neighbor search) finds entries whose odd-int values better match the real runtime decoding.
+
+**Implementation**: ~40 lines added after the d optimization block, inside `quantize_row_iq2_xxs_impl`. The refinement iterates over each sub-block, computes `id_q = 1/(d*(2*l+1))`, generates 2-bit codes from `fabsf(xb)`, and picks the best grid entry (via kmap or neighbor fallback). A weighted error comparison ensures only beneficial changes are applied.
 
 ### exp-049: Superblock scale optimization — first improvement since exp-034, KL=0.715144
 
