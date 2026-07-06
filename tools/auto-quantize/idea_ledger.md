@@ -126,3 +126,7 @@
 6. If level changed, repack the scale bits in `scales_l` and `scales_h`
 
 **Expected outcome:** Small KL improvement (~0.2-0.5% reduction to ~0.0248-0.02485). The level perturbation is cheap (3× re-evaluation of 32 elements per sub-block = 384 extra `best_index_int8` calls per superblock, negligible overhead). Quantize time should increase by <1%.
+
+**Actual outcome:** Regression/null — KL 0.025166 ± 0.001036 vs baseline 0.024916. Mean KL slightly higher (0.025166 vs 0.024916), well within 1σ noise (σ = 0.001036). PPL 6.8939 vs baseline 6.8952 (negligibly better). Same top p 94.159% vs 94.17% (negligibly worse). Quantize time 760s, comparable to baseline (~700s) and exp-003 (700s) but faster than exp-004 (782s). The level perturbation had essentially no effect — likely because `best_index_int8` already finds the optimal codebook entry for each level, so trying adjacent levels rarely finds a better combination. Code discarded.
+
+**Lesson:** Unlike IQ2_XXS, where post-d refinement provided ~0.6% KL gain, IQ4_XS's fixed 16-entry codebook means `best_index_int8` already exhaustively checks all entries. The quantized scale `idl` is already used in the main quantization loop (line 5667). Level perturbation adds nothing because `l` was already chosen as the optimal integer nearest to `id*scales[ib]`, and the codebook entries for `l-1`/`l+1` are already evaluated with the correct scale during the perturbation — but `best_index_int8` with a slightly different scale finds the same or worse entries. The original `l` is already optimal.
