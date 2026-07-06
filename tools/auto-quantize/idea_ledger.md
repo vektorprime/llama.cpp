@@ -5,6 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | 001 | Weight exponent 0.30 + per-sub-block sigma2 | Failed — quantize timed out (>7 min) |
+| 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | In progress |
 
 ---
 
@@ -42,3 +43,21 @@
 **Actual outcome:** FAILED — quantize timed out at 7 min HARD limit. Only ~480/866 tensors completed (blk.35/64). `powf()` is ~5-10x slower than `sqrtf()`, making full quantize impossible within the 7-min budget. Code discarded. Hypothesis and results remain documented for reference.
 
 **Lesson:** `powf(x, 0.30f)` is too slow for production. Alternative: use `sqrtf(sqrtf(sqrtf(x)))` ~ x^0.25 as a cheap approximation, or precompute via lookup table, or use a faster exponent like 0.50 (sqrtf) or 0.25 (double sqrtf).
+
+---
+
+## exp-002: Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f)
+
+**Hypothesis:** Exp-001 failed because `powf(x, 0.30f)` is too slow for 27B elements. Using `exp2f(0.30f * log2f(x))` instead — which is ~3-5x faster than `powf()` — should complete quantization within the 7-min budget while delivering the same KL improvement.
+
+**Changes:**
+1. Remove global sigma2 computation (lines 5589-5591)
+2. Inside the ib loop, compute per-sub-block sigma2:
+   ```c
+   float sigma2_ib = 0;
+   for (int j = 0; j < block_size; ++j) sigma2_ib += xb[j]*xb[j];
+   sigma2_ib *= 2.f/block_size;
+   ```
+3. Change weight formula from `sqrtf(sigma2 + xb[j]*xb[j])` to `exp2f(0.30f * log2f(sigma2_ib + xb[j]*xb[j]))`
+
+**Expected outcome:** KL improvement from ~0.0249 baseline, quantize completes within 7 min.
