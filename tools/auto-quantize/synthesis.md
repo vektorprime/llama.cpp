@@ -152,14 +152,28 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 
 **Lesson**: With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection doesn't matter. The codebook is essentially E8 with minor data-adaptive adjustments. Breakthroughs require structural changes (like nwant adjustment, exp-033) rather than training tweaks.
 
+## Recent Experiments 094-099 (All Null/Regressions)
+
+| Exp | KL | Technique | Verdict |
+|-----|-----|-----------|---------|
+| 094 | 1.0401 | Post-refinement level recomputation with index re-verification | CATASTROPHIC |
+| 095 | 0.6662 | Align K-means weights with quantizer formula | Null (identical to 082) |
+| 096 | 0.6754 | Uniform waux=1.0 (zero importance) | REGRESSION (+2.0%) |
+| 097 | 0.6873 | Soften post-d wtmp with powf 0.20 | REGRESSION (+3.8%) |
+| 098 | 0.6679 | Finer waux powf(weight,0.10) | REGRESSION (+0.88%) |
+| **099** | **0.6799** | **L1-based weight formula (mean_abs+|xb| instead of sigma2+xb²)** | **REGRESSION (+2.7%)** |
+
+### exp-099: L1-based weight formula — L2 metric confirmed essential
+The weight formula's L2-based magnitude `sigma2 + xb²` (mean of squares) is structurally necessary. Replacing with L1-based `mean_abs + |xb|` regressed KL from 0.662 to 0.680 (+2.7%). The L2 baseline amplifies large-magnitude elements more aggressively than L1, providing essential per-element selectivity for the d optimization and post-d refinement. The sigma2 baseline's amplification is exactly what makes the weight formula effective — the L2-based form `(sigma2 + xb²)^p` with p=0.30 provides the right compromise between uniformity and selectivity.
+
 ## Gap Analysis
 - **Best KL**: 0.662001 (exp-093, waux=powf(weight,0.20))
 - **Unsloth target**: 0.721 (surpassed by 8.2%)
-- **Weight formula EXHAUSTED**: All exponent values (0.25-1.0), asymmetric profiles, structural variants tested. Optimal: `qw * powf(sigma2 + xb^2, 0.30f)` main, 0.35 d-opt/post-d.
+- **Weight formula EXHAUSTED**: All exponent values (0.25-1.0), asymmetric profiles, structural variants (L1-based, 1+|xb| linear) tested. Optimal: `qw * powf(sigma2 + xb^2, 0.30f)` main, 0.35 d-opt/post-d. **L2-based sigma2 confirmed essential.**
 - **waux dimension EXHAUSTED**: powf(weight, 0.20) (eff 0.06) is optimal; softer/harder both regress.
 - **Quantize time**: ~355-358s (~5.9 min) — slightly exceeds 5-min soft limit.
 - **Index-scale coupling remains fragile**: Any two-way modification (changing both indices and scale) still causes catastrophic regression.
-- **System is at a genuine local optimum**: All accessible knobs (weight exponent, sigma2 granularity, waux, d step/range, neighbor depth, post-d refinement, K-means training) have been optimally tuned. No further improvement possible within current IQ2_XXS format without structural changes.
+- **System is at a genuine local optimum**: All accessible knobs (weight exponent, sigma2 granularity, sigma2 metric L2 vs L1, waux, d step/range, neighbor depth, post-d refinement, K-means training) have been optimally tuned. No further improvement possible within current IQ2_XXS format without structural changes.
 
 ## Key Findings: Experiments 056-067
 
