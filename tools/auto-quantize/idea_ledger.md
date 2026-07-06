@@ -56,3 +56,8 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Hypothesis**: If nwant=2→4 produced a significant improvement (0.7238→0.7166), then nwant=4→8 may capture even more relevant centroid candidates for off-map 2-bit patterns. Learned K-means grids lack the regular distance structure of E8 lattices; each additional distance level can include grid points that are better matches for specific patterns. Going from 2→4 gave ~40% more neighbors; 4→8 may give diminishing but still positive returns.
 
 **Expected**: Small KL reduction (0.0005-0.002) from 0.7166. Quantize time may increase ~60-120s but should stay well under 5 min.
+
+### exp-036: Cross-tensor sample accumulation for K-means training
+**Hypothesis**: The K-means grid is currently trained on only the first IQ2_XXS tensor's data (16384 samples). This biases centroids toward the distribution of a single tensor (e.g., token_embd or early attention layer). By accumulating samples from the first 4 tensors (~64k samples total from diverse tensor types: embedding, attention, MLP) before running K-means, the grid captures a more representative distribution. More samples per centroid (~250 vs ~64) gives better centroid position estimates. Combined with nwant=8 neighbor search (which can find these improved centroids), this should reduce KL.
+
+**Expected**: Small KL reduction (0.001-0.003) from 0.7162, quantize time unchanged since training is still negligible.
