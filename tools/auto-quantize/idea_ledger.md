@@ -1039,3 +1039,35 @@ This preserves the ranking and relative spacing between elements while capping t
 
 **Result**: KL=0.794320 — REGRESSION (Δ = +0.128158, +19.2% from best 0.666162). Weight clamping per sub-block is actively harmful — it compresses the weight dynamic range, making the quantizer LESS selective. The exponent 0.30 already provides sufficient softening; adding clamping on top over-softens the weights, causing the d optimization and index selection to deprioritize important elements. The compression formula `min_w + (weight[i] - min_w) * scale` preserves ranking but reduces the absolute weight ratios that the quantizer's optimization relies on. Reducing a 10:1 ratio to 5:1 means the d optimization gives 2x more error tolerance to high-weight elements than it should. **Reverted**.
 
+---
+
+### exp-089: Intra-sub-block weight normalization — equalize total weight per sub-block
+
+**Hypothesis**: The weight formula `weight[i] = qw[i] * powf(sigma2_ib + xb[i]^2, 0.30)` produces weights whose SUM varies hugely across sub-blocks within a superblock. A sub-block with large values (|xb| ~ 10) has weights ~|xb|^0.6 ~ 4x larger per element than a sub-block with small values (|xb| ~ 1). This means in the d optimization, which minimizes weighted error across ALL 4 sub-blocks simultaneously, high-magnitude sub-blocks have ~4x more influence on which `d` is selected.
+
+This is a structural issue because:
+1. The sub-block magnitude is already captured by the level `l` (which scales the centroid output by `d*(2*l+1)`)
+2. The imatrix `qw[i]` already captures cross-element importance WITHIN a tensor
+3. The per-sub-block sigma2 (exp-078) captures the sub-block's relative magnitude, which then feeds back into the weight formula — doubling the magnitude signal
+
+By normalizing each sub-block's total weight to 32 (equal per-element mean weight = 1.0), the d optimization treats ALL sub-blocks equally when selecting the best `d`. The per-element RELATIVE importance (captured by qw and per-element magnitude variation within the sub-block) is preserved, but the cross-sub-block total weight imbalance is removed.
+
+This is genuinely different from all prior experiments:
+- exp-078: Per-sub-block sigma2 — changed the sigma2 baseline granularity
+- exp-079: Per-8D-chunk sigma2 — overfitted to local chunk
+- exp-080/081/082: Exponent tuning — changed the magnitude-to-weight slope
+- exp-088: Weight ratio clamping — clipped extreme within-sub-block ratios
+- **exp-089: Normalizes each sub-block's TOTAL weight to the same value** — eliminating cross-sub-block magnitude bias while preserving per-element relative importance
+
+The key insight: the normalization applies uniformly to ALL four weight computation sites (main, d opt, post-d refinement stages 1 and 2). I store the normalized weights in a `weight_norm[4][32]` array and use the same values everywhere — no stage inconsistency.
+
+**Implementation**: In `quantize_row_iq2_xxs_impl()` (ggml/src/ggml-quants.c):
+1. Add `float weight_norm[QK_K/32][32];` declaration
+2. After line 3861-3862 (weight computation): normalize weights per sub-block to sum=32, store in `weight_norm[ib]`
+3. Recompute `waux` from normalized weights
+4. Lines 4003, 4046, 4072: replace `qw[8*k+i] * powf(..., 0.35f)` with `weight_norm[ib][8*k+i]`
+
+**Expected**: KL improvement from 0.666162. The effect should be modest (Δ ~0.001-0.004) but principled. The sub-block level `l` already handles magnitude; the weight should only capture per-element importance deviation from the sub-block mean. Normalizing removes the double-counting of magnitude in the d optimization.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~10 lines added, 3 lines modified).
+
