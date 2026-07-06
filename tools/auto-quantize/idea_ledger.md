@@ -70,7 +70,9 @@
 | 073 | Joint d+level optimization (exhaustive level search during d opt) | CATASTROPHIC (1.078) |
 | 074 | Level-Perturbation Centroid Search (LPCS) | REGRESSION (0.752) |
 | 075 | L1 kmap/neighbor metric (align with L1 evaluation) | null (0.699) |
-| **076** | **Weight formula: qw*(sigma2+xb^2) instead of qw*sqrt(sigma2+xb^2)** | **(pending)** |
+| 076 | Weight formula: qw*(sigma2+xb^2) instead of qw*sqrt(sigma2+xb^2) | regression (0.837) |
+| 077 | Align K-means weights with quantizer (add sqrt factor) | null (0.699) |
+| **078** | **Per-sub-block sigma2 for adaptive weight formula** | **(pending)** |
 
 ---
 
@@ -761,4 +763,33 @@ Exp-029 tried this approach and crashed (likely a code bug, not fundamental). Th
 **Expected**: Small KL improvement (Δ ~0.0005-0.002) from 0.699009. By aligning K-means training with the quantizer's weight criterion, centroids should better represent high-magnitude-high-importance patterns, reducing quantization error for the most impactful elements. The effect may be modest because centroids barely drift from E8, but even a small systematic shift toward magnitude-weighted patterns could compound across 256 centroids × 95 tensors.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `iq2xxs_learn_grid()`.
+
+---
+
+## Session: 2026-07-06 (continued) — Per-sub-block sigma2 for adaptive weight formula
+
+### exp-078: Per-sub-block sigma2 for adaptive weight computation in the quantizer
+**Hypothesis**: The current weight formula `weight[i] = qw[i] * sqrt(sigma2 + xb[i]^2)` uses `sigma2 = mean(xb^2)` computed once per 128-element superblock and shared across all 4 sub-blocks. This GLOBAL sigma2 is dominated by the largest-magnitude sub-block and provides a poor magnitude baseline for sub-blocks with different intrinsic scales.
+
+For sub-blocks with values much smaller than the superblock average, the global sigma2 term artificially inflates the weight baseline, making the weight formula LESS sensitive to per-element magnitude variations within that sub-block. The sqrt(sigma2) term overpowers the sqrt(xb²) term, reducing the formula's ability to prioritize important large elements within low-magnitude sub-blocks.
+
+By computing sigma2 independently per 32-element sub-block (`sigma2_ib = mean_32(xb^2)`), each sub-block gets the correct magnitude baseline for its own intrinsic scale:
+- Low-magnitude sub-blocks: small sigma2 → sqrt(xb²) dominates → finer per-element weight differentiation
+- High-magnitude sub-blocks: large sigma2 (matches their own scale) → weight profile matches actual importance
+
+This is fundamentally different from ALL prior experiments:
+- NO experiment has modified the sigma2 locality (all uses the same global superblock sigma2)
+- It changes the WEIGHT COMPUTATION — which affects scale selection, centroid selection, d optimization, and post-d refinement UNIFORMLY
+- It's a ONE-WAY modification: all downstream stages use the same weight formula, just with better-localized sigma2
+- The change is PRINCIPLED: any statistic should be computed at the level of the data it describes (sub-block-level weights should use sub-block-level statistics)
+
+**Implementation**: ~10 lines changed in `ggml/src/ggml-quants.c`:
+1. Remove global sigma2 computation (line 3853-3855)
+2. Add per-sub-block sigma2 computation inside the sub-block loop (after line 3857)
+3. Store `sigma2_ib` in an array for later use in d optimization and post-d refinement
+4. Use `sigma2_ib` instead of `sigma2` in all weight computations (lines 3860, 4002, 4045, 4071)
+
+**Expected**: KL improvement from 0.699009 (Δ ~0.001-0.005). The effect should be largest for tensors with high inter-sub-block variance (where global sigma2 poorly represents individual sub-block magnitudes). The weight formula becomes more selective, directing quantization effort toward elements that matter most within each sub-block.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
 
