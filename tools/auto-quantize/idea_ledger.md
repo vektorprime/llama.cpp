@@ -61,7 +61,8 @@
 | 064 | Finest d optimization grid (65 candidates at 0.5% step, ±16% range) | IMPROVEMENT (0.699009) |
 | 065 | Ultra-fine d optimization grid (129 candidates at 0.25% step, ±16% range) | REGRESSION (0.704) |
 | 066 | Post-d refinement with centroid-aware sign parity re-evaluation | CATASTROPHIC (0.815) |
-| 067 | Narrower d optimization range (±8% at 0.5% step, 33 candidates) | PENDING |
+| 067 | Narrower d optimization range (±8% at 0.5% step, 33 candidates) | REGRESSION (0.702) |
+| **068** | **Quantizer-aware K-means assignment (scale-aware dot-product criterion)** | **PENDING** |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -499,4 +500,38 @@ for (int is = -16; is <= 16; ++is) {
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
 **Result**: KL=0.701711 — REGRESSION (Δ = +0.002702, +0.39% from best 0.699009). The ±8% range is too narrow — some superblocks need d values beyond 8% of d_base. Exp-064's ±16% at 0.5% step (65 candidates) remains optimal. **Reverted**.
+
+### exp-068: Quantizer-aware K-means assignment (scale-aware dot-product criterion)
+**Hypothesis**: Current K-means assigns samples to centroids using weighted L1 distance (`sum(w*|c-x|)`). But the quantizer's search for the best grid index uses a fundamentally different criterion: it finds the centroid that minimizes the weighted reconstruction error AFTER optimal scaling. This is equivalent to maximizing `sumqx^2/sumq2 = (sum(w*x*c))^2 / sum(w*c^2)` — the dot-product scale-aware score used in the quantizer's scale refinement (line 3922 of ggml-quants.c).
+
+The L1 criterion has two mismatches with the quantizer:
+1. **Scale invariance**: L1 penalizes magnitude differences between c and x, but the quantizer's optimal scale `scale = sumqx/sumq2` can stretch or shrink any centroid to match any sample. A centroid with different magnitudes can still produce a perfect reconstruction after scaling.
+2. **Direction matters more than magnitude**: The quantizer cares about whether c points in the right direction (relative to w*x), not whether c has the exact same values as x.
+
+By replacing L1 assignment with `sumqx^2/sumq2` maximization, K-means training uses the same objective as the quantizer. Centroid positions will converge to shape vectors that are reconstruciton-optimal rather than L1-proximity-optimal.
+
+This is fundamentally different from all prior experiments:
+- All prior K-means experiments worked within the L1/L2 distance framework
+- Exp-004 refined centroids AFTER snapping (local search), not during assignment
+- Exp-048 tried dot-product for NEIGHBOR SEARCH during quantization, not for K-means training
+- This changes the training objective itself
+
+**Implementation**: In `iq2xxs_learn_grid()`, replace the L1 assignment loop body with:
+```c
+float sumqx = 0, sumq2 = 0;
+for (int i = 0; i < 8; ++i) {
+    float w = sample_weights[8*s + i];
+    float c = centroids_float[8*k + i];
+    sumqx += w * samples[8*s + i] * c;
+    sumq2 += w * c * c;
+}
+float score = (sumq2 > 0) ? (sumqx * sumqx) / sumq2 : 0;
+```
+Assign to centroid with maximum score. Centroid update (weighted average with imatrix weights) stays unchanged.
+
+**Expected**: KL improvement from 0.699009. By aligning training with inference, centroids may converge to positions that reduce quantization error. The effect is hard to predict because the E8 warm-start dominates, but any drift will be in a direction that helps the quantizer rather than a mismatched L1 objective.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — assignment criterion in `iq2xxs_learn_grid()` K-means loop.
+
+**Status**: PENDING
 
