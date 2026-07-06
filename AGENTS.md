@@ -16,7 +16,7 @@ Your sole directive is to follow the protocol in `tools/auto-quantize/program.md
 Follow the **Experiment Loop** section in program.md exactly. Every cycle:
 - Propose a hypothesis → log to idea_ledger.md
 - Edit code → DO NOT commit before build/quantize/eval
-- Build → quantize (≤7 min, timeout 420) → evaluate → record to results.tsv
+- Build → quantize (≤20 min, timeout 1200) → evaluate → record to results.tsv
 - If KL improved: keep code. If regressed/null: `git checkout -- ggml/src/ggml-quants.c` to discard code, keep results.
 
 ## Rules

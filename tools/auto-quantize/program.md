@@ -82,8 +82,8 @@ rm -f /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf
   /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf IQ4_XS
 ```
 
-**Quantization limit: 7 minutes HARD.** If a change pushes quantize time over
-7 min, it must be abandoned UNLESS it delivers ≥10% KL improvement (e.g., 0.025→0.0225).
+**Quantization limit: 20 minutes HARD.** If a change pushes quantize time over
+20 min, it must be abandoned UNLESS it delivers ≥10% KL improvement (e.g., 0.025→0.0225).
 
 ## Evaluation (LOCKED — never change these flags)
 
@@ -211,15 +211,15 @@ CUDA_VISIBLE_DEVICES=0 build/bin/llama-perplexity \
 
 4. BUILD: cmake --build build -j16
 
-5. QUANTIZE — must finish in ≤7 minutes (HARD limit, unless ≥10% KL gain):
+5. QUANTIZE — must finish in ≤20 minutes (HARD limit, unless ≥10% KL gain):
    rm -f /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf
-   timeout 420 ./build/bin/llama-quantize \
+   timeout 1200 ./build/bin/llama-quantize \
      --imatrix /llmdata/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf \
      /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-bf16-00001-of-00002.gguf \
      /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf IQ4_XS
 
 6. EVALUATE (always device 0, locked flags):
-   CUDA_VISIBLE_DEVICES=0 timeout 600 build/bin/llama-perplexity \
+   CUDA_VISIBLE_DEVICES=0 timeout 1200 build/bin/llama-perplexity \
      -m /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf \
      -f /llmdata/Qwen3.6-27B/wiki.test.raw \
      -t 8 -c 512 --chunks 200 -fa on \
