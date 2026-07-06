@@ -2,6 +2,21 @@
 
 ## Status: Best KL = 0.662001 (exp-093, waux=powf(weight,0.20)). System is at a genuine local optimum.
 
+## Updated: exp-099 through exp-100 (All Regressions)
+
+| Exp | KL | Technique | Verdict |
+|-----|-----|-----------|---------|
+| 099 | 0.6799 | L1-based weight formula (mean_abs+\|xb\|) | REGRESSION (+2.7%) |
+| **100** | **0.6904** | **Decouple imatrix from magnitude in waux — qw*(sigma2+xb^2)^0.06** | **REGRESSION (+4.3%)** |
+
+### exp-100: Decoupled waux imatrix — qw^0.20 softening proven necessary
+
+The hypothesis was that `waux = qw * (sigma2+xb^2)^0.06` (linear imatrix + eff 0.06 magnitude) would improve neighbor search by preserving imatrix differentiation. Instead, it regressed KL from 0.662 to 0.690 (+4.3%).
+
+**Key insight**: The `qw^0.20` softening in `powf(weight, 0.20)` is necessary for BOTH the imatrix AND magnitude components. Linear imatrix overweights high-importance elements in the neighbor search, hurting off-map pattern selection where rare ~5% of chunks need global grid structure to dominate over per-element importance.
+
+The effective exponent of 0.06 on the full weight (imatrix × magnitude) is the confirmed optimum. Both components must be softened equally via the single powf(weight, 0.20).
+
 ## Plateau broken by waux softening
 
 After 12 consecutive null/regression experiments (exp-083 through exp-095), **exp-093 broke the plateau** by softening the waux weight from `sqrtf(weight)` (effective exponent 0.15) to `powf(weight, 0.20)` (effective exponent 0.06). The neighbor search for off-map patterns (~5% of chunks) benefits from more uniform weighting, letting the global grid structure dominate centroid selection over noisy per-element importance estimates.
