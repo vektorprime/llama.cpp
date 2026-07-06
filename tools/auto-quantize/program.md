@@ -209,7 +209,9 @@ CUDA_VISIBLE_DEVICES=0 build/bin/llama-perplexity \
 
 3. EDIT CODE: modify ggml-quants.c (DO NOT COMMIT yet)
 
-4. BUILD: cmake --build build -j16
+4. BUILD (both GPU architectures):
+   cmake -B build -DGGML_CUDA_ARCHITECTURES="86;120" -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=OFF
+   cmake --build build -j16
 
 5. QUANTIZE — must finish in ≤20 minutes (HARD limit, unless ≥10% KL gain):
    rm -f /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf
