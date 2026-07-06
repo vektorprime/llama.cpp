@@ -296,24 +296,18 @@ Algorithm:
 
 ```
 1. READ STATE: results.tsv, idea_ledger.md, synthesis.md, current code
+   Also commit any uncommitted results.tsv changes from prior experiments:
+   git add tools/auto-quantize/results.tsv tools/auto-quantize/idea_ledger.md && git commit -m "auto-research: churn"
 
-2. PROPOSE HYPOTHESIS: log to idea_ledger.md
+2. PROPOSE HYPOTHESIS: log to idea_ledger.md (commit this so ledger is saved):
+   git add tools/auto-quantize/idea_ledger.md && git commit -m "exp-NNN: hypothesis: ..."
 
-3. EDIT CODE: modify ggml-quants.c and related files
+3. EDIT CODE: modify ggml-quants.c and related files (DO NOT COMMIT yet)
 
-4. COMMIT: git commit -m "exp-NNN: description"
+4. BUILD: cmake --build build/ -j
 
-5. BUILD: cmake --build build/ -j
-
-6. QUANTIZE (baseline):
-   rm -f /tmp/quantized-model.gguf
-   ./build/bin/llama-quantize \
-     --imatrix /home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf \
-     --tensor-type-file tools/auto-quantize/tensor_types_unsloth_match.txt \
-     /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf \
-     /tmp/quantized-model.gguf IQ2_XXS
-
-   Or with codebook learning:
+5. QUANTIZE (with codebook learning):
+   rm -f /tmp/learned.gguf /tmp/learned.gguf.iq2xxs_grids
    ./build/bin/llama-quantize \
      --imatrix /home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf \
      --tensor-type-file tools/auto-quantize/tensor_types_unsloth_match.txt \
@@ -321,9 +315,9 @@ Algorithm:
      /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf \
      /tmp/learned.gguf IQ2_XXS
 
-7. EVALUATE (always device 1):
+6. EVALUATE (always device 1):
    CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-perplexity \
-     -m /tmp/quantized-model.gguf \
+     -m /tmp/learned.gguf \
      -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
      -t 8 -c 512 --chunks 200 -fa on \
      --cache-type-k bf16 --cache-type-v bf16 \
@@ -332,30 +326,26 @@ Algorithm:
      --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
    Capture ALL lines of output — do NOT grep-filter. You need PPL and same_top_p.
 
-8. RECORD: append to results.tsv — must include ALL 16 columns:
-   timestamp, exp_id, code_sha, parent_sha, description, status, kl_divergence,
-   base_type, diffusion, refine_iterations, model_size_mb, quantize_time_s,
-   eval_time_s, tokens_per_sec, ppl, same_top_p
-   
-   Extract these from the eval output:
-   - KL divergence: "Mean    KLD:   XX.XXXXXX"
-   - PPL:            "Mean PPL(Q)                   :  XX.XXXXXX"
-   - Same top p:     "Same top p: XX.XXX ± X.XXX %"
-   - Eval time:      look for timing info in the output
-   
-   If eval was not run (e.g. quantize failed), leave eval_time_s, tokens_per_sec, ppl, same_top_p blank.
-   Extract ppl and same_top_p from the eval output lines:
-   "Mean PPL(Q)                   :  XX.XXXXXX"
-   "Same top p: XX.XXX ± X.XXX %"
+7. RECORD: append results to results.tsv — ALL 16 columns:
+   timestamp, exp_id, code_sha (use HEAD), parent_sha, description, status,
+   kl_divergence, base_type, diffusion, refine_iterations, model_size_mb,
+   quantize_time_s, eval_time_s, tokens_per_sec, ppl, same_top_p
 
-9. EVALUATE OUTCOME:
-   - KL improved → keep code
-   - KL regressed → git revert CODE commit (keep results)
-   - Build/quantize fails → fix, retry max 3 attempts
+8. EVALUATE OUTCOME and COMMIT:
+   a) If KL IMPROVED (vs best known):
+      git add -A && git commit -m "exp-NNN: hypothesis — results: KL=..."
+   b) If KL REGRESSED or NULL:
+      git checkout -- ggml/src/ggml-quants.c  (discard code changes)
+      git add tools/auto-quantize/results.tsv
+      git commit -m "auto-research: record exp-NNN (regression/null)"
+   c) If build/quantize FAILS:
+      git checkout -- .  (discard all file changes)
+      git add tools/auto-quantize/idea_ledger.md
+      git commit -m "auto-research: record exp-NNN (failed)"
 
-10. SYNTHESIS (every 5 experiments): update synthesis.md
+9. SYNTHESIS (every 5 experiments): update synthesis.md
 
-11. REPEAT
+10. REPEAT
 ```
 
 ## Integrity Rules
@@ -368,5 +358,5 @@ Algorithm:
 - ALWAYS record every experiment (even failures) in results.tsv
 - NEVER change past rows in results.tsv
 - NEVER use `git commit --amend` or rewrite history
-- If experiment regresses KL → revert the code, keep the results
-- If experiment improves KL → keep the code
+- Code commits only happen for improvements. Regressions/null → discard code, keep results.
+- Always reset working tree to clean state before next experiment.
