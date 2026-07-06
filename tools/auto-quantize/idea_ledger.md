@@ -591,6 +591,27 @@ The neighbor search uses `waux[i] = sqrt(weight[i])` independently, preserving t
 
 ## Session: 2026-07-06 (continued) — Structural level encoding scheme
 
+### exp-072: Quantization-Aware Centroid Refinement (QAT) — blend K-means centroids with scale-aware targets
+**Hypothesis**: K-means training minimizes `sum w * |x - c|` — raw weighted L1 distance between weight values and centroids. But the quantizer's actual objective is `sum w * (x - scale * odd(c))^2` — weighted MSE with LS-optimal scaling and odd-forcing. These differ because the scale can stretch/compress centroids to match samples.
+
+After K-means + error-aware snap, for each training sample assigned to centroid k, compute the LS-optimal scale `scale_opt = sumqx/sumq2` where q is the odd-forced centroid. The "target" centroid value that gives zero error at this scale is `target[i] = x[i] * sumq2/sumqx`. Blend: `c_new = (1-alpha) * c_kmeans + alpha * mean(target_assigned)`. alpha=0.5.
+
+This adjusts centroids toward values that minimize the quantizer's actual objective (scale-compensated MSE), not the K-means proxy (raw L1). For centroids with diverse sample magnitudes, the scalar factor `sumq2/sumqx` per sample shifts the centroid toward the scale-aware optimum without requiring L1-to-objective alignment.
+
+This is genuinely different from all prior experiments:
+- No experiment has blended K-means centroids with quantizer-derived targets
+- It operates on the K-means objective itself (raw L1 → scale-compensated MSE alignment)
+- It's a one-shot refinement after training (not iterative, no new loop)
+- Computational cost: negligible (~0.2s for 16384 samples × 256 centroids)
+
+**Implementation**: ~60 lines added to `iq2xxs_learn_grid()` after the trial loop and before grid storage. Reassign samples to snapped best grid, compute scale-aware targets per centroid, blend with alpha=0.5, snap to int8.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.005). The effect is per-centroid value shifts of ±1-2 in a few dimensions, compoundable across 256 centroids × 95 tensors.
+
+**Files changed**: `ggml/src/ggml-quants.c` only.
+
+---
+
 ### exp-071: Exhaustive 4-bit level search (replace nearest-int with weighted-reconstruction-error minimization)
 **Hypothesis**: The current sub-block scale level is selected by `l = nearest_int(0.5*(id*scales[ib]-1))` (line 4024), which minimizes the Euclidean distance between the continuous scale and the quantized scale `d*(2*l+1)`. However, the quantizer's TRUE objective is weighted reconstruction error across the sub-block's 32 elements:
 
