@@ -330,8 +330,23 @@ Algorithm:
      --no-mmap -ngl 999 -np 1 \
      --kl-divergence \
      --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
+   Capture ALL lines of output — do NOT grep-filter. You need PPL and same_top_p.
 
-8. RECORD: append to results.tsv
+8. RECORD: append to results.tsv — must include ALL 16 columns:
+   timestamp, exp_id, code_sha, parent_sha, description, status, kl_divergence,
+   base_type, diffusion, refine_iterations, model_size_mb, quantize_time_s,
+   eval_time_s, tokens_per_sec, ppl, same_top_p
+   
+   Extract these from the eval output:
+   - KL divergence: "Mean    KLD:   XX.XXXXXX"
+   - PPL:            "Mean PPL(Q)                   :  XX.XXXXXX"
+   - Same top p:     "Same top p: XX.XXX ± X.XXX %"
+   - Eval time:      look for timing info in the output
+   
+   If eval was not run (e.g. quantize failed), leave eval_time_s, tokens_per_sec, ppl, same_top_p blank.
+   Extract ppl and same_top_p from the eval output lines:
+   "Mean PPL(Q)                   :  XX.XXXXXX"
+   "Same top p: XX.XXX ± X.XXX %"
 
 9. EVALUATE OUTCOME:
    - KL improved → keep code

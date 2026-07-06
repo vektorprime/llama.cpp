@@ -1,4 +1,4 @@
-timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	diffusion	refine_iterations	model_size_mb	quantize_time_s	eval_time_s	tokens_per_sec
+timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	diffusion	refine_iterations	model_size_mb	quantize_time_s	eval_time_s	tokens_per_sec	ppl	same_top_p
 2026-07-02T04:50:00	exp-baseline-000	956f6be026e758af39ca8417aba2fdf20b59a130	956f6be026e758af39ca8417aba2fdf20b59a130	pure Q2_K baseline (--pure flag, no modifications)	success	3.241025	Q2_K			621.0	75.9	275.0	
 2026-07-02T15:38:04	exp-20260702-001	3c58611bb331d98379b4282023279f7cd7571a04	3c58611bb331d98379b4282023279f7cd7571a04	pure Q2_K baseline (all metrics — ppl, same-top-p, kld)	success	3.241025	Q2_K			620.3	48.0	81.1	0.0	334.4096	27.07
 2026-07-02T16:43:03	exp-20260702-002	7a6db21bba5fa1f704748a1cbe3f54c31c377847	7a6db21bba5fa1f704748a1cbe3f54c31c377847	per-layer-type error diffusion: attn=0.7, mlp=0.3, lmhead=0.1, other=0.5	failed_quantize	0.000000	Q2_K			0.0	0.5	0.0	0.0		
@@ -43,8 +43,9 @@ timestamp	exp_id	code_sha	parent_sha	description	status	kl_divergence	base_type	
 2026-07-04T22:55:00	exp-028	3f7f5db0e	3f4fcf6f0	K-means with 2-bit truncated distance — quantize crashed (incomplete model), reverted	failed_quantize					754.89			
 2026-07-04T22:58:00	exp-029	d6048d4f2	42fd67a4d	Match K-means weights to quant formula — quantize crashed, reverted	failed_quantize					754.89			
 
-2026-07-06T00:20:00	exp-032	7a46b77e20751fdc22096a7987e86626e85d271a	bb34cd08e	Accumulated cross-tensor K-means++ (65536 samples, 3 trials E8+2KMPP, 40 iters) — REGRESSION: KL worse than E8 baseline	regression	0.729535	IQ2_XXS			754.89	61.0		
-2026-07-06T01:20:00	exp-033	50d2982a5e1ac5e16fea14a6611a2e9c40d32d8a	f95f11f38	Increase neighbor search depth nwant=2->4 for learned grids — IMPROVEMENT: KL beats E8 baseline AND Unsloth target!	success	0.716575	IQ2_XXS			754.89	142.4	
-2026-07-06T01:50:00	exp-034	1e12cbe5a	2e56961b9	Increase neighbor search depth nwant=4->8 — marginal KL improvement (0.7162 vs 0.7166, within noise) but quantize time 272s (1.9x slower than nwant=4)	success	0.716172	IQ2_XXS			754.89	272.2	
-2026-07-06T02:42:00	exp-035	31cbbba88	21bb66a12	Enable 5-trial K-means++ (E8 + 4 KMPP) with nwant=8 — no improvement, KL identical to exp-034	null_result	0.716172	IQ2_XXS			754.89	274.5
-2026-07-06T03:20:00	exp-036	f6eae159c	31cbbba88	Cross-tensor sample accumulation (4 tensors, 65k samples) — REGRESSION: KL worse than single-tensor training	regression	0.723153	IQ2_XXS			754.89	266.2	
+2026-07-06T00:20:00	exp-032	7a46b77e20751fdc22096a7987e86626e85d271a	bb34cd08e	Accumulated cross-tensor K-means++ (65536 samples, 3 trials E8+2KMPP, 40 iters) — REGRESSION: KL worse than E8 baseline	regression	0.729535	IQ2_XXS			754.89	61.0	445	230	26.46	60.30
+2026-07-06T01:20:00	exp-033	50d2982a5e1ac5e16fea14a6611a2e9c40d32d8a	f95f11f38	Increase neighbor search depth nwant=2->4 for learned grids — IMPROVEMENT: KL beats E8 baseline AND Unsloth target!	success	0.716575	IQ2_XXS			754.89	142.4	445	230	26.24	60.56
+2026-07-06T01:50:00	exp-034	1e12cbe5a	2e56961b9	Increase neighbor search depth nwant=4->8 — marginal KL improvement (0.7162 vs 0.7166, within noise) but quantize time 272s (1.9x slower than nwant=4)	success	0.716172	IQ2_XXS			754.89	272.2	445	230	26.24	60.56
+2026-07-06T02:42:00	exp-035	31cbbba88	21bb66a12	Enable 5-trial K-means++ (E8 + 4 KMPP) with nwant=8 — no improvement, KL identical to exp-034	null_result	0.716172	IQ2_XXS			754.89	274.5	445	230	26.24	60.56
+2026-07-06T03:20:00	exp-036	f6eae159c	31cbbba88	Cross-tensor sample accumulation (4 tensors, 65k samples) — REGRESSION: KL worse than single-tensor training	regression	0.723153	IQ2_XXS			754.89	266.2	445	230	26.46	60.34
+2026-07-06T06:50:00	exp-037	0552bec61	52fd55e3a	Cross-tensor accumulation with per-tensor L1 normalization (3 tensors, mean_abs=32.0) — CATASTROPHIC regression: normalization collapsed sample diversity, grid centroids became nearly identical, reverted	regression	2.379359	IQ2_XXS			754.89	56.6	445	230		
