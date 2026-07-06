@@ -63,7 +63,7 @@
 | 066 | Post-d refinement with centroid-aware sign parity re-evaluation | CATASTROPHIC (0.815) |
 | 067 | Narrower d optimization range (±8% at 0.5% step, 33 candidates) | REGRESSION (0.702) |
 | 068 | Quantizer-aware K-means assignment (scale-aware dot-product criterion) | CATASTROPHIC (12.31) |
-| **069** | **Second-best centroid evaluation (kmap2) — structural change** | **PENDING** |
+| 069 | Second-best centroid evaluation (kmap2) — structural change | REGRESSION (0.752) |
 
 ---
 
