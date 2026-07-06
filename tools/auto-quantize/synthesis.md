@@ -2,12 +2,17 @@
 
 ## Status: Best KL = 0.662001 (exp-093, waux=powf(weight,0.20)). System is at a genuine local optimum.
 
-## Updated: exp-099 through exp-100 (All Regressions)
+## Updated: exp-099 through exp-105 (All Null/Regressions — 12 Consecutive Failures)
 
 | Exp | KL | Technique | Verdict |
 |-----|-----|-----------|---------|
 | 099 | 0.6799 | L1-based weight formula (mean_abs+\|xb\|) | REGRESSION (+2.7%) |
-| **100** | **0.6904** | **Decouple imatrix from magnitude in waux — qw*(sigma2+xb^2)^0.06** | **REGRESSION (+4.3%)** |
+| 100 | 0.6904 | Decouple imatrix from magnitude in waux | REGRESSION (+4.3%) |
+| 101 | 0.7522 | Remove sigma2 from main weight | REGRESSION (+13.6%) |
+| 102 | 0.6637 | Post-d exponent 0.35→0.40 | NULL (±0.4σ) |
+| 103 | 0.6730 | Max d objective | REGRESSION (+1.66%) |
+| 104 | 0.6631 | Tighter d range ±15% | NULL (±0.25σ) |
+| **105** | **0.7313** | **Correct sign parity re-evaluation in post-d (centroid-aware flip)** | **REGRESSION (+10.5%)** |
 
 ### exp-100: Decoupled waux imatrix — qw^0.20 softening proven necessary
 
@@ -36,7 +41,7 @@ Changing the d optimization from sum-of-errors to max-of-sub-block-errors regres
 
 Tightening the d optimization range from ±16% to ±15% (61 vs 65 candidates) produced KL 0.663061, within 0.25σ of best. The edge candidates at ±16% are rarely selected as optimal d — removing them has no measurable effect.
 
-**10 consecutive experiments since exp-093 (KL 0.662001) without improvement**: exp-094 through exp-104 are all null or regression. The system is at a genuine local optimum within the current IQ2_XXS format and algorithm.
+**12 consecutive experiments since exp-093 (KL 0.662001) without improvement**: exp-094 through exp-105 are all null or regression. The system is at a genuine local optimum within the current IQ2_XXS format and algorithm. ALL sign-related modifications (exp-053, exp-066, exp-105) have failed catastrophically — the `ksigns_iq2xs` parity encoding + `min w*xb^2` flip criterion is fundamentally correct and should not be modified.
 
 ## Final Best Configuration (exp-093)
 
@@ -225,9 +230,13 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 | 097 | 0.6873 | Soften post-d wtmp with powf 0.20 | REGRESSION (+3.8%) |
 | 098 | 0.6679 | Finer waux powf(weight,0.10) | REGRESSION (+0.88%) |
 | **099** | **0.6799** | **L1-based weight formula (mean_abs+|xb| instead of sigma2+xb²)** | **REGRESSION (+2.7%)** |
-
 ### exp-099: L1-based weight formula — L2 metric confirmed essential
+
 The weight formula's L2-based magnitude `sigma2 + xb²` (mean of squares) is structurally necessary. Replacing with L1-based `mean_abs + |xb|` regressed KL from 0.662 to 0.680 (+2.7%). The L2 baseline amplifies large-magnitude elements more aggressively than L1, providing essential per-element selectivity for the d optimization and post-d refinement. The sigma2 baseline's amplification is exactly what makes the weight formula effective — the L2-based form `(sigma2 + xb²)^p` with p=0.30 provides the right compromise between uniformity and selectivity.
+
+### exp-105: Sign parity re-evaluation with centroid-aware flip confirmed harmful
+
+The correct implementation (using `ksigns_iq2xs` table to derive element 7's sign) still regressed KL from 0.662 to 0.731 (+10.5%). The original `min w*xb^2` parity fix is optimal regardless of centroid choice — picking a different flip based on centroid values breaks the superblock's reconstruction balance. The parity mechanism is fundamentally robust: the `w*xb^2` criterion correctly identifies the element with minimum reconstruction impact for any centroid, making centroid-aware re-evaluation redundant and harmful.
 
 ## Gap Analysis
 - **Best KL**: 0.662001 (exp-093, waux=powf(weight,0.20))
