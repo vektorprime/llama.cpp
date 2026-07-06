@@ -4,6 +4,52 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **100** | **Decouple imatrix from magnitude in waux — waux = qw * (sigma2+xb^2)^0.06** | **IN PROGRESS** |
+
+---
+
+## Session: 2026-07-06 (continued)
+
+### exp-100: Decouple imatrix importance from magnitude in waux — direct formula for neighbor search weight
+
+**Hypothesis**: The current waux formula `waux[i] = powf(weight[i], 0.20f)` applies powf(weight, 0.20) uniformly to ALL components of weight:
+- `waux = (qw * (sigma2 + xb^2)^0.30)^0.20 = qw^0.20 * (sigma2 + xb^2)^0.06`
+
+This SOFTENS both the imatrix importance AND the magnitude. The magnitude softening to eff exp 0.06 is confirmed optimal (exp-093), but the imatrix importance is ALSO softened to `qw^0.20`, reducing differentiation between high-importance and low-importance columns.
+
+By using a DIRECT formula that decouples the two components:
+```
+waux[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.06f)
+```
+The neighbor search retains linear imatrix differentiation (important columns get directly proportional weight) while maintaining the proven magnitude exponent of 0.06.
+
+This is principled because:
+1. The imatrix captures per-column importance from calibration data — this is the MOST reliable importance signal and should NOT be softened
+2. The magnitude component `(sigma2 + xb^2)^0.06` prevents single outlier elements from dominating the centroid selection — the proven benefit from exp-093
+3. The decoupling is a one-line change with no coupling to other quantizer stages
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c:3862`:
+```c
+// Before:
+for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.20f);
+// After:
+for (int i = 0; i < 32; ++i) waux[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.06f);
+```
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003, ~0.15%-0.45% relative) from 0.662001. The effect is bounded because only the neighbor search for off-map patterns (~5% of chunks) is affected. The decoupling preserves the optimal magnitude softening while improving imatrix differentiation.
+
+**Risk**: LOW — bounded impact (only waux, only neighbor search, ~5% of chunks). Revert is trivial (one line). Even if qw^0.20 was accidentally helpful (limiting imatrix influence on the already-rare neighbor search path), the regression would be small.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — line 3862.
+
+## Experiment Index (continued)
+
+| Exp | Description | Outcome |
+|-----|-------------|---------|
+| 001 | Float-space centroid training → int8 snap at end | null |
+
+| Exp | Description | Outcome |
+|-----|-------------|---------|
 | 001 | Float-space centroid training → int8 snap at end | null |
 | 002 | Activation-weighted K-means with imatrix | improvement |
 | 003 | Residual quantization — second pass refines grid | improvement |
