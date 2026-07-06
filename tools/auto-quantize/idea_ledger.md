@@ -638,3 +638,24 @@ None of these hold in practice. By exhaustively evaluating all 16 possible 4-bit
 
 **Files changed**: `ggml/src/ggml-quants.c` only — ~35 lines replaced (lines 4022-4027).
 
+---
+
+### exp-073: Joint d+level optimization in a single pass (exhaustive level search during d optimization)
+**Hypothesis**: The current d optimization (65 candidates, 0.5% step, ±16% range) picks the best `d` but computes 4-bit levels via `l = nearest_int(0.5*(id_try*scales[ib]-1))` which minimizes scale quantization error, NOT weighted reconstruction error. The d optimization evaluates each `d_try` with suboptimal levels, potentially selecting a wrong `d` because the levels for that `d` were poorly chosen.
+
+By trying ALL 16 possible 4-bit levels for each sub-block during the d optimization, we find the jointly optimal (d, level) combination for the fixed grid indices.
+
+**Key difference from exp-050/056/060** (which all regressed):
+- Exp-050 changed levels AFTER quantization (broke index-scale coupling)
+- Exp-056 changed d AFTER post-d refinement (indices selected for old d)
+- Exp-060 changed levels AFTER post-d refinement (indices selected for old levels)
+- **This optimizes d AND levels SIMULTANEOUSLY, BEFORE post-d refinement**. The post-d refinement then optimizes indices for the jointly-optimal (d, level) — a proper one-way chain.
+
+**Implementation** (ggml/src/ggml-quants.c):
+1. **d optimization loop** (lines 3985-4006): Replace `nearest_int(0.5*(id_try*scales[ib]-1))` with exhaustive search over levels 0..15 per sub-block. Each `ll` computes `scale_q = d_try*(2*ll+1)` and weighted reconstruction error. Pick min-error level per sub-block, accumulate.
+2. **Final encoding** (lines 4023-4027): Same exhaustive level search with best `d`.
+
+Computational cost: ~16x inner loop (~15-20s added, well under 5-min limit).
+
+**Expected**: KL improvement from 0.699009 (Δ ~0.001-0.005). The nearest-int level is only optimal for uniform weights; with imatrix weighting, the true optimal level may be ±1-2 from nearest_int.
+
