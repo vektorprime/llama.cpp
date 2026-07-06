@@ -3950,6 +3950,53 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                 }
                 if (sumq2 > 0) scale = sumqx/sumq2;
             }
+            // exp-046: greedy per-element level perturbation — try ±1 on each
+            // quantization level to find better grid centroids for the refined scale.
+            // The uniform id shift in scale search moves all 32 levels together;
+            // individual dimension flips explore combinations it cannot reach.
+            if (scale > 0) {
+                const float id_loc = 1/scale;
+                for (int k = 0; k < 4; ++k) {
+                    int8_t * ch = L + 8*k;
+                    int8_t save[8]; memcpy(save, ch, 8);
+                    float cur = 0;
+                    for (int i = 0; i < 8; ++i) cur += weight[8*k+i]*fabsf(scale*(2*ch[i]+1) - xval[8*k+i]);
+                    float best_err = cur;
+                    int8_t best_L[8]; memcpy(best_L, save, 8);
+                    for (int i = 0; i < 8; ++i) {
+                        for (int dir = -1; dir <= 1; dir += 2) {
+                            int nl = save[i] + dir;
+                            if (nl < 0 || nl > 3) continue;
+                            uint16_t u = 0;
+                            for (int j = 0; j < 8; ++j) u |= ((j == i ? nl : save[j]) << 2*j);
+                            int g = kmap_q2xs[u];
+                            if (g >= 0) {
+                                const int8_t * pg = (const int8_t *)(kgrid_q2xs + g);
+                                float err = 0;
+                                for (int j = 0; j < 8; ++j) err += weight[8*k+j]*fabsf(scale*pg[j] - xval[8*k+j]);
+                                if (err < best_err) { best_err = err; for (int j = 0; j < 8; ++j) best_L[j] = (pg[j] - 1)/2; }
+                            } else {
+                                const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u] - 1;
+                                g = iq2_find_best_neighbour(neighbours, kgrid_q2xs, xval + 8*k, waux + 8*k, scale, ch);
+                                const int8_t * pg = (const int8_t *)(kgrid_q2xs + g);
+                                float err = 0;
+                                for (int j = 0; j < 8; ++j) err += weight[8*k+j]*fabsf(scale*pg[j] - xval[8*k+j]);
+                                if (err < best_err) { best_err = err; memcpy(best_L, ch, 8); }
+                                memcpy(ch, save, 8);
+                            }
+                        }
+                    }
+                    memcpy(ch, best_L, 8);
+                }
+                float sqx = 0, sq2 = 0;
+                for (int i = 0; i < 32; ++i) {
+                    float w = weight[i];
+                    float q = 2*L[i] + 1;
+                    sqx += w*xval[i]*q;
+                    sq2 += w*q*q;
+                }
+                if (sq2 > 0) scale = sqx/sq2;
+            }
             if (scale < 0) {
                 // This should never happen, but just in case, flip scale so that it is positive (we use uint's to encode the scale)
                 // and correspondingly flip quant signs.

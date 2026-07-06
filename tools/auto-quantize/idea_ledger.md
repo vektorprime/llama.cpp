@@ -84,3 +84,12 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 
 **Lesson**: The scale-grid coordinate descent converges in 1 iteration. Additional iterations select grid entries that are locally optimal for the continuous scale but not robust to the 4-bit scale quantization that follows. The quantizer's design (1-pass refinement) is already optimal for the full pipeline.
 
+### exp-046: Greedy per-element level perturbation during quantization
+**Hypothesis**: The quantizer's scale search (13 uniform id shifts from -6 to +6 step 0.1) shifts ALL 32 quantization levels together. But individual elements may benefit from independent level adjustments — element i may need to round up while element j rounds down. These per-element flips cannot be achieved by any global id shift.
+
+The `nearest_int` quantization produces the closest `pos = 2*l+1` in terms of exact 2-bit encoding, but the actual grid centroid found (via kmap or neighbor) may differ from `pos`. A slightly different `u` pattern (with one element flipped ±1) could map to a centroid that is genuinely closer to the target `xval` under the weighted L1 metric.
+
+After the LS scale refinement step, try flipping each element's 2-bit quantization level by ±1 (independently, 16 perturbations per 8D chunk = 64 per block). For each perturbation, re-evaluate the weighted L1 error using the actual grid centroid. Pick the best. This is a greedy search that explores quantization patterns the uniform scale sweep cannot reach.
+
+**Expected**: Small KL reduction (0.0005-0.003) from 0.7162. Near-zero compute overhead (~64 extra kmap/neighbor lookups per block).
+
