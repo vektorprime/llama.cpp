@@ -1103,5 +1103,39 @@ for (int i = 0; i < 32; ++i) waux[i] = weight[i];
 
 ---
 
-### exp-091: (Reserved)
+### exp-091: Outlier-robust sigma2 using trimmed mean (single-largest-xb² removal)
+
+**Hypothesis**: The sigma2 baseline `sigma2_per_ib = mean(xb²)` per 32-element sub-block is inflated by outlier elements. A single massive element (|xb| >> RMS) raises the sigma2 floor, which the weight formula `weight[i] = qw[i] * powf(sigma2 + xb², 0.30)` uses as an additive baseline. This inflated sigma2 creates a high weight floor for small elements, REDUCING per-element weight selectivity:
+- For the outlier: `weight ≈ qw * (xb²)^0.30` — sigma2 barely matters (xb² >> sigma2)
+- For typical elements: `weight ≈ qw * (2*sigma2)^0.30` — sigma2 inflates weight by ~23%
+- For small elements: `weight ≈ qw * sigma2^0.30` — weight is entirely sigma2-driven
+
+When sigma2 is inflated by an outlier, the weight floor for small elements rises, collapsing the effective dynamic range of weights within the sub-block. The quantizer no longer distinguishes well between important and less-important elements.
+
+By removing the single largest xb² before computing sigma2, we get a sigma2 that better represents the "typical" element magnitude. This is a trimmed mean that excludes exactly one outlier per sub-block, which is principled because:
+1. The xb² distribution is roughly chi-squared-ish; the max element in 32 draws is likely an outlier
+2. The single-outlier exclusion is robust and doesn't over-trim (unlike a fixed threshold or percentage)
+3. For uniform sub-blocks (all xb ≈ same), removing any one element barely changes sigma2
+
+**Implementation**: One-line change in `quantize_row_iq2_xxs_impl()` (ggml/src/ggml-quants.c, lines 3858-3860):
+```c
+// Before:
+float s2 = 0.0f;
+for (int i = 0; i < 32; ++i) s2 += xb[i]*xb[i];
+sigma2_per_ib[ib] = s2 / 32.0f;
+// After:
+float s2 = 0.0f; float max_x2 = 0.0f;
+for (int i = 0; i < 32; ++i) {
+    float x2 = xb[i]*xb[i];
+    s2 += x2;
+    if (x2 > max_x2) max_x2 = x2;
+}
+sigma2_per_ib[ib] = (s2 - max_x2) / 31.0f;
+```
+
+All 4 weight computation sites (main quantization, d optimization, post-d refinement stages 1 and 2) use the same `sigma2_per_ib` array, so this change is uniform across all stages — no coupling issues. The change is additive (only sigma2 changes) and doesn't touch d, levels, indices, or any quantizer state.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.004, ~0.15-0.6% relative) from 0.666162. The effect should be largest for sub-blocks in attention tensors where a few elements dominate (common in Q/K projections). No risk of regression since the change is a minute shift in the sigma2 baseline only.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (3 lines modified).
 
