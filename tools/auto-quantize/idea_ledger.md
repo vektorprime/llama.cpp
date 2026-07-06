@@ -293,3 +293,17 @@ By fixing all three to use odd-forced values (`2*((v-1)/2)+1`), the quantizer's 
 
 **Reverted**. But the conceptual insight remains: the kmap/neighbor search uses raw centroid values, while inference uses odd-forced values. The key takeaway is that maintaining raw-value diversity in the neighbor list is MORE important than aligning with inference-time decoding — because centroids with the same odd-forced values but different raw values have the same decoded output, and the raw-value neighbor list acts as a useful tiebreaker that doesn't affect reconstruction quality.
 
+### exp-058: Scale-aware robust post-d grid index refinement + optimal d recomputation
+**Hypothesis**: The post-d grid index recomputation (exp-055) improved KL by fixing indices for the quantized scale `d*(2*l+1)`. However, each index change is evaluated only at the exact scale. This creates indices over-specialized to that specific d, which is why a SECOND d optimization (exp-056) diverged — changing d invalidated the overfitted indices.
+
+By requiring each index change to also reduce error at ±3% nearby scales (3-scale acceptance), the refinement produces d-robust indices that remain valid when d shifts. With robust indices, a closed-form optimal d recomputation (keeping levels and indices fixed) finds a better d. The cycle completes with level recomputation and a final index refinement for the new d.
+
+**Implementation**:
+1. Post-d refinement: accept new index only if `err_new < err_old` at scales `scale_q`, `scale_q*0.97`, AND `scale_q*1.03` (majority: ≥2 out of 3)
+2. After refinement: closed-form d optimization `d_opt = sum(w*xb*l_factor*cval)/sum(w*(l_factor*cval)^2)` for current robust indices and levels
+3. Clamp d_opt to ±20% of current d (safety margin)
+4. Recompute levels `l = nearest_int(0.5*(id_new*scales[ib]-1))`
+5. Final post-d index refinement with new d and levels
+
+**Expected**: KL improvement from 0.710657. The robust indices avoid the overfitting trap of exp-056, while the closed-form d optimization finds a genuinely better superblock scale for the actual inference-time grid indices. The final index refinement ensures indices match the new d. Combined effect should exceed exp-055 alone.
+
