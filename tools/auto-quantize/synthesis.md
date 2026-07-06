@@ -123,11 +123,12 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 - **Unsloth target**: 0.721 (surpassed by 3.0%)
 - **Remaining gap**: None to Unsloth; new benchmark set
 - **Grid training is saturated**: All grid-only experiments produce null results. Grid is effectively E8 with minimal drift.
-- **Quantizer SEARCH is the only remaining headroom**: The d optimization step refinement has been the most consistent source of improvement.
+- **Quantizer SEARCH is saturated**: 7 consecutive experiments (exp-061 through exp-067) have explored d optimization step/range exhaustively. Optimal configuration: 65 candidates at 0.5% step, ±16% range.
 - **Index-scale coupling is fragile**: Any two-way modification (changing both indices and scale) causes catastrophic regression. Only one-way modifications are safe.
-- **D optimization step refinement has diminishing returns**: 4%→2%: -0.81%, 2%→1%: -0.31%, 1%→0.5%: -0.52%. Further step reduction likely gives <0.1%.
+- **D optimization has reached diminishing returns**: The project is at a local optimum. All reasonable one-way modifications to the quantization search have been exhausted.
+- **New directions require fundamental changes**: Format-level changes (multi-codebook, scaled centroids, non-uniform level spacing) or infrastructure changes (per-tensor grids with imatrix-aware kmap) could provide step-change improvements but require significant design work.
 
-## Key Findings: Experiments 056-064
+## Key Findings: Experiments 056-067
 
 | Exp | KL | Technique | Verdict |
 |-----|-----|-----------|---------|
@@ -140,7 +141,10 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 | **061** | **0.7049** | **d opt 4%→2% step (17 cand)** | **SUCCESS** |
 | 062 | 0.7126 | d opt ±24% range | REGRESSION |
 | **063** | **0.7027** | **d opt 2%→1% step (33 cand)** | **SUCCESS** |
-| **064** | **0.6990** | **d opt 1%→0.5% step (65 cand)** | **SUCCESS** |
+| **064** | **0.6990** | **d opt 1%→0.5% step (65 cand, ±16%)** | **SUCCESS** |
+| 065 | 0.7036 | d opt 0.25% step (129 cand) | REGRESSION |
+| 066 | 0.8152 | Sign parity re-evaluation in post-d refinement | CATASTROPHIC |
+| 067 | 0.7017 | d opt ±8% range (33 cand) | REGRESSION |
 
 ### Critical Lessons
 
