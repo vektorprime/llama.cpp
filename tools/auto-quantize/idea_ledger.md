@@ -87,6 +87,7 @@
 | 090 | Remove sqrtf from waux (align neighbor weight) | REGRESSION (0.682) |
 | 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
 | 092 | Adaptive weight exponent per sub-block via CV | REGRESSION (0.680, +2.1%) |
+| **093** | **Softer neighbor search weighting (waux=powf(weight,0.20))** | **IN PROGRESS** |
 
 ---
 
@@ -1190,4 +1191,31 @@ This is a **one-way modification** (weights only, no index/scale/level coupling)
 **Expected**: KL improvement from 0.666162 (Δ ~0.002-0.006, ~0.3-0.9% relative). The effect should be largest for tensors with diverse sub-block distributions (e.g., attention tensors where some sub-blocks have dominant outlier elements while others are uniform). Heavy-tailed sub-blocks get the proven 0.30 exponent (exp-082), uniform sub-blocks get the sharper 0.50 (original sqrt). The combination should outperform any single fixed exponent.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~10 lines changed: add mean_abs computation, exp_per_ib array, 4 exponent substitutions).
+
+### exp-093: Softer neighbor search weighting — `waux = powf(weight, 0.20)` instead of `sqrtf(weight)`
+
+**Hypothesis**: The neighbor search in `iq2_find_best_neighbour()` handles off-map 2-bit patterns (rare patterns without a direct kmap match). It uses `waux[i] = sqrtf(weight[i])` as the per-element weight, which gives an effective exponent of 0.15 (from `weight = qw * (sigma2+xb^2)^0.30`). 
+
+Exp-090 proved that REMOVING the sqrt (using `weight[i]` directly, effective exponent 0.30) causes regression (KL 0.682 vs best 0.666). The neighbor search needs LOWER effective weighting than the main path. This makes intuitive sense: for rare off-map patterns, per-element importance ratios are noisy — the kmap L2 distance should dominate the centroid selection, not the importance-weighted error.
+
+By reducing `waux = powf(weight, 0.20)` (effective exponent 0.06), the neighbor search becomes more uniform, letting the global grid structure dominate centroid selection for rare patterns. The main quantization path still uses the full weight (exp 0.30), and the post-d refinement uses the sharper wtmp (exp 0.35). This widens the existing asymmetry:
+- **Pre-d neighbor (waux, exp 0.15 → 0.06)**: Nearly uniform, grid-structure-dominated centroid selection
+- **Main weight (exp 0.30)**: Balanced importance-magnitude trade-off
+- **Post-d neighbor (wtmp, exp 0.35)**: Sharper, importance-focused index refinement
+
+The widening of the asymmetry between pre-d and post-d neighbor search is principled: the initial search uses a broad objective (good enough centroid for rare patterns), the post-d refinement uses a sharp objective (best centroid with quantized scale). The two-stage approach benefits from wider separation.
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c:3862`:
+```c
+// Before:
+for (int i = 0; i < 32; ++i) waux[i] = sqrtf(weight[i]);
+// After:
+for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.20f);
+```
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003, ~0.15-0.45% relative) from 0.666162. The effect is limited because most chunks (≥95%) use the DIRECT kmap path and don't invoke the neighbor search. But for the 5% of off-map patterns, better centroid selection compounds across 95 IQ2_XXS tensors.
+
+**Risk**: LOW — bounded impact because only the neighbor search (fallback path for ~5% of chunks) is affected. The main weight, d optimization, scale selection, and post-d refinement are unchanged. Revert is trivial (one line).
+
+**Files changed**: `ggml/src/ggml-quants.c` only — line 3862.
 
