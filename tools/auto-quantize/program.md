@@ -126,8 +126,7 @@ q8_0 (QK8_0=32) handles skinny matrices correctly — pads internally.
 
 ## IQ2_XXS Codebook Learning Protocol
 
-**Quantization with learning takes ~1 minute (exp-031 optimization: 9.4x speedup).**
-Always allow at least 5 minutes when running via sub-agent. Pass `-t 5m` to bash commands.
+**Quantization limit: 7 minutes HARD.** If a change pushes quantize time over 7 min, it must be abandoned UNLESS it delivers ≥10% KL improvement (e.g., 0.66→0.59). Pass `-t 7m` to bash commands.
 
 ### Step 1: Quantize with codebook learning (--iq2xxs-learn)
 
@@ -309,9 +308,9 @@ Algorithm:
 
 4. BUILD: cmake --build build/ -j
 
-5. QUANTIZE (with codebook learning):
+5. QUANTIZE — must finish in ≤7 minutes (HARD limit, unless ≥10% KL gain):
    rm -f /tmp/learned.gguf /tmp/learned.gguf.iq2xxs_grids
-   ./build/bin/llama-quantize \
+   timeout 420 ./build/bin/llama-quantize \
      --imatrix /home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf \
      --tensor-type-file tools/auto-quantize/tensor_types_unsloth_match.txt \
      --iq2xxs-learn \
