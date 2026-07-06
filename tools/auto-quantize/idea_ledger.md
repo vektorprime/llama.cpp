@@ -57,7 +57,8 @@
 | 060 | Post-refinement per-sub-block level recomputation from updated indices | CATASTROPHIC (1.201) |
 | 061 | Finer d optimization grid (17 candidates at 2% step instead of 9 at 4%) | IMPROVEMENT (0.704868) |
 | 062 | Wider d optimization range (±24% 2% step, 25 candidates) | REGRESSION (0.713) |
-| 063 | Finer d optimization grid (33 candidates at 1% step, ±16% range) | PENDING |
+| 063 | Finer d optimization grid (33 candidates at 1% step, ±16% range) | IMPROVEMENT (0.702666) |
+| 064 | Finest d optimization grid (65 candidates at 0.5% step, ±16% range) | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -427,4 +428,21 @@ for (int is = -16; is <= 16; ++is) {
 **Result**: KL=0.702666 — IMPROVEMENT (Δ = -0.002202, -0.31% from exp-061's 0.704868). The 1% step finds consistently better d within the ±16% range. KL improved from 0.704868 to 0.702666. PPL dropped from 26.12 to 26.02. Same top p stable (~60.98%). Quantize time unchanged (~292s). NEW BEST RESULT.
 
 **Why it works**: The 2% step d optimization (exp-061) found d within ~1% of the true optimum on average. The 1% step reduces the average offset to ~0.5%, capturing the remaining improvement. The quadratic error landscape means improvement diminishes with finer steps, which matches the observed pattern (4%→2%: 0.81% KL gain, 2%→1%: 0.31% KL gain). Expected next step (1%→0.5%): ~0.1% gain.
+
+### exp-064: Finest d optimization grid (65 candidates at 0.5% step, ±16% range)
+**Hypothesis**: The d optimization step has been reduced from 4% (exp-049) → 2% (exp-061, +0.81% KL) → 1% (exp-063, +0.31% KL). At 0.5% step with 65 candidates over the same ±16% range, the worst-case d offset is ~0.25% from the true optimum. This captures the remaining improvement from the quadratic error landscape.
+
+**Implementation**: One-line change:
+```c
+// Before (exp-063 state):
+for (int is = -16; is <= 16; ++is) {
+    float d_try = d_base * (1.0f + is * 0.01f);
+// After:
+for (int is = -32; is <= 32; ++is) {
+    float d_try = d_base * (1.0f + is * 0.005f);
+```
+
+**Expected**: Small KL improvement (Δ ~0.0001-0.0002) from 0.702666. Diminishing returns expected as the optimal d is approached.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
