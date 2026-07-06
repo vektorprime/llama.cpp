@@ -844,3 +844,25 @@ Same change at lines 4003, 4046, 4072.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: sqrtf → powf(..., 0.4f)). **KEPT** (new best).
 
+### exp-081: Further soften weight exponent to 0.35 (from 0.4)
+
+**Hypothesis**: The weight exponent reduction from 0.5 (sqrtf) to 0.4 gave a 1.27% KL improvement (0.691085 → 0.682340). This suggests the optimal exponent lies below 0.5. If the relationship is roughly monotonic in this region, further reducing to exponent 0.35 may continue the improvement — reducing the magnitude-weighting even more, giving the quantizer a flatter optimization landscape where small-magnitude elements are not neglected.
+
+The risk is that going too soft under-weights large elements that contribute most to model output quality. Exp-076 (exponent 1.0, no sqrt) was catastrophic (KL=0.837), so the penalty for going too sharp is severe. Going softer is safer — the worst case is the weight formula becomes too uniform, similar to not having the sqrt factor at all (effectively exponent 0 → just qw). Exponent 0.35 is a moderate 12.5% reduction from 0.4.
+
+**Implementation**: Change 4 lines in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before:
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.4f);
+// After:
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.35f);
+```
+
+**Expected**: Small KL improvement (Δ ~0.002-0.005) from 0.682340. Diminishing returns expected as exponent approaches the optimal value around 0.3-0.35.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: 0.4f → 0.35f).
+
+---
+
+
+
