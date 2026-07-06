@@ -990,3 +990,31 @@ Increasing d opt/post-d from 0.35 to 0.40 widens the asymmetry gap from 0.05 to 
 
 ---
 
+## Session: 2026-07-06 (continued) — Complete functional change to weight formula
+
+### exp-087: Linear-L1 magnitude weight formula (replace powf with 1+|xb|)
+
+**Hypothesis**: All prior weight formula experiments explored the power-law family `qw * (sigma2 + xb^2)^p`, varying exponent p from 1.0 down to 0.25. The optimal was p≈0.30. But this family has a fundamental structure: (1) shared sub-block sigma2 baseline, (2) squared magnitude xb^2, (3) power-law compression. Each of these was individually tuned but they're coupled — changing one changes the effective weighting profile.
+
+A structurally different approach: use a **linear-L1 magnitude form** `qw * (1 + |xb|)` — no sigma2 baseline, no squaring, no power law. Just imatrix times per-element absolute magnitude with a constant floor of 1.
+
+The differences from the power-law family:
+1. **No sub-block coupling**: sigma2_per_ib tied all 4 sub-blocks together through a shared RMS baseline. The L1 form is per-element, so each element's weight depends only on its own magnitude, not the sub-block's global statistic. This decouples sub-blocks in the weight domain.
+2. **Linear growth**: |xb| grows linearly with element magnitude, unlike xb^2 which grows quadratically and then gets compressed through ^0.30. The linear form should give more weight to medium elements (|xb| ~1-10) relative to very large ones, compared to the power-law family.
+3. **No exponent tuning**: The form is parameter-free except for the floor constant (1). This removes a tuning axis entirely.
+
+The risk: L1 form may over-weight large elements or under-weight small ones. The `1+` floor prevents zero weight but may not be the right scaling for sub-blocks with very different intrinsic magnitudes. However, the quantizer's per-sub-block scale `d` and 4-bit levels already handle magnitude differences; the weight formula only needs to determine within-sub-block trade-offs, where absolute magnitude (not RMS-relative) is the natural metric.
+
+**Implementation**: 4 lines changed in `quantize_row_iq2_xxs_impl()` (ggml/src/ggml-quants.c):
+```c
+// Before: weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
+// After:  weight[i] = qw[i] * (1.0f + fabsf(xb[i]));
+```
+Same change at the d optimization (was exponent 0.35) and post-d refinement (was exponent 0.35). Also removed `sigma2_per_ib` array and `s2` computation loop.
+
+**Expected**: Uncertain — this is a fundamentally different functional form. Best case: the linear-L1 form is more robust across tensor types and improves KL. Worst case: the per-element weight without sub-block statistics loses information, and KL regresses. The outcome will reveal whether the power-law form's complexity is necessary or if a simpler linear form suffices.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
+
+---
+
