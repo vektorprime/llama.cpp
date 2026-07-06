@@ -8,7 +8,8 @@
 | 101 | Remove sigma2 baseline from main quantization weight only | REGRESSION |
 | 102 | Sharpen post-d refinement weight exponent 0.35→0.40 (keep d-opt 0.35) | NULL |
 | 103 | Change d optimization objective from sum to max-of-sub-block-errors | REGRESSION |
-| **104** | **Tighter d optimization range ±15% (was ±16%) at 0.5% step (61 candidates)** | **IN PROGRESS** |
+| 104 | Tighter d optimization range ±15% at 0.5% step (61 candidates) | NULL |
+| **105** | **Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug)** | **IN PROGRESS** |
 
 ---
 
@@ -1566,3 +1567,104 @@ The d optimization and post-d refinement lines (4003, 4046, 4072) are UNCHANGED,
 **Expected**: KL improvement (Δ ~0.002-0.008, ~0.3-1.2% relative) from 0.662001. The effect should be largest for sub-blocks with mixed magnitudes (few large, many near-zero), common in attention tensors.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — line 3861.
+
+---
+
+## Session: 2026-07-06 (continued) — Correct sign parity re-evaluation in post-d refinement
+
+### exp-105: Correct sign parity re-evaluation for changed-index chunks in post-d refinement
+
+**Hypothesis**: The post-d refinement (lines 4034-4082) changes grid indices for the quantized scale `d*(2*l+1)` but keeps the ORIGINAL sign bits from the initial quantization. The sign bits were computed with the parity fix (flip element with minimum `w*xb^2`) optimized for the OLD centroid at the INITIAL continuous scale.
+
+When the grid index changes (new centroid with different values), the parity-fixed element is still the one that was optimal for the OLD centroid. The new centroid may have a DIFFERENT optimal parity fix — a different element whose flip minimizes reconstruction error at the quantized scale with the new centroid values.
+
+Exp-066 tried this but catastrophically regressed due to a bug: the sign re-evaluation loop checked bit 7 of `try_signs` (as if 8 bits were independently stored), but the `ksigns_iq2xs` table derives element 7's sign from the parity of the 7 stored bits (bits 0-6). The code in exp-066 evaluated sign flips without accounting for this derived sign, causing the error computation to systematically underestimate error for patterns with incorrect parity.
+
+**Implementation** (correct approach using ksigns_iq2xs parity encoding):
+
+The IQ2_XXS sign format stores 7 bits for elements 0-6. Element 7's sign is derived by `ksigns_iq2xs` table to ensure even total parity. A valid sign pattern must:
+1. Be representable as a 7-bit index (bits 0-6 = signs for elements 0-6)
+2. Have even total number of negative signs (enforced by table)
+
+For re-evaluating signs with a new centroid and quantized scale:
+1. For each 8D chunk where the grid index changed in post-d refinement:
+2. Start with natural signs: `natural_neg[i] = (xb[i] < 0)` for i=0..6
+3. Compute derived sign for element 7: `el7_neg = (popcount(natural_neg[0:6]) & 1) != 0`
+4. Total negative signs = `popcount(natural_neg[0:6]) + el7_neg` — this is always even given the derivation rule
+5. But the natural signs may produce a high reconstruction error at the quantized scale with the new centroid. A different sign pattern (flipping additional elements) may reduce error while maintaining even parity.
+6. For each element i in 0..7 where flipping would change the parity (note: flipping any of elements 0-6 changes the derived element 7 sign as well — flipping 2 elements total):
+   - Evaluate weighted reconstruction error at `scale_q * centroid[i] * new_sign[i]`
+   - Pick flip with minimum error
+
+**The critical fix from exp-066**: Use the ksigns_iq2xs table to generate the full 8-bit sign mask from the 7 stored bits, rather than trying to independently manipulate 8 bits. The error evaluation must use the ACTUAL reconstruction that inference produces.
+
+**Implementation** (~30 lines added after line 4081 in post-d refinement block):
+
+```c
+/* Re-evaluate sign parity for chunks where grid index changed */
+for (int ib = 0; ib < QK_K/32; ++ib) {
+    if (scales[ib] <= 0.0f) continue;
+    int l = (q2[2*ib+1] >> 28) & 0xF;
+    float scale_q = d * (2.0f*l + 1.0f);
+    const float * xb = xbl + 32*ib;
+    for (int k = 0; k < 4; ++k) {
+        uint32_t gidx = (q2[2*ib+0] >> (8*k)) & 0xFF;
+        uint32_t old_gidx = (q2_old[2*ib+0] >> (8*k)) & 0xFF;
+        if (gidx == old_gidx) continue;  // only for changed-index chunks
+        // Get new centroid values
+        const int8_t * pg = (const int8_t *)(kgrid_q2xs + gidx);
+        // Current sign bits
+        uint8_t signs_7bit = (q2[2*ib+1] >> (7*k)) & 0x7F;
+        uint8_t full_signs = ksigns_iq2xs[signs_7bit];
+        // Compute weighted error for current (signs, centroid) pair
+        float cur_err = 0.0f;
+        for (int i = 0; i < 8; ++i) {
+            float cval = (float)(2 * ((pg[i] - 1) / 2) + 1);
+            if (full_signs & (1 << i)) cval = -cval;
+            float diff = xb[8*k+i] - scale_q * cval;
+            float w = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.35f);
+            cur_err += w * diff * diff;
+        }
+        // Try flipping each of elements 0-6 (which also changes element 7 via parity)
+        int best_flip = -1;
+        float best_err = cur_err;
+        for (int flip_i = 0; flip_i < 7; ++flip_i) {
+            // Flip bit flip_i in the 7-bit pattern
+            uint8_t try_7bit = signs_7bit ^ (1 << flip_i);
+            uint8_t try_signs = ksigns_iq2xs[try_7bit];
+            float try_err = 0.0f;
+            for (int i = 0; i < 8; ++i) {
+                float cval = (float)(2 * ((pg[i] - 1) / 2) + 1);
+                if (try_signs & (1 << i)) cval = -cval;
+                float diff = xb[8*k+i] - scale_q * cval;
+                float w = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.35f);
+                try_err += w * diff * diff;
+            }
+            if (try_err < best_err) {
+                best_err = try_err; best_flip = flip_i;
+            }
+        }
+        if (best_flip >= 0) {
+            uint8_t new_7bit = signs_7bit ^ (1 << best_flip);
+            q2[2*ib+1] &= ~(0x7F << (7*k));
+            q2[2*ib+1] |= ((uint32_t)new_7bit << (7*k));
+        }
+    }
+}
+```
+
+Note: we DON'T try flipping element 7 independently — element 7's sign is always derived from bits 0-6 via ksigns_iq2xs. Flipping element 7 would require changing bits 0-6' parity to keep the total even, which our enumeration of 7 flips (elements 0-6) already covers: flipping element i in 0..6 changes the parity, which flips element 7 sign too.
+
+**Why this is different from exp-066**:
+- exp-066 stored `signs_7bit` and tried flipping elements 0-7 independently, but the `try_signs & (1 << 7)` check was always 0 (since only 7 bits are stored), so the error computation for flipped element 7 was incorrect
+- This experiment uses `ksigns_iq2xs[try_7bit]` which gives the CORRECT 8-bit mask with proper element 7 derivation — the reconstruction error is exactly what inference would produce
+- We only try flipping elements 0-6 (7 flips), not element 7 independently, because element 7 is derived
+
+**Expected**: Small KL improvement (Δ ~0.001-0.004, ~0.15-0.6% relative) from 0.662001. The effect is bounded because:
+1. Only ~5-10% of chunks have their grid index changed in post-d refinement
+2. Only a subset of those benefit from a different parity fix
+3. The maximum improvement per chunk is limited (±1 element flip)
+
+**Risk**: MODERATE. The sign parity has never been successfully modified (exp-053 regressed, exp-066 catastrophically regressed). If the sign re-evaluation systematically selects wrong patterns (same bug as exp-066), KL could regress by 10%+. However, using ksigns_iq2xs correctly ensures the reconstruction matches inference-time decoding. If this still regresses, it confirms that the original parity fix is already optimal for any centroid — the `w*xb^2` criterion is centroid-independent and picking a different flip based on centroid values overfits.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — post-d refinement block (~30 lines added after line 4081).
