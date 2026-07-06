@@ -56,7 +56,8 @@
 | 059 | Odd-forced centroid scoring in neighbor search only (not kmap) | REGRESSION (0.712) |
 | 060 | Post-refinement per-sub-block level recomputation from updated indices | CATASTROPHIC (1.201) |
 | 061 | Finer d optimization grid (17 candidates at 2% step instead of 9 at 4%) | IMPROVEMENT (0.704868) |
-| 062 | Wider d optimization range (±24% 2% step, 25 candidates) | PENDING |
+| 062 | Wider d optimization range (±24% 2% step, 25 candidates) | REGRESSION (0.713) |
+| 063 | Finer d optimization grid (33 candidates at 1% step, ±16% range) | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -405,4 +406,21 @@ for (int is = -12; is <= 12; ++is) {  // ±24%, 2% step, 25 candidates
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
 **Result**: KL=0.712639 — REGRESSION (Δ = +0.007771, +1.1% from best 0.704868). The wider ±24% range includes d candidates that produce level quantization mismatched with the current grid indices. For superblocks where a far-from-center d is selected, the 4-bit levels computed from that d don't match the indices, causing higher reconstruction error. The ±16% range at 2% step (17 candidates, exp-061) is optimal — wide enough to cover the relevant d region but narrow enough to avoid selection of poorly-matched candidates. **Reverted**.
+
+### exp-063: Finer d optimization grid (33 candidates at 1% step, same ±16% range)
+**Hypothesis**: The 2% d optimization step (exp-061) improved KL by 0.81% over 4%. Further refining to 1% step halves the worst-case d offset again, potentially finding even better d values closer to the true optimum. The error landscape is quadratic near the minimum, so the gain is smaller (estimated ~0.1-0.2% KL) but the change is risk-free since the ±16% range is preserved.
+
+**Implementation**: One-line change in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before (exp-061 state):
+for (int is = -8; is <= 8; ++is) {
+    float d_try = d_base * (1.0f + is * 0.02f);
+// After:
+for (int is = -16; is <= 16; ++is) {
+    float d_try = d_base * (1.0f + is * 0.01f);
+```
+
+**Expected**: Small KL improvement (Δ ~0.0001-0.0003) from 0.704868. No risk of regression since the search is strictly a superset of the previous grid within the same range.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
