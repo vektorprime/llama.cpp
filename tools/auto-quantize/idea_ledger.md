@@ -793,3 +793,24 @@ This is fundamentally different from ALL prior experiments:
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
 
+### exp-079: Per-8D-chunk sigma2 for weight formula (further localization)
+**Hypothesis**: exp-078 localized sigma2 from superblock (128 elements) to sub-block (32 elements), improving KL from 0.699009 to 0.691085 (-1.13%). The natural next step is to localize sigma2 to the 8D chunk — the fundamental quantization unit in IQ2_XXS.
+
+Within a 32-element sub-block, the 4 × 8D chunks can have very different magnitude distributions (e.g., chunk 0 has large weights, chunk 3 is near-zero). A single sub-block sigma2 still inflates the weight baseline for low-magnitude chunks:
+- Low-magnitude chunk: sigma2 dominated by other chunks → `sqrt(sigma2)` floor too high → weight profile less selective
+- High-magnitude chunk: sigma2 diluted by other chunks → `sqrt(sigma2)` floor too low → less magnitude normalization benefit
+
+By computing sigma2 per 8D chunk (`sigma2_ch = mean_8(xb^2)`), each chunk's weight formula uses its true local magnitude baseline. This is the finest meaningful granularity — the 8D chunk is the atomic unit of quantization (kmap lookup, neighbor search, centroid selection).
+
+**Implementation**: ~15 lines changed in `quantize_row_iq2_xxs_impl()`:
+1. Replace `sigma2_per_ib[QK_K/32]` with `sigma2_ch[QK_K/8]` array
+2. Change weight computation loop: compute sigma2 per 8D chunk (inside k loop) instead of per 32-element sub-block
+3. Update d optimization (line 4003) to use per-chunk sigma2
+4. Update post-d refinement (lines 4046, 4072) to use per-chunk sigma2
+
+All 4 weight computation sites are changed uniformly — no metric mismatch.
+
+**Expected**: KL improvement from 0.691085 (Δ ~0.001-0.003, ~0.15-0.45% relative). The effect may be smaller than exp-078 (1.13%) because sub-block sigma2 already captures most of the localization benefit. But 8D-chunk sigma2 is strictly more local, and the change is risk-free (uniform across all stages).
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
+
