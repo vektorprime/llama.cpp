@@ -913,6 +913,34 @@ The softer exponent continues to reduce the dominance of outlier elements in the
 ### exp-084: Harmonize weight exponent to 0.30 everywhere (fix d opt + post-d refinement from 0.35 to 0.30)
 
 **Hypothesis**: Exp-082 reduced the main weight exponent from 0.35 to 0.30 and improved KL from 0.668342 to 0.666162 (-0.33%). However, the implementation only changed line 3861 (main weight computation) and left 3 other lines at 0.35:
+
+---
+
+### exp-085: Asymmetric weight profile — sharpen d optimization and post-d refinement to 0.50 while keeping main at 0.30
+
+**Hypothesis**: Exp-082 (main=0.30, d opt/post-d=0.35) outperforms both exp-081 (all=0.35, KL=0.668342) and exp-084 (all=0.30, KL=0.673372). This reveals that **asymmetric weight profiles across quantizer stages are beneficial** — the main quantization benefits from softer weights (balanced per-element optimization) while the d optimization and post-d refinement benefit from sharper weights (prioritizing preservation of high-magnitude elements during scale selection and index refinement).
+
+Exp-084 showed harmonizing d opt and post-d DOWN to 0.30 regresses (+1.08% from best). The natural next direction is to increase d opt and post-d UP to 0.50 (original sqrt, before exp-080). This widens the asymmetry gap:
+- **Main quantization (exp=0.30)**: Softer weight → balanced per-element level computation, fair kmap/neighbor centroid selection across all 8 elements. No single outlier dominates.
+- **d optimization (exp=0.50)**: Sharper weight → scale selection prioritizes preserving high-magnitude elements, which contribute most to model output. The superblock scale is chosen to minimize weighted reconstruction error with sharper emphasis on large elements.
+- **Post-d refinement (exp=0.50)**: Sharper weight → grid index recomputation at quantized scale focuses on best-preserving the most impactful elements.
+
+This is fundamentally novel because:
+- ALL prior weight-exponent experiments (exp-076 through exp-084) either changed ALL exponents uniformly or harmonized an existing inconsistency toward uniformity
+- No experiment has deliberately increased the asymmetry gap
+- It's a one-way modification (weights only, no index/scale change) — safe against overfitting
+
+**Implementation**: Change 3 lines in `quantize_row_iq2_xxs_impl()`:
+```c
+// Line 4003: d optimization
+powf(..., 0.50f)  // was 0.35f
+// Line 4046: Post-d refinement candidate computation
+powf(..., 0.50f)  // was 0.35f
+// Line 4072: Post-d refinement comparison
+powf(..., 0.50f)  // was 0.35f
+```
+
+**Expected**: KL improvement from 0.666162. If the asymmetry is beneficial, widening the gap from (0.30 vs 0.35) to (0.30 vs 0.50) could give ~0.3-1.0% additional improvement. The original sqrt (0.50) was optimal for the quantizer before exp-080 — reverting d opt and post-d refinement to 0.50 while keeping main at 0.30 combines the best of both regimes.
 - Line 4003: d optimization loop weight
 - Line 4046: Post-d refinement candidate computation weight
 - Line 4072: Post-d refinement comparison weight
