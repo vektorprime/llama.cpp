@@ -322,14 +322,30 @@ Algorithm:
      -t 8 -c 512 --chunks 200 -fa on \
      --cache-type-k bf16 --cache-type-v bf16 \
      --no-mmap -ngl 999 -np 1 \
-     --kl-divergence \
-     --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
-   Capture ALL lines of output — do NOT grep-filter. You need PPL and same_top_p.
+      --kl-divergence \
+      --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
+    Capture ALL lines of output — do NOT grep-filter. You need ALL of:
+    ====== Perplexity statistics ======
+      Mean PPL(Q), Mean PPL(base), Cor(...), Mean ln(PPL(Q)/PPL(base)),
+      Mean PPL(Q)/PPL(base), Mean PPL(Q)-PPL(base)
+    ====== KL divergence statistics ======
+      Mean, Maximum, 99.9%, 99.0%, 95.0%, 90.0%, Median,
+      10.0%, 5.0%, 1.0%, 0.1%, Minimum
+    ====== Token probability statistics ======
+      Mean, Maximum, 99.9%, 99.0%, 95.0%, 90.0%, 75.0%, Median,
+      25.0%, 10.0%, 5.0%, 1.0%, 0.1%, Minimum, RMS Δp, Same top p
 
-7. RECORD: append results to results.tsv — ALL 16 columns:
-   timestamp, exp_id, code_sha (use HEAD), parent_sha, description, status,
+7. RECORD: append results to results.tsv — ALL 41 columns:
+   timestamp, exp_id, code_sha, parent_sha, description, status,
    kl_divergence, base_type, diffusion, refine_iterations, model_size_mb,
-   quantize_time_s, eval_time_s, tokens_per_sec, ppl, same_top_p
+   quantize_time_s, eval_time_s, tokens_per_sec,
+   ppl, ppl_base, ppl_cor, ppl_ln_ratio, ppl_ratio, ppl_diff,
+   kld_mean, kld_max, kld_99_9, kld_99_0, kld_95_0, kld_90_0,
+   kld_median, kld_10_0, kld_5_0, kld_1_0, kld_0_1, kld_min,
+   dp_mean, dp_max, dp_99_9, dp_99_0, dp_95_0, dp_90_0, dp_75_0,
+   dp_median, dp_25_0, dp_10_0, dp_5_0, dp_1_0, dp_0_1, dp_min,
+   dp_rms, same_top_p
+   Tab-separated, one row per experiment.
 
 8. EVALUATE OUTCOME and COMMIT:
    a) If KL IMPROVED (vs best known):
