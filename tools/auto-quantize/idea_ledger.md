@@ -59,7 +59,8 @@
 | 062 | Wider d optimization range (±24% 2% step, 25 candidates) | REGRESSION (0.713) |
 | 063 | Finer d optimization grid (33 candidates at 1% step, ±16% range) | IMPROVEMENT (0.702666) |
 | 064 | Finest d optimization grid (65 candidates at 0.5% step, ±16% range) | IMPROVEMENT (0.699009) |
-| 065 | Ultra-fine d optimization grid (129 candidates at 0.25% step, ±16% range) | PENDING |
+| 065 | Ultra-fine d optimization grid (129 candidates at 0.25% step, ±16% range) | REGRESSION (0.704) |
+| 066 | Post-d refinement with centroid-aware sign parity re-evaluation | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -465,4 +466,19 @@ for (int is = -64; is <= 64; ++is) {
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
 **Result**: KL=0.703630 — REGRESSION (Δ = +0.004621, +0.66% from best 0.699009). Despite being a strict superset of the 0.5% grid, the 0.25% step finds a WORSE d. This suggests floating-point error accumulation differences across the larger iteration count (129 vs 65) affect the tiebreaking between near-identical d candidates. The 0.5% step (65 candidates) represents the optimal resolution. **Reverted**.
+
+### exp-066: Post-d refinement with centroid-aware sign parity re-evaluation
+**Hypothesis**: The sign parity fix in IQ2_XXS quantization flips one element's sign to ensure odd natural sign count. The flip element is chosen by `argmin w*x^2` — the element whose sign flip causes the least weighted distortion based on the RAW values. This ignores centroid values entirely.
+
+After the post-d grid index refinement (exp-055), some 8D chunks have NEW centroids. For these chunks, the optimal flip position may differ because the centroid values determine which element's sign reversal causes the least MSE at the quantized scale. By re-evaluating all 8 possible flip positions for the new centroid, we can find a better (flip, index, sign) combination.
+
+This is different from exp-053 (which tried this for ALL chunks and regressed) because:
+- Exp-053 evaluated when the grid index was UNCHANGED (same centroid) → overfits
+- This experiment evaluates only when the grid index CHANGED (new centroid) → the w*x^2 heuristic for the old centroid may not apply to the new one
+
+**Implementation**: ~25 lines added to the post-d refinement block in `quantize_row_iq2_xxs_impl()`. When a new grid index is accepted AND the chunk required a parity fix, try all 8 flip positions for the new centroid. Each flip: recompute xval, 2-bit codes, grid index (kmap or neighbor), weighted MSE. Pick the best combination.
+
+**Expected**: Small KL improvement (Δ ~0.0002-0.001). Only affects ~5% of chunks (those with both index change and parity fix). The re-evaluation is principled because the centroid changed.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — post-d refinement block.
 
