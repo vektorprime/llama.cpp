@@ -4,6 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| 001 | Weight exponent 0.30 + per-sub-block sigma2 | Pending |
 
 ---
 
@@ -19,3 +20,21 @@
 > - waux = powf(weight, 0.20) for neighbor search softening
 >
 > These should be validated on IQ4_XS.
+
+---
+
+## exp-001: Weight exponent 0.30 + per-sub-block sigma2
+
+**Hypothesis:** The single biggest improvement in IQ2_XXS research was changing the weight formula from `qw * sqrt(sigma2 + x^2)` (exponent 0.50) to `qw * pow(sigma2_ib + x^2, 0.30)` with per-sub-block sigma2 instead of global superblock sigma2. This gave ~5% cumulative KL gain on IQ2_XXS.
+
+**Changes:**
+1. Remove global sigma2 computation (lines 5589-5591)
+2. Inside the ib loop, compute per-sub-block sigma2:
+   ```c
+   float sigma2_ib = 0;
+   for (int j = 0; j < block_size; ++j) sigma2_ib += xb[j]*xb[j];
+   sigma2_ib *= 2.f/block_size;
+   ```
+3. Change weight formula from `sqrtf(sigma2 + xb[j]*xb[j])` to `powf(sigma2_ib + xb[j]*xb[j], 0.30f)`
+
+**Expected outcome:** KL improvement from ~0.0249 baseline.
