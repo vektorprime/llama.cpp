@@ -4,7 +4,9 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
-| **100** | **Decouple imatrix from magnitude in waux — waux = qw * (sigma2+xb^2)^0.06** | **IN PROGRESS** |
+| 100 | Decouple imatrix from magnitude in waux — waux = qw * (sigma2+xb^2)^0.06 | REGRESSION |
+| 101 | Remove sigma2 baseline from main quantization weight only | REGRESSION |
+| **102** | **Sharpen post-d refinement weight exponent 0.35→0.40 (keep d-opt 0.35)** | **IN PROGRESS** |
 
 ---
 
@@ -1430,6 +1432,39 @@ This is structurally different from:
 **Hypothesis**: Replace `waux[i] = powf(weight[i], 0.20f)` with `waux[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.06f)` to use linear imatrix instead of qw^0.20.
 
 **Result**: KL=0.690359 — REGRESSION (+4.3% from best 0.662001). The qw^0.20 softening is necessary — linear imatrix overweights high-importance elements in the neighbor search for off-map patterns. Both imatrix and magnitude must be softened equally via a single powf(weight, 0.20). **Reverted**.
+
+### exp-102: Sharpen post-d refinement weight exponent from 0.35 to 0.40 (keep d-opt at 0.35)
+
+**Hypothesis**: The three-stage weight profile has the asymmetry:
+- **main (0.30)**: Softest — balanced per-element optimization
+- **d-opt (0.35)**: Sharper — prioritizes high-magnitude elements during scale selection
+- **post-d (0.35)**: Same as d-opt — BUT the post-d refinement is the FINAL index selection and may benefit from even sharper weighting to better discriminate between near-identical centroids at the quantized scale
+
+Exp-085 (d-opt/post-d = 0.50, main = 0.30) regressed because 0.50 was too sharp for both. Exp-086 (d-opt/post-d = 0.40, main = 0.30) also regressed, changing BOTH d-opt AND post-d together.
+
+But the post-d stage is fundamentally different from d-opt:
+- d-opt evaluates which superblock scale `d` minimizes total error — softer weighting gives better cross-sub-block balance
+- post-d selects the BEST grid index for each 8D chunk at the quantized scale — sharper weighting gives better per-element discrimination
+
+By sharpening ONLY post-d (from 0.35 to 0.40) while keeping d-opt at 0.35, we widen the post-d vs d-opt asymmetry. This is principled: the final index selection needs sharper importance weights than the scale selection.
+
+**Implementation**: 2 lines changed in `ggml/src/ggml-quants.c`:
+```c
+// Line 4046: Post-d refinement candidate weight (0.35 → 0.40)
+wtmp[i] = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.40f);
+// Line 4072: Post-d refinement comparison weight (0.35 → 0.40)
+float w = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.40f);
+```
+
+Line 4003 (d-opt) stays at 0.35. Lines 3861 (main) stays at 0.30. Line 3862 (waux) stays at powf(weight, 0.20).
+
+**Expected**: Small KL improvement (Δ ~0.001-0.004, ~0.15-0.6% relative) from 0.662001. The effect is bounded because only post-d refinement (which only changes indices for some chunks) is affected.
+
+**Risk**: MODERATE — the post-d uses sharper weights for both the neighbor search AND the error comparison. If the sharper weight makes the neighbor search too selective (narrowing the candidate pool), it could miss good centroids. However, the neighbor list is from kmap (precomputed), so the candidate pool is fixed — only the scoring criterion changes.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — lines 4046, 4072.
+
+---
 
 ### exp-101: Remove sigma2 baseline from main quantization weight only (keep for d-opt and post-d)
 
