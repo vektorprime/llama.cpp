@@ -88,7 +88,7 @@
 | 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
 | 092 | Adaptive weight exponent per sub-block via CV | REGRESSION (0.680, +2.1%) |
 | **094** | **Post-refinement level recomputation with index re-verification (changed-index sub-blocks only)** | **CATASTROPHIC REGRESSION (1.040)** |
-| **099** | **L1-based weight formula (sigma2+xb² → mean_abs+|xb|)** | **PENDING** |
+| **099** | **L1-based weight formula (sigma2+xb² → mean_abs+|xb|)** | **REGRESSION (0.680)** |
 
 ---
 
