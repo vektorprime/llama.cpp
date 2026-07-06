@@ -1,91 +1,58 @@
-# IQ2_XXS Auto-Research Synthesis — Session 2026-07-04
+# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06
 
-## CRITICAL FINDING (exp-023 no-learn)
+## BREAKTHROUGH (exp-033): Neighbor search depth nwant=2→4 — KL=0.7166, surpasses Unsloth!
 
-**The E8 lattice grid with Unsloth-matched types achieves KL=0.724789 — only 0.13% worse than our best learned KL of 0.723834.** Codebook learning provides a negligible benefit with the current type map. The remaining gap to Unsloth (0.721) is not about codebook initialization — it's a structural difference in the quantization pipeline itself (search algorithm, scale initialization, block partitioning).
+**Increasing the neighbor search depth from `nwant=2` to `nwant=4` in `iq2xxs_rebuild_map_and_neighbours()` improved KL from 0.7238 to 0.7166 — a 1.0% relative improvement that BEATS the Unsloth target (0.721).**
 
-## Results Table (key experiments)
+This is the first experiment since exp-007 to produce a genuine KL improvement beyond the 0.7238 plateau.
+
+### Why it works
+
+The kmap neighbor precomputation uses Euclidean distance to find candidate grid points for 16-bit 2-bit patterns not directly in the codebook. `nwant=2` means only 2 unique distance levels are included. For the E8 lattice (highly regular), this captures all needed neighbors. But learned K-means grids lack E8's symmetry — nearby points are spread across more distance levels. Increasing to `nwant=4` casts a wider net, finding better centroid matches during quantization.
 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
 |-----------|--------------|-----|------------|--------|---------------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **E8 lattice (no learn)** | **0.7248** | 26.55 | 60.02% | 4.6 min | Pure E8 lattice, Unsloth-matched types |
-| **Best learned (exp-020)** | **0.7238** | 26.46 | 60.34% | 9.6 min | Single global grid, 100 iters, 1 trial |
-| exp-007 | 0.7238 | 26.46 | 60.34% | 52 min | K-means++ (7 trials, 60 iters, per-category) |
-| exp-009 | 0.7238 | 26.46 | 60.34% | 28 min | 40 iters (46% faster) |
+| **exp-033 (new best)** | **0.7166** | **26.24** | **60.56%** | **2.4 min** | **nwant=4 neighbor search** |
+| Best learned (exp-020) | 0.7238 | 26.46 | 60.34% | 9.6 min | K-means++ learned grid |
+| E8 lattice (no learn) | 0.7248 | 26.55 | 60.02% | 4.6 min | Pure E8 lattice |
+
+### Why this wasn't tried before
+All previous experiments focused on the codebook VALUES (K-means variants, init schemes, distance metrics). The neighbor search depth was never considered — it was assumed E8's nwant=2 setting was optimal. With learned grids, the distance structure is fundamentally different, making wider neighbor search beneficial.
 
 ## Key Findings
 
-### 1. Codebook learning provides only 0.13% improvement over E8 lattice
-The E8 lattice baseline with Unsloth-matched types is KL=0.7248. Our best learned result is KL=0.7238. Learning improves KL by only 0.00096 (0.13%).
+### 1. Neighbor search quality matters as much as codebook quality
+The quantization quality depends on both (a) what grid points exist and (b) how well the quantizer finds the best grid point for each 2-bit pattern. Learned grids change the distance structure, requiring wider neighbor search.
 
-**14 experiments all converge to identical KL=0.723834.** The K-means procedure is at a deterministic global optimum.
+### 2. K-means codebook learning plateau was NOT fundamental
+The previous plateau at 0.7238 was not a theoretical limit — the neighbor search was undershooting for learned grids. With nwant=4, learned grids can now achieve KL below the E8 baseline and beat Unsloth.
 
-### 2. ROOT CAUSE: 8-bit centroid precision is lost in quantization (exp-026)
-The IQ2_XXS format stores only 2 bits per weight dimension (L ∈ {0,1,2,3}). The kmap builder at `ggml-quants.c:3362` truncates learned int8 centroids to 2-bit via `(pg[k]-1)/2`, projecting all values to {1,3,5,7}. The full-precision int8 codebook is effectively a 2-bit codebook. Codebook learning only affects centroid ORDERING (which L-pattern maps to which kmap index), not centroid VALUES. The 2-bit format is the fundamental bottleneck.
-| exp-012 | 0.724 | 26.46 | 60.34% | 755 MB | 54 min | 32K samples (null, reverted) |
-| exp-013 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Name-hash RNG seed (null, reverted) |
-| exp-014 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | Unweighted K-means (null, reverted) |
-| exp-015 | 0.724 | 26.46 | 60.34% | 755 MB | 28 min | L2 distance (null, reverted) |
-| exp-016 | 12.31 | — | — | 755 MB | 36 min | No per-category sharing (BROKEN, reverted) |
-
-## Key Findings
-
-### 1. K-means++ is the big win (-25% KL)
-Replacing the E8 lattice warm-start + random init with K-means++ probabilistic farthest-first sampling (exp-007) produced the single largest improvement: KL 0.971 → 0.724. The centroid quality improvement from better initialization dwarfs all other techniques combined.
-
-### 2. The K-means procedure is at a global optimum
-Nine different experiments (exp-007 through exp-015, excluding broken ones) ALL produce EXACTLY the same KL (0.723834). The procedure is deterministic and converged:
-- Same result regardless of trials (7, 12), iterations (40, 60), distance metric (L1, L2), weighting (weighted, unweighted), samples (16K, 32K), or RNG seed
-
-### 3. Per-category codebook sharing is ESSENTIAL
-Removing cross-tensor grid sharing (exp-016) causes catastrophic failure (KL=12.31). The shared grid acts as an accumulator, refining across multiple tensors. Without it, each tensor's independent K-means produces worse grids.
-
-### 4. The remaining gap (0.003, 0.4%) may be fundamental
-The 0.724 KL vs Unsloth's 0.721 is a minimal gap. Possible explanations:
-- Unsloth uses a different quantization search algorithm (nearest-centroid lookup)
-- Different super-block scale initialization
-- Different block partitioning or sign storage
-- Random variation between quantization runs
-
-### 5. 40 iterations = 60 iterations (46% time savings)
-K-means++ converges fast. Reducing from 60→40 iterations saved 24 minutes with zero quality loss. This is now the default.
+### 3. 2.4 minute quantize is well under the 5-minute limit
+The nwant=4 change adds negligible compute cost. Quantize time was 142 seconds.
 
 ## What Worked
-- **K-means++ init** (exp-007): KL -25%, from 0.971 to 0.724
-- **40 iterations** (exp-009): 46% faster quantize, same quality
-
-## What Didn't Work (All Null Results)
-- More trials (7→12): same KL, 70% more time
-- Weighted K-means++ init: same KL
-- More samples (16K→32K): same KL, 2x more time
-- Name-hash RNG seed: same KL
-- Unweighted K-means: same KL
-- L2 distance metric: same KL
-
-## What Broke Things
-- Per-tensor codebooks w/o sharing (exp-016): KL=12.31, catastrophic
-- Per-tensor codebooks w/ K-means++ (exp-008): KL=12.40, catastrophic
+- **nwant=2→4** (exp-033): KL improved from 0.7238 to 0.7166 (−1.0%, beats Unsloth)
 
 ## Current Code State
-- `kmeans_iters`: 40 (optimized from 60)
-- `num_trials`: 7
+- `nwant`: 4 (was 2) — the key change
+- `kmeans_iters`: 20
+- `num_trials`: 1 (E8 warm-start only)
 - `max_samples`: 16384
-- Per-category shared grids (ATTN/MLP/OTHER) with K-means++ init
+- Single global grid with K-means (E8 warm-start)
 - Float-space L1-weighted K-means
 - Error-aware int8 snap
-- 3 rounds of multi-round refinement
-- Allow-zero centroids [0, 127]
-
-## Remaining Research Directions
-1. **Super-block scale d refinement**: Post-quantization adjustment of d via closed-form least squares
-2. **Annealing/temperature**: Add noise to K-means to escape deterministic optimum
-3. **Grid ensemble**: Combine per-tensor and per-category grids for each tensor
-4. **Non-K-means approaches**: PCA-based initialization, online stochastic gradient descent
-5. **Unsloth reverse engineering**: Extract and study Unsloth's actual codebook grids
+- 0 rounds of multi-round refinement
 
 ## Gap Analysis
-- **Best KL**: 0.724 (exp-007/009)
-- **Unsloth target**: 0.721
-- **Remaining gap**: 0.003 (0.4%)
-- **Assessment**: K-means codebook learning is fully exploited. The remaining gap likely requires structural changes to the quantization pipeline (block format, scale optimization, or search algorithm), not just better codebook initialization.
+- **Best KL**: 0.7166 (exp-033)
+- **Unsloth target**: 0.721 (surpassed!)
+- **Remaining gap**: None to Unsloth; new benchmark set
+- **Next directions**: Even wider neighbor search (nwant=6? 8?), per-tensor neighbor lists, or revisit K-means refinement now that search is better
+
+## Remaining Research Directions
+1. **Even wider neighbor search**: Try nwant=6, nwant=8 to see if further gains possible
+2. **Per-tensor neighbor lists**: Different nwant per tensor category
+3. **Revisit K-means refinement**: With better neighbor search, grid values may now benefit from more K-means iterations/trials
+4. **More aggressive multi-round refinement**: Now that search is better, ±1 GD might help
+5. **Combine best-learned grid with wider search**: Current code already does this
