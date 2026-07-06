@@ -749,3 +749,16 @@ And the 3 other occurrences (d optimization loop, post-d refinement).
 
 **Files changed**: `ggml/src/ggml-quants.c` only — 4 lines in `quantize_row_iq2_xxs_impl()`.
 
+---
+
+### exp-077: Align K-means training weights with quantizer weight formula (add sqrt(sigma2 + x^2) factor)
+**Hypothesis**: The K-means training weights currently use only the imatrix importance values (`sample_weights[i] = qw[i]`). The quantizer uses `weight[i] = qw[i] * sqrt(sigma2 + xb[i]^2)` which includes a magnitude-dependent factor. This mismatch means K-means treats all elements equally (scaled by imatrix) while the quantizer prioritizes high-magnitude elements. By adding the `sqrt(sigma2 + x^2)` factor to K-means training weights, the centroid positions will shift to better represent patterns that contribute most to quantization error, aligning the training objective with the actual quantizer evaluation.
+
+Exp-029 tried this approach and crashed (likely a code bug, not fundamental). This implementation computes `sigma2_train = mean(x^2)` across all training samples and multiplies sample_weights by `sqrt(sigma2_train + x[i]^2)` — matching the quantizer's formula exactly.
+
+**Implementation**: ~8 lines added to `iq2xxs_learn_grid()` in `ggml/src/ggml-quants.c` after sample collection, before the K-means loop. Compute `sigma2_train` from all sample data, then multiply each `sample_weights` entry by `sqrtf(sigma2_train + samples[i]^2)`.
+
+**Expected**: Small KL improvement (Δ ~0.0005-0.002) from 0.699009. By aligning K-means training with the quantizer's weight criterion, centroids should better represent high-magnitude-high-importance patterns, reducing quantization error for the most impactful elements. The effect may be modest because centroids barely drift from E8, but even a small systematic shift toward magnitude-weighted patterns could compound across 256 centroids × 95 tensors.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `iq2xxs_learn_grid()`.
+
