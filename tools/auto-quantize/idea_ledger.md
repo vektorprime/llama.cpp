@@ -87,7 +87,7 @@
 | 090 | Remove sqrtf from waux (align neighbor weight) | REGRESSION (0.682) |
 | 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
 | 092 | Adaptive weight exponent per sub-block via CV | REGRESSION (0.680, +2.1%) |
-| **093** | **Softer neighbor search weighting (waux=powf(weight,0.20))** | **IN PROGRESS** |
+| **094** | **Post-refinement level recomputation with index re-verification (changed-index sub-blocks only)** | **IN PROGRESS** |
 
 ---
 
@@ -1219,3 +1219,42 @@ for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.20f);
 
 **Files changed**: `ggml/src/ggml-quants.c` only — line 3862.
 
+---
+
+## Session: 2026-07-06 (continued) — Quantizer indexing change
+
+### exp-094: Post-refinement level recomputation with index re-verification (changed-index sub-blocks only)
+
+**Hypothesis**: The post-d grid index refinement (lines 4034-4082, from exp-055) updates grid indices for the quantized scale `d*(2*l+1)`. However, the 4-bit scale levels `l` were computed BEFORE this refinement (line 4025) using the OLD grid indices' continuous scales. For sub-blocks where indices changed, the level is stale — the optimal 4-bit scale for the new centroid values may differ from the level computed for the old centroids.
+
+Previous experiments that tried recomputing levels after post-d refinement (exp-050, exp-060) caused catastrophic regression because they recomputed levels for ALL sub-blocks, including those WITHOUT index changes. For unchanged-index sub-blocks, the old level was optimal; changing it broke the index-scale coupling.
+
+**This experiment restricts level recomputation to sub-blocks where at least one of the 4 grid indices changed.** For these sub-blocks, the level is genuinely stale (designed for the old centroids), and a new level is required. After recomputing the level, we RE-VERIFY the indices for the new quantized scale, ensuring the index-level pair is self-consistent.
+
+**Why this is different from exp-060**:
+- exp-060: recomputed levels for ALL sub-blocks → catastrophic
+- exp-056: changed d (not levels) after post-d → catastrophic (different mechanism)
+- exp-094: recomputes levels ONLY for changed-index sub-blocks, AND re-verifies indices afterward → maintains index-scale coupling
+
+**Implementation** (~35 lines added after line 4082):
+1. Add a `int index_changed[QK_K/32]` flag array, set to 0 initially
+2. In the post-d refinement loop (line 4061), when a new index is accepted (line 4076-4078), set `index_changed[ib] = 1`
+3. After the post-d refinement loop, for each sub-block with `index_changed[ib]`:
+   a. Compute LS-optimal continuous scale for the current (updated) grid indices:
+      - Loop over 4 chunks, compute `sumqx += w[i]*xb[i]*odd_centroid[i]*sign[i]`, `sumq2 += w[i]*odd_centroid[i]^2`
+      - `scale_opt = sumqx / sumq2`
+   b. Compute new level: `l_new = nearest_int(0.5*(1/d*scale_opt - 1))`, clamp to [0, 15]
+   c. If `l_new != l_old`:
+      - Update `q2[2*ib+1]` bits 28-31 with `l_new`
+      - Re-run the post-d index refinement for all 4 chunks of this sub-block with the new `scale_q = d*(2*l_new+1)`
+   d. This is a single update (no cascading)
+
+**Expected**: Small KL improvement (Δ ~0.001-0.004). The effect compounds across all superblocks where post-d refinement changed indices AND the level needs updating. The re-verification ensures robustness.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~35 lines added after line 4082).
+
+---
+
+## Session: 2026-07-06 (continued) — Multi-pass centroid improvement
+
+### exp-095: Iterative centroid refinement with post-quantization error feedback
