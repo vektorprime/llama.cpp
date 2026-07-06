@@ -482,3 +482,5 @@ This is different from exp-053 (which tried this for ALL chunks and regressed) b
 
 **Files changed**: `ggml/src/ggml-quants.c` only — post-d refinement block.
 
+**Result**: KL=0.815223 — CATASTROPHIC REGRESSION (Δ = +0.116214, +16.6% from best 0.699009). The sign re-evaluation bug: the 8th element's (parity bit) derived sign from the 7 stored bits is NOT accounted for in the MSE computation. The code uses `try_signs & (1 << 7)` which is always 0 (since only 7 bits are stored), but inference derives element 8's sign from the parity of the 7 stored bits. This causes the error computation to systematically underestimate error for sign patterns that change the parity, leading to selection of suboptimal sign configurations. The regression magnitude (0.815) matches the exp-042/050/054 catastrophic pattern where sign-related modifications broke the format constraints. **Reverted**.
+
