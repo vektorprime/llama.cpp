@@ -76,6 +76,7 @@
 | 079 | Per-8D-chunk sigma2 for weight formula (further localization) | regression (0.715862) |
 | **080** | **Softer weight formula exponent (powf 0.4 instead of sqrt 0.5)** | **IMPROVEMENT (0.682340)** |
 | **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
+| **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **PENDING** |
 
 ---
 
@@ -862,6 +863,26 @@ weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.35f);
 **Expected**: Small KL improvement (Δ ~0.002-0.005) from 0.682340. Diminishing returns expected as exponent approaches the optimal value around 0.3-0.35.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: 0.4f → 0.35f).
+
+---
+
+### exp-082: Further soften weight exponent to 0.30 (from 0.35)
+
+**Hypothesis**: The weight exponent reduction from 0.5 (sqrtf) → 0.4 → 0.35 has given accelerating improvements: 0.5→0.4 = -1.27%, 0.4→0.35 = -2.05%. This suggests the true optimal exponent lies well below 0.35. Reducing further to exponent 0.30 should continue the trend.
+
+The softer exponent reduces the dominance of outlier elements in the weight formula, giving the quantizer a more balanced optimization landscape. Each reduction has produced larger relative improvement than the previous one, possibly because the weight formula is approaching the point where magnitude-weighting just compensates for the L1 quantizer's tendency to over-preserve large values.
+
+**Implementation**: Change 4 lines in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before:
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.35f);
+// After:
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
+```
+
+**Expected**: KL improvement (Δ ~0.003-0.006) from 0.668342. If the accelerating improvement trend continues, the gain could be comparable to or exceed the 2.05% from 0.4→0.35.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: 0.35f → 0.30f).
 
 ---
 
