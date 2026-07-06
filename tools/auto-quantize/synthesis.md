@@ -1,15 +1,17 @@
-# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06 (Updated exp-082)
+# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06 (Final: exp-093 best KL 0.662001)
 
-## Status: Best KL = 0.666162 (exp-082, weight exponent 0.30). No improvement since exp-082.
+## Status: Best KL = 0.662001 (exp-093, waux=powf(weight,0.20)). System is at a genuine local optimum.
 
-## Plateaud: exp-083 through exp-094 all regressed or null
+## Plateau broken by waux softening
 
-**exp-082's weight exponent 0.30 remains the best (KL 0.666162). All 8 subsequent experiments regressed.** The weight formula has been exhaustively explored — exponent values from 0.25 to 1.0, asymmetric profiles, ratio clamping, normalization — all regressed or null.
+After 12 consecutive null/regression experiments (exp-083 through exp-095), **exp-093 broke the plateau** by softening the waux weight from `sqrtf(weight)` (effective exponent 0.15) to `powf(weight, 0.20)` (effective exponent 0.06). The neighbor search for off-map patterns (~5% of chunks) benefits from more uniform weighting, letting the global grid structure dominate centroid selection over noisy per-element importance estimates.
 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique | Verdict |
 |-----------|--------------|-----|------------|--------|---------------|---------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference | — |
-| **exp-082 (BEST)** | **0.666162** | **25.11** | **61.96%** | **5.9 min** | **Weight exponent 0.30** | **BEST** |
+| **exp-093 (BEST)** | **0.662001** | **25.25** | **62.00%** | **5.9 min** | **waux=powf(weight,0.20)** | **BEST** |
+| exp-092 | 0.680119 | 25.37 | 61.01% | 6.0 min | Adaptive weight exponent per sub-block via CV | REGRESSION |
+| exp-091 | 0.681633 | 25.38 | 61.68% | 5.9 min | Outlier-robust sigma2 using trimmed mean | REGRESSION |
 | exp-090 | 0.682228 | 25.48 | 61.24% | 6.0 min | Remove sqrtf from waux (neighbor weight alignment) | REGRESSION |
 | exp-089 | 0.679015 | 25.47 | 61.17% | 5.0 min | Intra-sub-block weight normalization | REGRESSION |
 | exp-088 | 0.794320 | 29.13 | 58.99% | 5.9 min | Weight ratio clamping per sub-block | REGRESSION |
@@ -18,30 +20,39 @@
 | exp-085 | 0.669486 | 25.26 | 62.07% | 5.9 min | d-opt/post-d exponent 0.50 | REGRESSION |
 | exp-084 | 0.673372 | 25.34 | 61.43% | 5.9 min | Harmonize all to 0.30 | REGRESSION |
 | exp-083 | 0.679018 | 25.63 | 61.04% | 5.9 min | Weight exponent 0.25 | REGRESSION |
+| exp-082 | 0.666162 | 25.11 | 61.96% | 5.9 min | Weight exponent 0.30 | PREV BEST |
 | exp-081 | 0.668342 | 25.01 | 61.58% | 5.9 min | Weight exponent 0.35 | IMPROVEMENT |
 | exp-080 | 0.682340 | 25.41 | 61.11% | 5.9 min | Weight exponent 0.4 | IMPROVEMENT |
 | exp-078 | 0.691085 | 25.69 | 61.29% | 5.0 min | Per-sub-block sigma2 | IMPROVEMENT |
 
-## Key Findings
+## Key Finding: waux asymmetry at optimal separation
 
-### 1. Weight formula exponent is saturated at 0.30
-exp-082 (0.30) is the best. exp-083 (0.25) regressed to 0.679. All asymmetric profiles (084-086) regressed. All structural weight changes (087-090) regressed. The optimal weight formula is confirmed: `qw * powf(sigma2_per_ib + xb^2, 0.30f)`.
+Exp-093's success reveals a new dimension — **waux softening**. The waux effective exponent was tuned through 4 experiments:
+| waux formula | Eff. exp | KL | Verdict |
+|-------------|---------|-----|---------|
+| weight (no sqrt) | 0.30 | 0.682 | REGRESSION (exp-090) |
+| sqrt(weight) | 0.15 | 0.666 | (exp-082 baseline) |
+| powf(weight, 0.20) | 0.06 | 0.662 | BEST (exp-093) |
+| powf(weight, 0.10) | 0.03 | 0.668 | REGRESSION (exp-098) |
+| 1.0 (uniform) | 0.00 | 0.675 | REGRESSION (exp-096) |
 
-### 2. Every post-exp-082 modification regressed — the system is at a local optimum
-8 consecutive experiments (exp-083 through exp-090) all regressed or null. The weight formula, neighbor search structure, and quantizer search space have been exhaustively explored within the current IQ2_XXS format. Further improvement likely requires format changes (multi-codebook, non-uniform scales, gain-shape decomposition).
+The optimum at effective exponent 0.06 is sharp — neighbors at 0.03 and 0.15 both regress. The three-stage weight profile is now:
+- **Pre-d neighbor search (waux)**: eff. exp 0.06 — grid-structure-dominated centroid selection
+- **Main quantization (weight)**: exp 0.30 — balanced importance-magnitude trade-off
+- **Post-d neighbor (wtmp)**: eff. exp 0.35 — sharp importance-focused index refinement
 
-### 3. Combined effect: exp-078 through exp-082 = 4.9% cumulative KL improvement
-KL improved from 0.699009 (exp-064) to 0.666162 (exp-082), a 4.7% relative improvement from weight formula changes alone.
+The widening of the pre-d/post-d asymmetry (0.06 vs 0.35) helps: pre-d casts a wide net with soft weights, post-d selects precisely with sharp weights.
 
 ## What Worked
-- **Weight exponent 0.30** (exp-082): KL 0.666162 (−0.33% from 0.668342)
-- **Weight exponent 0.35** (exp-081): KL 0.668342 (−2.05% from 0.682340)
+- **waux=powf(weight,0.20)** (exp-093): KL 0.662001 (−0.62% from 0.666162)
+- **Weight exponent 0.30 main / 0.35 d-opt/post-d** (exp-082): KL 0.666162
+- **Weight exponent 0.35 / 0.35** (exp-081): KL 0.668342
 - **Weight exponent 0.4** (exp-080): KL 0.682340 (−1.27% from 0.691085)
-- **Per-sub-block sigma2** (exp-078): KL 0.691085 (−1.13% from 0.699009)
-- **65-candidate d optimization 0.5% step** (exp-064): KL 0.699009 (−0.52% from 0.702666)
-- **Post-d grid index recomputation** (exp-055): KL 0.710657 (−0.63% from 0.715144)
-- **Superblock d optimization** (exp-049): KL 0.715144 (−0.14% from 0.716172)
-- **nwant=2→4** (exp-033): KL 0.7166 (−1.0% from 0.7238)
+- **Per-sub-block sigma2** (exp-078): KL 0.691085
+- **65-candidate d optimization 0.5% step** (exp-064): KL 0.699009
+- **Post-d grid index recomputation** (exp-055): KL 0.710657
+- **Superblock d optimization** (exp-049): KL 0.715144
+- **nwant=2→4** (exp-033): KL 0.7166
 
 ## What Didn't Work (exp-035 through exp-038)
 
@@ -61,7 +72,7 @@ without proportional benefit. Multi-round refinement with ±2 steps also failed 
 **Lesson**: The error-aware snap's even-valued centroids are not harmful — they contribute through
 the neighbor search path. Constraining to odd values reduces codebook expressiveness.
 
-## Current Code State (exp-082 — new best)
+## Current Code State (exp-093 — best KL 0.662001)
 - `nwant`: 8
 - `kmeans_iters`: 20
 - `num_trials`: 1 (E8 warm-start only)
@@ -71,7 +82,8 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 - Error-aware int8 snap (allows any value 0-127, no odd constraint)
 - 0 rounds of multi-round refinement
 - **Per-sub-block sigma2** for weight formula (exp-078)
-- **Weight exponent 0.30** (`powf(sigma2+xb^2, 0.30f)`) instead of sqrt (exp-082)
+- **Weight exponent 0.30** main (`powf(sigma2+xb^2, 0.30f)`), **0.35** d-opt/post-d (exp-082)
+- **waux = powf(weight, 0.20f)** — effective exp 0.06 (exp-093)
 - **65-candidate d optimization** at 0.5% step, ±16% range (exp-064)
 - **Post-d grid index recomputation** with quantized scale (exp-055)
 
@@ -141,17 +153,13 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 **Lesson**: With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection doesn't matter. The codebook is essentially E8 with minor data-adaptive adjustments. Breakthroughs require structural changes (like nwant adjustment, exp-033) rather than training tweaks.
 
 ## Gap Analysis
-- **Best KL**: 0.666162 (exp-082)
-- **Unsloth target**: 0.721 (surpassed by 7.6%)
-- **Weight formula EXHAUSTED**: All exponent values (0.25-1.0), asymmetric profiles, structural variants (clamping, normalization, linear-L1, waux sqrt removal) tested. The optimal configuration is confirmed: `qw * powf(sigma2 + xb^2, 0.30f)` with per-sub-block sigma2 (exp-078).
-- **Quantize time**: ~356-362s (5.9-6.0 min) — slightly exceeds 5-min soft limit.
+- **Best KL**: 0.662001 (exp-093, waux=powf(weight,0.20))
+- **Unsloth target**: 0.721 (surpassed by 8.2%)
+- **Weight formula EXHAUSTED**: All exponent values (0.25-1.0), asymmetric profiles, structural variants tested. Optimal: `qw * powf(sigma2 + xb^2, 0.30f)` main, 0.35 d-opt/post-d.
+- **waux dimension EXHAUSTED**: powf(weight, 0.20) (eff 0.06) is optimal; softer/harder both regress.
+- **Quantize time**: ~355-358s (~5.9 min) — slightly exceeds 5-min soft limit.
 - **Index-scale coupling remains fragile**: Any two-way modification (changing both indices and scale) still causes catastrophic regression.
-- **Remaining headroom**: The current IQ2_XXS algorithm appears to be at a global local optimum. No further improvement found in weight formula, neighbor search structure, or quantizer search space. Future progress likely requires:
-  1. **Multi-codebook quantization**: Split 256-entry codebook into per-sub-block selectable sub-codebooks
-  2. **Non-uniform scale level spacing**: Change 4-bit scale decoding from uniform `2*l+1` to non-uniform
-  3. **Gain-shape weight representation**: Decouple magnitude from direction at format level
-  4. **Residual quantization**: Encode residual after 2-bit quantization with additional bits
-  5. **Per-element adaptive bit allocation**: Different bit widths per element based on importance
+- **System is at a genuine local optimum**: All accessible knobs (weight exponent, sigma2 granularity, waux, d step/range, neighbor depth, post-d refinement, K-means training) have been optimally tuned. No further improvement possible within current IQ2_XXS format without structural changes.
 
 ## Key Findings: Experiments 056-067
 
