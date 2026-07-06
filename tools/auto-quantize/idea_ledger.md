@@ -78,6 +78,7 @@
 | **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
 | **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **IMPROVEMENT (0.666162)** |
 | **083** | **Further soften weight exponent to 0.25 (from 0.30)** | **REGRESSION (0.679018, +1.93%)** |
+| **088** | **Weight ratio clamping per sub-block max/min ≤5** | **PENDING** |
 
 ---
 
@@ -1003,4 +1004,36 @@ Increasing d opt/post-d from 0.35 to 0.40 widens the asymmetry gap from 0.05 to 
 **Lesson**: The sigma2 baseline is critical — it provides a per-sub-block floor that prevents near-zero elements from getting zero weight (which `1+|xb|` does not adequately address because the `1+` constant is sub-block-agnostic). The power-law form with per-sub-block sigma2 is the correct family for this quantizer. **Reverted.**
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`. (Reverted)
+
+---
+
+### exp-088: Weight ratio clamping per sub-block to prevent extreme outlier dominance
+
+**Hypothesis**: The weight formula `weight[i] = qw[i] * (sigma2_ib + xb[i]^2)^0.30` can produce extreme weight ratios within a sub-block — if one element has |xb| = 10x sigma, its weight is ~4x higher than the sigma-baseline weight. For 100x outliers, the ratio reaches ~16x. This causes the d optimization, scale selection, and grid index selection to focus almost exclusively on the single outlier element at the expense of all other 31 elements in the sub-block.
+
+By clamping the max:min weight ratio to ≤5 within each sub-block, we preserve the intELEMENT importance ranking (same element still has highest weight) while preventing single outliers from completely dominating the sub-block's optimization. For the majority of sub-blocks with weight ratio ≤5, the behavior is identical to exp-082.
+
+This is fundamentally different from all prior weight experiments:
+- exp-076: Removed sqrt (exponent 1.0) — made extreme weights MORE extreme → catastrophic
+- exp-078: Per-sub-block sigma2 — changed sigma2 granularity, not dynamic range
+- exp-080/081/082: Exponent reduction (0.5→0.4→0.35→0.30) — flattened the slope of weight-vs-magnitude
+- **exp-088: Clamps the dynamic range directly** without changing the exponent or the per-element weight formula shape. This is a post-processing step that only activates for outlier-dominated sub-blocks.
+
+The clamping limits the effective ratio to 5:1:
+```
+max_w / min_w ≤ 5
+```
+Achieved by linearly compressing weights toward min_w:
+```
+compressed[i] = min_w + (weight[i] - min_w) * (5*min_w - min_w) / (max_w - min_w)
+```
+This preserves the ranking and relative spacing between elements while capping the extreme ratio.
+
+**Implementation**: ~15 lines added after line 3861 in `quantize_row_iq2_xxs_impl()`:
+1. After computing all 32 weights, find max_w and min_w
+2. If max_w / min_w > 5.0f, compress weights linearly toward min_w so the compressed max/min ratio = 5.0f
+
+**Expected**: KL improvement from 0.666162 (Δ ~0.002-0.005, ~0.3-0.8% relative). The effect may be modest because exp-082's exponent 0.30 already softens the weight profile considerably. But for the tail of sub-blocks with extreme outliers (common in attention tensors where a few elements dominate), clamping should improve overall balance.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~15 lines added after line 3861).
 

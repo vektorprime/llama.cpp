@@ -194,6 +194,10 @@ The project is at a fundamental local optimum. Every quantizer-search modificati
 
 All of these require FORMAT CHANGES (new GGML_TYPE, new block struct, new inference kernels across CPU/CUDA/Metal/Vulkan), representing a major infrastructure undertaking beyond the current experiment scope.
 
+## exp-088 In Progress: Weight ratio clamping per sub-block
+
+**Hypothesis**: The weight formula can produce extreme max:min weight ratios (10:1+) within a sub-block when outlier elements dominate. Clamping the ratio to ≤5 per sub-block prevents single elements from dominating the optimization while preserving relative importance ordering. This is a post-processing step on the weights that only activates for outlier-dominated sub-blocks.
+
 ## Remaining Research Directions
 1. **Combined d+level joint optimization in a single pass**: Modify the d optimization to evaluate levels using the same exhaustive criterion. Safe because both d and level are optimized simultaneously. Computational cost: ~16x d optimization (adds ~10-15s, still within 5 min). **This is the most promising near-term direction.**
 2. **Multi-codebook quantization**: Requires format changes but could provide step-change improvement.
