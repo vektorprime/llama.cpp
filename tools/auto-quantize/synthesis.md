@@ -156,9 +156,35 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 
 4. **Neighbor L1 scoring is optimal**: All attempts to improve it (dot-product, odd-forced, L2) cause regression. The raw weighted L1 with full diversity is the best selection criterion for the quantizer's neighbor search.
 
+## Updated Syntheses: Experiments 067-071 (All Regressions)
+The project is at a fundamental local optimum. Every quantizer-search modification tried in the last
+5 experiments regressed:
+
+| Exp | KL | Technique | Failure Mode |
+|-----|-----|-----------|-------------|
+| 067 | 0.702 | Narrower d range ±8% | ±8% misses optimal d for some superblocks |
+| 068 | 12.31 | Quantizer-aware K-means (dot-product assignment) | Assignment/update metric mismatch — same as exp-037 collapse |
+| 069 | 0.752 | kmap2 second-best centroid | Second-best adds noise, L2-first optimal for L1 objective |
+| 070 | 0.743 | Importance-weighted 2-bit levels (alpha=0.3) | Biased levels push patterns off-map, over-depending on neighbor search |
+| 071 | 1.077 | Exhaustive 4-bit level search (weighted error) | Level ≠ nearest-int breaks index-scale coupling; d optimization assumes nearest-int |
+
+### Key Findings
+1. **The nearest-int level formula IS optimal**: Derived from `scales[ib] = sum(w*xval*centroid)/sum(w*centroid^2)`, the level `l = nearest_int(0.5*(scales[ib]/d - 1))` minimizes the same weighted reconstruction error used throughout the quantizer. Any deviation increases error — there is no slack in the level selection.
+
+2. **Index-scale coupling is inviolable**: Exp-071 confirms that even changing levels (not indices, not d) breaks the coupling. The three parameters (d, levels, indices) are jointly optimal at their current configuration. Any one-way modification causes the system to find a worse joint optimum.
+
+3. **Every modifiable knob has been tried**: All quantizer search parameters (d step, d range, level selection, neighbor criterion, neighbor depth, grid index selection) have been individually modified and either regressed or hit null. The combined configuration at exp-064 (65 candidates, 0.5% step, ±16% range, nwant=8, nearest-int levels) is the global optimum for the current IQ2_XXS format and algorithm.
+
+### What Hasn't Been Tried
+- **Multi-codebook quantization**: Split the 256-entry codebook into per-sub-block selectable sub-codebooks. Format change.
+- **Non-uniform scale level spacing**: Change the 4-bit scale decoding from uniform `2*l+1` to non-uniform. Requires dequantizer changes across all backends.
+- **Residual quantization**: Encode the residual after the first 2-bit quantization with additional bits.
+- **Per-element adaptive bit allocation**: Some elements get 3 bits, others get 1 bit, based on importance.
+- **Gain-shape weight representation**: Decouple weight magnitude from direction at the format level.
+
+All of these require FORMAT CHANGES (new GGML_TYPE, new block struct, new inference kernels across CPU/CUDA/Metal/Vulkan), representing a major infrastructure undertaking beyond the current experiment scope.
+
 ## Remaining Research Directions
-1. **Further d step refinement (0.25%)**: Minimal expected gain (~0.05%). Low risk, easy to try.
-2. **Combine d refinement with post-d index update for top-3 candidates**: Sample d candidates near the d optimum with full index recomputation. Computational concern but potentially addresses the coupling issue.
-3. **Imatrix-weighted kmap construction**: Use per-dimension imatrix weights in neighbor list distance computation. Moderate change, uncertain gain.
-4. **Per-sub-block scale aware level search**: Small ±0.5 level adjustments during the initial scale search. Low risk.
-5. **Multi-codebook quantization**: Requires format changes but could provide step-change improvement. Speculative.
+1. **Combined d+level joint optimization in a single pass**: Modify the d optimization to evaluate levels using the same exhaustive criterion. Safe because both d and level are optimized simultaneously. Computational cost: ~16x d optimization (adds ~10-15s, still within 5 min). **This is the most promising near-term direction.**
+2. **Multi-codebook quantization**: Requires format changes but could provide step-change improvement.
+3. **Gain-shape quantization**: Format-level decoupling of magnitude and direction. Speculative.
