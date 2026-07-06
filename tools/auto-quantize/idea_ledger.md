@@ -1422,3 +1422,50 @@ This is structurally different from:
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
 
 **Expected**: Small KL improvement (Δ ~0.001-0.004, ~0.15-0.6% relative) from 0.662001. The L1-based baseline should be particularly beneficial for attention tensors with outlier-heavy sub-blocks. The effect compounds across all 95 IQ2_XXS tensors.
+
+---
+
+### exp-100: Decouple imatrix importance from magnitude in waux — direct formula for neighbor search weight (REGRESSION)
+
+**Hypothesis**: Replace `waux[i] = powf(weight[i], 0.20f)` with `waux[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.06f)` to use linear imatrix instead of qw^0.20.
+
+**Result**: KL=0.690359 — REGRESSION (+4.3% from best 0.662001). The qw^0.20 softening is necessary — linear imatrix overweights high-importance elements in the neighbor search for off-map patterns. Both imatrix and magnitude must be softened equally via a single powf(weight, 0.20). **Reverted**.
+
+### exp-101: Remove sigma2 baseline from main quantization weight only (keep for d-opt and post-d)
+
+**Hypothesis**: The sigma2 baseline `sigma2_per_ib[ib]` in the main weight formula `weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f)` provides a cross-element floor that inflates weights for near-zero elements in high-variance sub-blocks. This dilutes the weight differentiation within the sub-block during:
+1. **2-bit level assignment** — near-zero elements get artificially elevated weight, distorting the kmap pattern
+2. **Initial scale computation** (sumqx/sumq2) — scale is pulled toward zero-element accommodation
+3. **Sign parity fix** — the w*x^2 flip criterion is distorted by inflated near-zero weights
+
+For the main quantization, near-zero elements contribute nothing to model output and should not influence level/scale/index selection. Removing sigma2 gives `weight[i] = qw[i] * powf(xb[i]*xb[i], 0.30f)` — purely per-element magnitude weighting.
+
+The d optimization AND post-d refinement KEEP the sigma2 baseline (exponent 0.35) to ensure the shared superblock scale and final index refinement account for the full sub-block distribution.
+
+This is a principled three-stage decoupling:
+- **Main quantization (line 3861)**: Per-element only — `qw * (xb^2)^0.30`
+- **d optimization (line 4003)**: Full formula with sigma2 — unchanged
+- **Post-d refinement (lines 4046, 4072)**: Full formula with sigma2 — unchanged
+- **waux (line 3862)**: `powf(weight, 0.20)` using the new per-element weight — naturally gives `qw^0.20 * |xb|^0.12`
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c:3861`:
+```c
+// Before:
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.30f);
+// After:
+weight[i] = qw[i] * powf(xb[i]*xb[i], 0.30f);
+```
+
+The d optimization and post-d refinement lines (4003, 4046, 4072) are UNCHANGED, keeping sigma2_per_ib.
+
+**Why this is different from exp-079/089/091**:
+- exp-079: Changed sigma2 granularity (per-chunk) — overfitted
+- exp-089: Normalized total weight per sub-block — destructively equalized magnitude signal
+- exp-091: Trimmed mean sigma2 — reduced baseline in a different way
+- **This removes sigma2 completely from main quantization — a structural change to how weights are computed, not how sigma2 is estimated**
+
+**Risk**: MODERATE. If the main quantization becomes too sensitive to element-level fluctuations without the sigma2 floor, level assignment may become unstable, especially for sub-blocks where most elements are near zero. However, for such sub-blocks, the per-superblock scale and d optimization (with sigma2) will still find appropriate values.
+
+**Expected**: KL improvement (Δ ~0.002-0.008, ~0.3-1.2% relative) from 0.662001. The effect should be largest for sub-blocks with mixed magnitudes (few large, many near-zero), common in attention tensors.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — line 3861.
