@@ -44,10 +44,3 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Hypothesis**: K-means++ initialization produces better-spread initial centroids than random initialization. Since centroids start closer to their final positions, fewer iterations are needed for convergence. Reducing from 60→40 iterations should maintain the same grid quality while cutting quantize time by ~30%.
 
 **Expected**: KL stays at 0.724 (no regression) while quantize time drops from ~52 min to ~35 min.
-
-### exp-032: Accumulated cross-tensor K-means++ with diverse data
-**Hypothesis**: The current exp-031 learns from only the first IQ2_XXS tensor (single tensor warm-start, grid_learned flag), biasing the grid toward a single tensor's weight distribution. By accumulating samples from multiple tensors before K-means training, the grid will better represent the overall distribution across all 95 IQ2_XXS tensors. Additionally, K-means++ init with 3 trials replaces the single E8 warm-start, offering better exploration.
-
-**Implementation**: Remove `grid_learned` early return; accumulate up to 65536 8D samples across tensors (4096 per tensor); when threshold reaches 16384, run K-means++ (3 trials: E8 + 2 K-means++, 40 iters); finalize and skip future learning.
-
-**Expected**: Small KL improvement (Δ ~0.0005-0.001) from more representative training data, quantize time ~1.5 min (well under 5 min limit).
