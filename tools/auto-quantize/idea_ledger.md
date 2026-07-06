@@ -7,7 +7,8 @@
 | 100 | Decouple imatrix from magnitude in waux — waux = qw * (sigma2+xb^2)^0.06 | REGRESSION |
 | 101 | Remove sigma2 baseline from main quantization weight only | REGRESSION |
 | 102 | Sharpen post-d refinement weight exponent 0.35→0.40 (keep d-opt 0.35) | NULL |
-| **103** | **Change d optimization objective from sum to max-of-sub-block-errors** | **IN PROGRESS** |
+| 103 | Change d optimization objective from sum to max-of-sub-block-errors | REGRESSION |
+| **104** | **Tighter d optimization range ±15% (was ±16%) at 0.5% step (61 candidates)** | **IN PROGRESS** |
 
 ---
 
@@ -1464,6 +1465,26 @@ Line 4003 (d-opt) stays at 0.35. Lines 3861 (main) stays at 0.30. Line 3862 (wau
 **Risk**: MODERATE — the post-d uses sharper weights for both the neighbor search AND the error comparison. If the sharper weight makes the neighbor search too selective (narrowing the candidate pool), it could miss good centroids. However, the neighbor list is from kmap (precomputed), so the candidate pool is fixed — only the scoring criterion changes.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — lines 4046, 4072.
+
+---
+
+### exp-104: Tighter d optimization range ±15% at 0.5% step (61 candidates)
+
+**Hypothesis**: The current ±16% range at 0.5% step gives 65 d candidates. Exp-062 (wider ±24%) regressed. Exp-067 (narrower ±8%) also regressed. The optimal range is between ±16% and ±8%. Slightly tightening to ±15% cuts off the edge candidates (is = -32 and is = 32) which may occasionally select suboptimal d values that produce level quantization mismatches.
+
+The edge candidates at ±16% correspond to `d_try = d_base * (1 ± 0.16)`. For superblocks where d_base is slightly underestimated, the +16% candidate can over-correct, producing d values that shift level quantization enough to increase reconstruction error. Removing these extreme candidates (going to ±15%) prevents this edge case while maintaining the same 0.5% resolution.
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c`:
+```c
+// Before:
+for (int is = -32; is <= 32; ++is) {  // ±16%, 65 candidates
+// After:
+for (int is = -30; is <= 30; ++is) {  // ±15%, 61 candidates
+```
+
+**Expected**: Very small KL improvement or null (Δ ~0-0.001). The effect is at the noise floor level.
+
+**Risk**: LOW — one-line change, trivially revertible.
 
 ---
 
