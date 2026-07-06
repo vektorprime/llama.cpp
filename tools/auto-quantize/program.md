@@ -1,4 +1,4 @@
-# autoresearch — llama.cpp IQ4_XS quantization
+# autoresearch — llama.cpp IQ4_XS quantization on Qwen3.6-27B
 
 Research driven by an autonomous LLM agent, following the pattern of
 karpathy/autoresearch. The agent runs inside opencode and follows this
@@ -6,7 +6,7 @@ protocol to explore, implement, and evaluate quantization improvements.
 
 ## Objective
 
-Minimize **KL divergence** of IQ4_XS-quantized models against the BF16 reference,
+Minimize **KL divergence** of IQ4_XS-quantized models against the Q8_0 reference,
 by improving the quantization algorithm in `ggml/src/ggml-quants.c`.
 
 The IQ4_XS type uses **4-bit non-linear quantization** with a fixed 16-entry
@@ -19,21 +19,53 @@ Research directions include:
 - **Post-d refinement** — re-evaluate 4-bit codebook selection after d known
 - **Codebook tuning** — the `kvalues_iq4nl` table can potentially be learned
 
+## Model Architecture: Qwen3.6-27B
+
+| Property | Value |
+|----------|-------|
+| Parameters | 27B |
+| Hidden Dim | 5120 |
+| Layers | 64 |
+| Token Embedding | 248320 (padded) |
+| Hidden Layout | 16 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN)) |
+| Context Length | 262,144 native (extensible to ~1M) |
+| Gated DeltaNet | 48 V-heads × 128 + 16 QK-heads × 128 |
+| Gated Attention | 24 Q-heads × 256 + 4 KV-heads × 256, RoPE dim 64 |
+| FFN intermediate | 17408 |
+
 ## Baselines (to establish)
 
 | Experiment | KL | PPL | Same top P | Size | Notes |
 |-----------|-----|-----|------------|------|-------|
-| IQ4_XS default quant (no tuning) | TODO | TODO | TODO | ~ MB | First experiment: establish baseline |
+| IQ4_XS default quant (no tuning) | TODO | TODO | TODO | ~ GB | First experiment: establish baseline |
 
 ## Models and Data
 
 | Resource | Path |
 |---|---|
-| BF16 model | `/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf` |
-| BF16 reference logits (LOCKED) | `/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits` |
-| Imatrix (Unsloth) | `/home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf` |
+| BF16 model (source) | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf` |
+| Reference logits (LOCKED — generate first) | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits` |
+| Imatrix | `/home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf` |
 | Eval data (LOCKED) | `/home/user/llm/wikitext-2-raw/wiki.test.raw` |
-| Calibration data | `/tmp/calibration_short.txt` |
+| Calibration data | `/home/user/llm/models/Qwen3.6-27B/bartowski_calibration_data_v5.txt` |
+
+## First-Time Setup: Generate Reference Logits
+
+Before any experiments, generate the BF16 reference logits (one-time, ~20 min):
+
+```bash
+CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-perplexity \
+  -m /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf \
+  -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+  -t 8 -c 512 --chunks 200 \
+  -fa on --cache-type-k bf16 --cache-type-v bf16 \
+  --no-mmap -ngl 999 -np 1 \
+  --kl-divergence \
+  --kl-divergence-base /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits 2>&1
+```
+
+(The `--kl-divergence-base` flag with a `.logits` path that doesn't exist
+will compute reference logits and SAVE them. Run ONCE, then the file is locked.)
 
 ## IQ4_XS Architecture
 
@@ -66,8 +98,8 @@ The 16-entry non-uniform codebook is fixed (`kvalues_iq4nl`).
 ```bash
 rm -f /tmp/quantized-model.gguf
 ./build/bin/llama-quantize \
-  --imatrix /home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf \
-  /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf \
+  --imatrix /home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf \
+  /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf \
   /tmp/quantized-model.gguf IQ4_XS
 ```
 
@@ -84,11 +116,15 @@ CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-perplexity \
   -fa on --cache-type-k bf16 --cache-type-v bf16 \
   --no-mmap -ngl 999 -np 1 \
   --kl-divergence \
-  --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
+  --kl-divergence-base /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits
 ```
 
 **Use `CUDA_VISIBLE_DEVICES=1`** (RTX 3080, CC 8.6). Device 0 (RTX 5090, CC 12.0)
 lacks kernel images and produces "no kernel image available" errors.
+
+Note: The 27B model requires significant VRAM for eval. Ensure the eval
+finishes within timeout (increase timeout if needed). With --no-mmap -ngl 999,
+expect ~20-30 GB VRAM usage on the eval GPU.
 
 ## Editable Files
 
@@ -130,8 +166,8 @@ lacks kernel images and produces "no kernel image available" errors.
 5. QUANTIZE — must finish in ≤7 minutes (HARD limit, unless ≥10% KL gain):
    rm -f /tmp/quantized-model.gguf
    timeout 420 ./build/bin/llama-quantize \
-     --imatrix /home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf \
-     /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf \
+     --imatrix /home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf \
+     /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf \
      /tmp/quantized-model.gguf IQ4_XS
 
 6. EVALUATE (always device 1):
@@ -142,7 +178,7 @@ lacks kernel images and produces "no kernel image available" errors.
      --cache-type-k bf16 --cache-type-v bf16 \
      --no-mmap -ngl 999 -np 1 \
      --kl-divergence \
-     --kl-divergence-base /home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits
+     --kl-divergence-base /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits
    Capture ALL lines of output — do NOT grep-filter. You need ALL of:
    ====== Perplexity statistics ======
      Mean PPL(Q), Mean PPL(base), Cor(...), Mean ln(PPL(Q)/PPL(base)),

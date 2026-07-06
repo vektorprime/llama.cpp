@@ -46,7 +46,7 @@ are transferred from the IQ2_XXS research (best KL 0.662001 on Qwen3.5-2B).
 
 ```
 tools/perplexity/**                    The evaluation binary and source
-/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits   Reference logits (NEVER regenerate)
+/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits   Reference logits (NEVER regenerate)
 /home/user/llm/wikitext-2-raw/wiki.test.raw                Evaluation dataset
 ```
 

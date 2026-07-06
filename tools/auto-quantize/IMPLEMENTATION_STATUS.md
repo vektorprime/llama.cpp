@@ -2,7 +2,7 @@
 
 **Date**: 2026-07-06
 **Branch**: `auto_research_iq4xs_llama`
-**Model**: Qwen3.5-2B (BF16 GGUF at `/home/user/llm/models/Qwen3.5-2B/`)
+**Model**: Qwen3.6-27B (BF16 GGUF at `/home/user/llm/models/Qwen3.6-27B/`)
 
 ## Overview
 
@@ -28,10 +28,11 @@ Transferred findings from the IQ2_XXS research (best KL 0.662001, 68 experiments
 
 | Resource | Path |
 |---|---|
-| BF16 model | `/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.gguf` |
-| BF16 reference logits | `/home/user/llm/models/Qwen3.5-2B/Qwen3.5-2B-BF16.logits` |
-| Imatrix (Unsloth) | `/home/user/llm/models/Qwen3.5-2B/imatrix_unsloth.gguf` |
+| BF16 model | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf` |
+| BF16 reference logits | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits` |
+| Imatrix | `/home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf` |
 | Eval data | `/home/user/llm/wikitext-2-raw/wiki.test.raw` |
+| Calibration data | `/home/user/llm/models/Qwen3.6-27B/bartowski_calibration_data_v5.txt` |
 
 ## GPU Info
 
