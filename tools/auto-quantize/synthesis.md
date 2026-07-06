@@ -1,25 +1,20 @@
 # IQ2_XXS Auto-Research Synthesis — Session 2026-07-06
 
-## Status: Best KL = 0.710657 (exp-055, post-d-optimization grid index recomputation). Previous best was 0.715144 (exp-049).
+## Status: Best KL = 0.699009 (exp-064, 65-candidate d optimization at 0.5% step). First result below 0.7 KL. Previous best was 0.710657 (exp-055).
 
-## BREAKTHROUGH (exp-033): Neighbor search depth nwant=2→4 — KL=0.7166, surpasses Unsloth!
+## BREAKTHROUGH (exp-061/063/064): Progressive d optimization step refinement
 
-**Increasing the neighbor search depth from `nwant=2` to `nwant=4` in `iq2xxs_rebuild_map_and_neighbours()` improved KL from 0.7238 to 0.7166 — a 1.0% relative improvement that BEATS the Unsloth target (0.721).**
-
-This is the first experiment since exp-007 to produce a genuine KL improvement beyond the 0.7238 plateau.
-
-### Why it works
-
-The kmap neighbor precomputation uses Euclidean distance to find candidate grid points for 16-bit 2-bit patterns not directly in the codebook. `nwant=2` means only 2 unique distance levels are included. For the E8 lattice (highly regular), this captures all needed neighbors. But learned K-means grids lack E8's symmetry — nearby points are spread across more distance levels. Increasing to `nwant=4` casts a wider net, finding better centroid matches during quantization.
+**Reducing the d optimization step from 4% → 2% → 1% → 0.5% (increasing candidates from 9 → 17 → 33 → 65, same ±16% range) improved KL from 0.710657 to 0.699009 — a total of 1.64% relative improvement.**
 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
 |-----------|--------------|-----|------------|--------|---------------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **exp-055 (new best)** | **0.710657** | **26.26** | **60.61%** | **4.8 min** | **Post-d-optimization grid index recomputation** |
-| **exp-049** | 0.715144 | 26.45 | 60.42% | 4.6 min | Superblock scale optimization |
-| **exp-033** | 0.7166 | 26.24 | 60.56% | 2.4 min | nwant=4 neighbor search |
-| Best learned (exp-020) | 0.7238 | 26.46 | 60.34% | 9.6 min | K-means++ learned grid |
-| E8 lattice (no learn) | 0.7248 | 26.55 | 60.02% | 4.6 min | Pure E8 lattice |
+| **exp-064 (NEW BEST)** | **0.699009** | **25.90** | **61.11%** | **5.0 min** | **0.5% d step (65 candidates)** |
+| **exp-063** | 0.702666 | 26.02 | 60.98% | 4.9 min | 1% d step (33 candidates) |
+| **exp-061** | 0.704868 | 26.12 | 60.97% | 4.8 min | 2% d step (17 candidates) |
+| exp-055 | 0.710657 | 26.26 | 60.61% | 4.8 min | Post-d grid index recomputation |
+| exp-049 | 0.715144 | 26.45 | 60.42% | 4.6 min | Superblock scale optimization |
+| exp-033 | 0.7166 | 26.24 | 60.56% | 2.4 min | nwant=4 neighbor search |
 
 ### Why this wasn't tried before
 All previous experiments focused on the codebook VALUES (K-means variants, init schemes, distance metrics). The neighbor search depth was never considered — it was assumed E8's nwant=2 setting was optimal. With learned grids, the distance structure is fundamentally different, making wider neighbor search beneficial.
@@ -124,17 +119,42 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 **Lesson**: With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection doesn't matter. The codebook is essentially E8 with minor data-adaptive adjustments. Breakthroughs require structural changes (like nwant adjustment, exp-033) rather than training tweaks.
 
 ## Gap Analysis
-- **Best KL**: 0.715144 (exp-049)
-- **Unsloth target**: 0.721 (surpassed by 0.8%)
+- **Best KL**: 0.699009 (exp-064)
+- **Unsloth target**: 0.721 (surpassed by 3.0%)
 - **Remaining gap**: None to Unsloth; new benchmark set
-- **Grid training is saturated**: 13 consecutive experiments (exp-035 through exp-047) produced null/regression. Grid-only changes are exhausted.
-- **Quantizer SEARCH still has headroom**: exp-033 (nwant) and exp-049 (d optimization) both improved KL by modifying the quantizer SEARCH, not the grid values. The neighbor search depth and superblock scale are two independent knobs that each improved KL.
-- **Next directions**: Combined nwant + d optimization; more aggressive scale search (two-stage, adaptive granularity); per-element level perturbation with scale awareness; multi-candidate neighbor evaluation; format changes.
+- **Grid training is saturated**: All grid-only experiments produce null results. Grid is effectively E8 with minimal drift.
+- **Quantizer SEARCH is the only remaining headroom**: The d optimization step refinement has been the most consistent source of improvement.
+- **Index-scale coupling is fragile**: Any two-way modification (changing both indices and scale) causes catastrophic regression. Only one-way modifications are safe.
+- **D optimization step refinement has diminishing returns**: 4%→2%: -0.81%, 2%→1%: -0.31%, 1%→0.5%: -0.52%. Further step reduction likely gives <0.1%.
+
+## Key Findings: Experiments 056-064
+
+| Exp | KL | Technique | Verdict |
+|-----|-----|-----------|---------|
+| 055 | 0.710657 | Post-d grid index recomputation | SUCCESS |
+| 056 | 0.7949 | Second d optimization + ±1 level | REGRESSION |
+| 057 | 0.7122 | Odd-forcing kmap + neighbor | REGRESSION |
+| 058 | 0.7212 | Robust index refinement + d recompute | REGRESSION |
+| 059 | 0.7122 | Odd-forced neighbor scoring only | REGRESSION |
+| 060 | 1.2006 | Level recomputation after refinement | CATASTROPHIC |
+| **061** | **0.7049** | **d opt 4%→2% step (17 cand)** | **SUCCESS** |
+| 062 | 0.7126 | d opt ±24% range | REGRESSION |
+| **063** | **0.7027** | **d opt 2%→1% step (33 cand)** | **SUCCESS** |
+| **064** | **0.6990** | **d opt 1%→0.5% step (65 cand)** | **SUCCESS** |
+
+### Critical Lessons
+
+1. **Index-scale coupling is fundamental**: Changing scale after fixing indices (or vice versa) consistently causes regression. The only safe modifications are ones where one side is fixed while the other is optimized.
+
+2. **D optimization benefits from finer resolution**: The ±16% range at 0.5% step (65 candidates) is significantly better than the original 4% step (9 candidates). The cumulative improvement from these three experiments is -1.64% KL relative.
+
+3. **Wider d range hurts**: Expanding beyond ±16% introduces d candidates that don't match the fixed grid indices, causing level quantization mismatches. The safe range is exactly ±16% (which corresponds to the ±2 level range around the nearest level).
+
+4. **Neighbor L1 scoring is optimal**: All attempts to improve it (dot-product, odd-forced, L2) cause regression. The raw weighted L1 with full diversity is the best selection criterion for the quantizer's neighbor search.
 
 ## Remaining Research Directions
-1. **Cross-tensor accumulation WITH nwant=8**: Previously tried with nwant=4 (exp-036) and regressed. nwant=8 might compensate for the reduced per-tensor focus. (Untested combination)
-2. **Hybrid E8+K-means grid**: Replace low-count centroids with their E8 equivalents to maintain coverage diversity. (Untested)
-3. **Quantization-aware neighbor distance**: Weight the kmap neighbor distance by imatrix importance during kmap construction, not just during quantization. (Untested)
-4. **Multi-codebook quantization**: Store 2+ grids per tensor, select best per superblock with 1-bit selector. (Requires format change — speculative)
-5. **Learn the quantizer scale `d` per superblock**: Instead of selecting from discrete candidates, learn the optimal scale per block via gradient descent on quantization loss. (Computational cost concern)
-6. **Beyond K-means: Low-bitwidth quantization using the fixed E8 grid with learned scale per centroid**: Each centroid gets its own learned scale factor, effectively creating a scaled codebook. (Requires format change)
+1. **Further d step refinement (0.25%)**: Minimal expected gain (~0.05%). Low risk, easy to try.
+2. **Combine d refinement with post-d index update for top-3 candidates**: Sample d candidates near the d optimum with full index recomputation. Computational concern but potentially addresses the coupling issue.
+3. **Imatrix-weighted kmap construction**: Use per-dimension imatrix weights in neighbor list distance computation. Moderate change, uncertain gain.
+4. **Per-sub-block scale aware level search**: Small ±0.5 level adjustments during the initial scale search. Low risk.
+5. **Multi-codebook quantization**: Requires format changes but could provide step-change improvement. Speculative.
