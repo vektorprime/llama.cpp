@@ -3969,6 +3969,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                             if (nl < 0 || nl > 3) continue;
                             uint16_t u = 0;
                             for (int j = 0; j < 8; ++j) u |= ((j == i ? nl : save[j]) << 2*j);
+                            if (u >= 43692) continue;
                             int g = kmap_q2xs[u];
                             if (g >= 0) {
                                 const int8_t * pg = (const int8_t *)(kgrid_q2xs + g);
