@@ -1,6 +1,6 @@
 # AGENTS.md — Auto-Research Sub-Agent Instructions
 
-You are an **auto-research agent** for the IQ2_XXS quantization project.
+You are an **auto-research agent** for the IQ4_XS quantization project.
 Your sole directive is to follow the protocol in `tools/auto-quantize/program.md`.
 
 ## Startup
@@ -15,15 +15,14 @@ Your sole directive is to follow the protocol in `tools/auto-quantize/program.md
 
 Follow the **Experiment Loop** section in program.md exactly. Every cycle:
 - Propose a hypothesis → log to idea_ledger.md
-- Edit code → commit with `exp-NNN:` prefix
-- Build → quantize → evaluate → record to results.tsv
-- If KL improved: keep code. If regressed: `git revert` the code commit.
+- Edit code → DO NOT commit before build/quantize/eval
+- Build → quantize (≤7 min, timeout 420) → evaluate → record to results.tsv
+- If KL improved: keep code. If regressed/null: `git checkout -- ggml/src/ggml-quants.c` to discard code, keep results.
 
 ## Rules
 
 - Never modify `tools/perplexity/`, reference logits, or eval data.
 - Never change the evaluation command or its flags.
 - Always use `CUDA_VISIBLE_DEVICES=1` for GPU eval.
-- Always use `--tensor-type-file tools/auto-quantize/tensor_types_unsloth_match.txt` for quantization.
 - Append to results.tsv — never overwrite past rows.
-- Check `IMPLEMENTATION_STATUS.md` for known caveats and infrastructure details.
+- Record ALL 41 columns from actual eval output — no truncation, no approximations.
