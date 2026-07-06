@@ -910,7 +910,35 @@ The softer exponent continues to reduce the dominance of outlier elements in the
 
 **Result**: KL=0.679018 — REGRESSION (Δ = +0.012856, +1.93% from best 0.666162). Exponent 0.25 overshoots the optimal. The weight formula becomes too uniform, under-weighting large elements that contribute most to model output quality. The optimal exponent is confirmed near 0.30. **Reverted**.
 
----
+### exp-084: Harmonize weight exponent to 0.30 everywhere (fix d opt + post-d refinement from 0.35 to 0.30)
 
+**Hypothesis**: Exp-082 reduced the main weight exponent from 0.35 to 0.30 and improved KL from 0.668342 to 0.666162 (-0.33%). However, the implementation only changed line 3861 (main weight computation) and left 3 other lines at 0.35:
+- Line 4003: d optimization loop weight
+- Line 4046: Post-d refinement candidate computation weight
+- Line 4072: Post-d refinement comparison weight
+
+This inconsistency means:
+1. The **d optimization** uses a sharper weight profile (0.35) than the main quantization (0.30) — selecting d values for a different trade-off
+2. The **post-d refinement** evaluates grid index changes with different weights (0.35) than the initial selection (0.30) — potentially rejecting beneficial index changes or accepting harmful ones
+
+By harmonizing ALL 4 weight exponent sites to 0.30, the quantizer becomes self-consistent. All stages evaluate the same weighted objective.
+
+**Expected**: KL improvement from 0.666162. The effect direction is uncertain because:
+- If 0.35 was inadvertently helping the d optimization resist noise, harmonizing to 0.30 could weaken d selection → mild regression
+- If the inconsistency was causing suboptimal d/index choices, harmonizing could improve KL by 0.1-0.5%
+
+**Implementation**: 3 lines changed in `quantize_row_iq2_xxs_impl()` (ggml/src/ggml-quants.c):
+```c
+// Line 4003: d optimization
+float w = qw[8*k + i] * powf(sigma2_per_ib[ib] + xb[8*k + i] * xb[8*k + i], 0.30f);
+// Line 4046: Post-d refinement candidate
+wtmp[i] = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.30f);
+// Line 4072: Post-d refinement comparison
+float w = qw[8*k+i] * powf(sigma2_per_ib[ib] + xb[8*k+i]*xb[8*k+i], 0.30f);
+```
+
+**Files changed**: `ggml/src/ggml-quants.c` only.
+
+---
 
 
