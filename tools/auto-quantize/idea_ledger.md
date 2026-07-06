@@ -172,3 +172,16 @@ By separating shape and magnitude updates, GSKM prevents the mean-shrinking prob
 
 **Expected**: KL improvement from 0.715144 to ~0.710-0.714. GSKM should produce more diverse centroids that better span the angular space, reducing quantization error for high-dimensional weight patterns.
 
+### exp-054: Post-d-optimization grid index recomputation with quantized scales
+**Hypothesis**: During IQ2_XXS quantization, each sub-block's grid indices are selected using a continuous (unquantized) per-sub-block scale found via the `sumqx/sumq2` dot-product criterion. However, the final storage uses a shared superblock `d` and 4-bit quantized levels `l` per sub-block. The grid indices chosen for the continuous scale may be suboptimal for the actual quantized scale `d * (2*l+1)` used at inference. After the superblock `d` optimization (exp-049), we know the exact quantized scale and can recompute each 8D chunk's grid indices accordingly.
+
+**Implementation**: After the d optimization block in `quantize_row_iq2_xxs_impl`, add a second-pass refinement that re-quantizes each 8D chunk using the quantized scale `d*(2*l+1)`:
+1. For each sub-block, compute quantized level l and scale_q = d*(2*l+1)
+2. For each 8D chunk, convert xval to 2-bit codes using id_q = 1/scale_q
+3. Look up in kmap or neighbor fallback for best grid index
+4. Update q2 if new index reduces weighted reconstruction error
+
+This is a targeted refinement that costs ~1 additional pass (no scale search), adding <20% to quantize time.
+
+**Expected**: Small KL improvement (Δ ~0.0003-0.001). Grid indices optimal for continuous scales may misalign with quantized scales for some sub-blocks.
+
