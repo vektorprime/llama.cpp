@@ -78,7 +78,15 @@
 | **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
 | **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **IMPROVEMENT (0.666162)** |
 | **083** | **Further soften weight exponent to 0.25 (from 0.30)** | **REGRESSION (0.679018, +1.93%)** |
+| 084 | Harmonize d-opt/post-d exponent to 0.30 | REGRESSION (0.673) |
+| 085 | Asymmetric d-opt/post-d exponent 0.50 | REGRESSION (0.669) |
+| 086 | Increase d-opt/post-d exponent to 0.40 | REGRESSION (0.669) |
+| 087 | Linear-L1 weight formula (1+\|xb\|) | CATASTROPHIC (0.723) |
 | **088** | **Weight ratio clamping per sub-block max/min ≤5** | **REGRESSION (0.794, +19.2%)** |
+| 089 | Intra-sub-block weight normalization | REGRESSION (0.679) |
+| 090 | Remove sqrtf from waux (align neighbor weight) | REGRESSION (0.682) |
+| 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
+| **092** | **Adaptive weight exponent per sub-block via CV** | **PENDING** |
 
 ---
 
@@ -1138,4 +1146,48 @@ All 4 weight computation sites (main quantization, d optimization, post-d refine
 **Expected**: Small KL improvement (Δ ~0.001-0.004, ~0.15-0.6% relative) from 0.666162. The effect should be largest for sub-blocks in attention tensors where a few elements dominate (common in Q/K projections). No risk of regression since the change is a minute shift in the sigma2 baseline only.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (3 lines modified).
+
+---
+
+## Session: 2026-07-06 (continued) — Adaptive weight exponent per sub-block
+
+### exp-092: Adaptive weight exponent based on per-sub-block magnitude distribution shape
+
+**Hypothesis**: All prior weight-exponent experiments (exp-076 through exp-091) used a FIXED exponent per tensor — every sub-block in every tensor used the same exponent (0.30 main, 0.35 d-opt/post-d). But the optimal weight exponent depends on the sub-block's magnitude distribution:
+
+- **Heavy-tailed sub-blocks** (one or two elements dominate, others are near-zero): A softer exponent (~0.30) prevents the dominant element from completely controlling the optimization. The sigma2 baseline is inflated by the outlier, so the `powf(sigma2 + xb², 0.30)` formula already provides a high weight floor for small elements.
+- **Near-uniform sub-blocks** (all 32 elements have similar magnitude): A sharper exponent (~0.50) provides better per-element differentiation. Since all elements are similar, the sigma2 baseline is small, and a sharper exponent amplifies subtle magnitude differences that help the quantizer prioritize.
+
+The coefficient of variation (CV) `sqrt(sigma2_per_ib) / mean_abs(xb)` captures this shape:
+- Uniform (all ≈ equal): CV ≈ 1.0 → sharper exponent (0.50)
+- Gaussian-like: CV ≈ 1.25 → moderate exponent (~0.42)
+- Heavy-tailed: CV > 1.5 → softer exponent (0.30)
+
+**Implementation**: For each sub-block `ib`, compute `mean_abs = mean(|xb|)` in the sigma2 computation loop. Then compute:
+```c
+float shape_ratio = sigma2_per_ib[ib] / (mean_abs * mean_abs + 1e-10f);
+float alpha = min(shape_ratio - 1.0f, 1.0f);  // 0 (uniform) to 1 (heavy-tailed)
+float exp_adaptive = 0.50f - 0.20f * alpha;    // 0.50 for uniform, 0.30 for heavy-tailed
+```
+
+Also store `exp_adaptive` in an `exp_per_ib[4]` array alongside `sigma2_per_ib[ib]`.
+
+Replace all 4 `powf(..., 0.30f/0.35f)` calls with `powf(..., exp_per_ib[ib])`:
+- Line 3861: `0.30f` → `exp_per_ib[ib]`
+- Line 4003: `0.35f` → `exp_per_ib[ib]`
+- Line 4046: `0.35f` → `exp_per_ib[ib]`
+- Line 4072: `0.35f` → `exp_per_ib[ib]`
+
+This is a **one-way modification** (weights only, no index/scale/level coupling). All 4 weight sites use the SAME adaptive exponent per sub-block — no stage inconsistency.
+
+**Why this is genuinely novel**:
+- No prior experiment has varied the exponent WITHIN a tensor (per sub-block)
+- The adaptive rule is based on a principled statistic (CV / shape ratio)
+- It uses existing per-sub-block infrastructure (sigma2_per_ib array) with negligible computational overhead
+- The change is uniform across all 4 weight sites — no coupling issues
+- If the hypothesis is wrong, the worst case is a small regression (bounded by the 0.30-0.50 range, which are both previously-tested safe values)
+
+**Expected**: KL improvement from 0.666162 (Δ ~0.002-0.006, ~0.3-0.9% relative). The effect should be largest for tensors with diverse sub-block distributions (e.g., attention tensors where some sub-blocks have dominant outlier elements while others are uniform). Heavy-tailed sub-blocks get the proven 0.30 exponent (exp-082), uniform sub-blocks get the sharper 0.50 (original sqrt). The combination should outperform any single fixed exponent.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~10 lines changed: add mean_abs computation, exp_per_ib array, 4 exponent substitutions).
 
