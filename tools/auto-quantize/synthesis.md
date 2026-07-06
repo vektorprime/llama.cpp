@@ -15,7 +15,18 @@ The hypothesis was that `waux = qw * (sigma2+xb^2)^0.06` (linear imatrix + eff 0
 
 **Key insight**: The `qw^0.20` softening in `powf(weight, 0.20)` is necessary for BOTH the imatrix AND magnitude components. Linear imatrix overweights high-importance elements in the neighbor search, hurting off-map pattern selection where rare ~5% of chunks need global grid structure to dominate over per-element importance.
 
-The effective exponent of 0.06 on the full weight (imatrix × magnitude) is the confirmed optimum. Both components must be softened equally via the single powf(weight, 0.20).
+### exp-101: Remove sigma2 from main quantization weight — sigma2 baseline structurally necessary
+
+Removing the sigma2 floor from the main weight formula `weight = qw * powf(sigma2 + xb^2, 0.30) → qw * powf(xb^2, 0.30)` caused catastrophic regression (KL 0.752, +13.6%).
+
+The sigma2 baseline provides essential structure:
+1. **Per-sub-block context**: Near-zero elements in high-variance sub-blocks get a proper weight floor, preventing unstable level assignment
+2. **Scale stability**: Without sigma2, the main quantization's initial scale computation is determined by a few non-zero elements, making it noisy
+3. **Sign parity**: The w*x^2 flip criterion degenerates for near-zero elements
+
+### exp-102: Post-d exponent 0.35→0.40 null — weight plateau confirmed
+
+Sharpening post-d from 0.35 to 0.40 (keeping d-opt at 0.35) produced KL 0.663748, within 0.4σ of best 0.662001. Null result. The post-d exponent is on a broad plateau — the asymmetry between main (0.30) and post-d (0.35) is already optimal.
 
 ## Plateau broken by waux softening
 
