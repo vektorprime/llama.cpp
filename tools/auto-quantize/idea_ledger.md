@@ -55,7 +55,8 @@
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | 059 | Odd-forced centroid scoring in neighbor search only (not kmap) | REGRESSION (0.712) |
 | 060 | Post-refinement per-sub-block level recomputation from updated indices | CATASTROPHIC (1.201) |
-| 061 | Finer d optimization grid (17 candidates at 2% step instead of 9 at 4%) | PENDING |
+| 061 | Finer d optimization grid (17 candidates at 2% step instead of 9 at 4%) | IMPROVEMENT (0.704868) |
+| 062 | Wider d optimization range (±24% 2% step, 25 candidates) | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -385,4 +386,21 @@ This is a pure one-way modification (changes d without touching indices). The in
 **Result**: KL=0.704868 — IMPROVEMENT (Δ = -0.005789, -0.81% from best 0.710657). The finer d optimization grid (17 candidates at 2% steps, ±16% range) finds better superblock scales that the coarser 4% grid misses. KL improved from 0.710657 to 0.704868. PPL dropped from 26.26 to 26.12. Same top p improved from 60.61% to 60.97%. Quantize time unchanged (~290s). This is the NEW BEST RESULT.
 
 **Why it works**: The d optimization error landscape has a relatively narrow minimum (~2-3% wide at optimal resolution). The previous 4% step grid could miss this minimum by up to 2%. The 2% step grid halves the worst-case d offset, finding scales consistently closer to the true optimum. The improvement (0.81% relative KL reduction) is larger than expected because the 4% steps systematically missed the optimal d for many superblocks, and the correction compounds across all 95 IQ2_XXS tensors.
+
+### exp-062: Wider d optimization range (±24% at 2% step, 25 candidates)
+**Hypothesis**: The current d optimization searches ±16% around `d_base = max_scale/31`. For superblocks where the optimal d is far from d_base (due to skewed importance distributions across sub-blocks), the ±16% range may not include the true optimum. Expanding to ±24% with the same 2% step (25 candidates, is = -12..12) captures more extreme d values while maintaining fine granularity.
+
+Exp-051 tried a two-stage wider search (first coarse at 6% step, then fine at 0.75%) and regressed because the coarse first stage missed the true optimum. A single-stage wider search at 2% step avoids this problem by maintaining fine resolution throughout the entire range.
+
+**Implementation**: One-line change in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before (exp-061 state):
+for (int is = -8; is <= 8; ++is) {  // ±16%, 2% step, 17 candidates
+// After:
+for (int is = -12; is <= 12; ++is) {  // ±24%, 2% step, 25 candidates
+```
+
+**Expected**: Small KL improvement (Δ ~0.0001-0.0003). Most superblocks' optimal d falls within ±16%, but the tail (~5-10%) may benefit from wider range.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
