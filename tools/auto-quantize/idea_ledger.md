@@ -8,6 +8,8 @@
 | 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | Failed — quantize timed out (>7 min) |
 | 003 | Weight exponent 0.30 + per-sub-block sigma2 (20 min timeout) | Regression — KL 0.025029 vs 0.024916 baseline (slightly worse) |
 | 004 | Superblock d candidate search (±8%, 33 candidates, 0.5% step) | Regression — KL 0.031630 vs 0.024916 baseline (worse) |
+| 005 | Post-d level perturbation (±1 around chosen l) | Regression — KL 0.025166 vs 0.024916 baseline |
+| 006 | K-means learned 16-entry codebook from weight samples | Pending |
 
 ---
 
@@ -130,3 +132,16 @@
 **Actual outcome:** Regression/null — KL 0.025166 ± 0.001036 vs baseline 0.024916. Mean KL slightly higher (0.025166 vs 0.024916), well within 1σ noise (σ = 0.001036). PPL 6.8939 vs baseline 6.8952 (negligibly better). Same top p 94.159% vs 94.17% (negligibly worse). Quantize time 760s, comparable to baseline (~700s) and exp-003 (700s) but faster than exp-004 (782s). The level perturbation had essentially no effect — likely because `best_index_int8` already finds the optimal codebook entry for each level, so trying adjacent levels rarely finds a better combination. Code discarded.
 
 **Lesson:** Unlike IQ2_XXS, where post-d refinement provided ~0.6% KL gain, IQ4_XS's fixed 16-entry codebook means `best_index_int8` already exhaustively checks all entries. The quantized scale `idl` is already used in the main quantization loop (line 5667). Level perturbation adds nothing because `l` was already chosen as the optimal integer nearest to `id*scales[ib]`, and the codebook entries for `l-1`/`l+1` are already evaluated with the correct scale during the perturbation — but `best_index_int8` with a slightly different scale finds the same or worse entries. The original `l` is already optimal.
+
+---
+
+## exp-006: K-means learned 16-entry codebook from weight samples
+
+**Hypothesis:** The current `kvalues_iq4nl` table (`-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113`) was designed by hand (empirically tuned). K-means clustering on actual weight samples from the BF16 model should produce a better codebook that minimizes reconstruction error for this specific model's weight distribution. By collecting weight samples from the GGUF, running K-means with K=16 on absolute values, scaling to match the magnitude range (~127), and creating a symmetric codebook sorted in non-decreasing order, we get data-driven quantization levels optimized for this model.
+
+**Changes:**
+1. Collect weight samples from the BF16 GGUF (first 30 tensors, up to 500K weights)
+2. Run K-means (K=16) on absolute weight values
+3. Replace `kvalues_iq4nl` in `ggml/src/ggml-common.h:1110-1112` with the learned sorted values
+
+**Expected outcome:** KL improvement from 0.024916 baseline. K-means codebook should reduce quantization error by aligning the quantization levels with the actual weight distribution. No change to quantize time (codebook is just a compile-time constant).
