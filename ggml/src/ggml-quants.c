@@ -3896,7 +3896,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                 continue;
             }
             float best = 0;
-            for (int is = -6; is <= 6; ++is) {
+            for (int is = -12; is <= 12; is += 2) {
                 float id = (2*kMaxQ-1+is*0.1f)/eff_max;
                 float this_scale = 1/id;
                 for (int k = 0; k < 4; ++k) {
@@ -3925,30 +3925,32 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                 }
             }
             if (scale > 0) {
-                float id = 1/scale;
-                for (int k = 0; k < 4; ++k) {
-                    uint16_t u = 0;
-                    for (int i = 0; i < 8; ++i) {
-                        int l = nearest_int(0.5f*(id*xval[8*k+i]-1));
-                        l = MAX(0, MIN(kMaxQ-1, l));
-                        u |= (l << 2*i);
+                for (int _ref = 0; _ref < 2; _ref++) {
+                    float id = 1/scale;
+                    for (int k = 0; k < 4; ++k) {
+                        uint16_t u = 0;
+                        for (int i = 0; i < 8; ++i) {
+                            int l = nearest_int(0.5f*(id*xval[8*k+i]-1));
+                            l = MAX(0, MIN(kMaxQ-1, l));
+                            u |= (l << 2*i);
+                        }
+                        int grid_index = kmap_q2xs[u];
+                        if (grid_index < 0) {
+                            const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u] - 1;
+                            grid_index = iq2_find_best_neighbour(neighbours, kgrid_q2xs, xval + 8*k, waux + 8*k, scale, L + 8*k);
+                        }
+                        const int8_t * pg = (const int8_t *)(kgrid_q2xs + grid_index);
+                        for (int i = 0; i < 8; ++i) L[8*k+i] = (pg[i] - 1)/2;
                     }
-                    int grid_index = kmap_q2xs[u];
-                    if (grid_index < 0) {
-                        const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u] - 1;
-                        grid_index = iq2_find_best_neighbour(neighbours, kgrid_q2xs, xval + 8*k, waux + 8*k, scale, L + 8*k);
+                    float sumqx = 0, sumq2 = 0;
+                    for (int i = 0; i < 32; ++i) {
+                        float w = weight[i];
+                        float q = 2*L[i] + 1;
+                        sumqx += w*xval[i]*q;
+                        sumq2 += w*q*q;
                     }
-                    const int8_t * pg = (const int8_t *)(kgrid_q2xs + grid_index);
-                    for (int i = 0; i < 8; ++i) L[8*k+i] = (pg[i] - 1)/2;
+                    if (sumq2 > 0) scale = sumqx/sumq2;
                 }
-                float sumqx = 0, sumq2 = 0;
-                for (int i = 0; i < 32; ++i) {
-                    float w = weight[i];
-                    float q = 2*L[i] + 1;
-                    sumqx += w*xval[i]*q;
-                    sumq2 += w*q*q;
-                }
-                if (sumq2 > 0) scale = sumqx/sumq2;
             }
             if (scale < 0) {
                 // This should never happen, but just in case, flip scale so that it is positive (we use uint's to encode the scale)

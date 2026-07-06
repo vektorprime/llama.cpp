@@ -74,3 +74,8 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Result**: KL = 0.716172 (identical to exp-034 best). PPL = 26.216, Same top p = 60.492%. **Null result** — lambda=0.15 too weak. K-means starting from E8 already stays near E8 after 20 iterations; centroids barely drift. Regularization is redundant when warm-start is already E8.
 
 **Lesson**: E8 regularization is unnecessary because centroids don't drift far from E8 origins with current training (1 tensor, 20 iters, 16384 samples).
+
+### exp-043: Wider quantizer scale search (±12 step 0.2) + iterative level-scale refinement
+**Hypothesis**: The quantizer's scale search is narrow — only ±6 steps of 0.1 (13 candidates, scale range ±12.7%). For learned grids, the codebook distance structure differs from E8, so the optimal scale for a sub-block may differ more from the initial estimate. Widening to ±12 steps of 0.2 (25 candidates, range -32%/+92%) increases the probability of finding the globally optimal scale. Additionally, the final level-scale estimation (compute levels from scale, then recompute scale from levels) is a fixed-point iteration that is currently run only once. Adding one more iteration converges closer to the joint optimum of levels and super-block scale, improving reconstruction accuracy.
+
+**Expected**: Small KL reduction (0.0002-0.001) and/or PPL improvement from better scale-level alignment.
