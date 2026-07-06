@@ -77,7 +77,7 @@
 | **080** | **Softer weight formula exponent (powf 0.4 instead of sqrt 0.5)** | **IMPROVEMENT (0.682340)** |
 | **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
 | **082** | **Further soften weight exponent to 0.30 (from 0.35)** | **IMPROVEMENT (0.666162)** |
-| **083** | **Further soften weight exponent to 0.25 (from 0.30)** | **PENDING** |
+| **083** | **Further soften weight exponent to 0.25 (from 0.30)** | **REGRESSION (0.679018, +1.93%)** |
 
 ---
 
@@ -907,6 +907,8 @@ The softer exponent continues to reduce the dominance of outlier elements in the
 **Expected**: Small KL improvement or null (Δ ~0.0001-0.001) from 0.666162. The diminishing returns make further improvement unlikely beyond 0.25. If null, the optimal exponent is confirmed at 0.30.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: 0.30f/0.35f → 0.25f).
+
+**Result**: KL=0.679018 — REGRESSION (Δ = +0.012856, +1.93% from best 0.666162). Exponent 0.25 overshoots the optimal. The weight formula becomes too uniform, under-weighting large elements that contribute most to model output quality. The optimal exponent is confirmed near 0.30. **Reverted**.
 
 ---
 
