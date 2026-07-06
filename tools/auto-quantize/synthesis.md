@@ -1,15 +1,16 @@
-# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06 (Updated exp-080)
+# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06 (Updated exp-081)
 
-## Status: Best KL = 0.682340 (exp-080, softer weight exponent 0.4). Previous best was 0.691085 (exp-078, per-sub-block sigma2).
+## Status: Best KL = 0.668342 (exp-081, weight exponent 0.35). Previous best was 0.682340 (exp-080, weight exponent 0.4).
 
-## BREAKTHROUGH (exp-080): Softer weight formula exponent — powf 0.4 instead of sqrt (0.5)
+## BREAKTHROUGH (exp-081): Weight exponent 0.35 — KL breaks below 0.67!
 
-**Reducing the weight formula exponent from 0.5 (sqrt) to 0.4 (powf) improves KL from 0.691085 to 0.682340 — a 1.27% relative improvement.** The softer exponent prevents outlier elements from dominating the sub-block optimization, better balancing the quantization across all elements.
+**Reducing the weight exponent from 0.4 to 0.35 improves KL from 0.682340 to 0.668342 — a 2.05% relative improvement.** The softer exponent continues to improve results, suggesting the optimal may be even lower. PPL dropped from 25.41 to 25.01. Same top p improved from 61.11% to 61.58%.
 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
 |-----------|--------------|-----|------------|--------|---------------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **exp-080 (NEW BEST)** | **0.682340** | **25.41** | **61.11%** | **5.9 min** | **Weight exponent 0.4 (was 0.5)** |
+| **exp-081 (NEW BEST)** | **0.668342** | **25.01** | **61.58%** | **5.9 min** | **Weight exponent 0.35 (was 0.4)** |
+| **exp-080** | 0.682340 | 25.41 | 61.11% | 5.9 min | Weight exponent 0.4 (was 0.5) |
 | **exp-078** | 0.691085 | 25.69 | 61.29% | 5.0 min | Per-sub-block sigma2 |
 | exp-064 | 0.699009 | 25.90 | 61.11% | 5.0 min | 0.5% d step (65 candidates) |
 | exp-063 | 0.702666 | 26.02 | 60.98% | 4.9 min | 1% d step (33 candidates) |
@@ -20,16 +21,17 @@
 
 ## Key Findings
 
-### 1. Weight formula exponent is a critical parameter (exp-080)
-The sqrt (exponent 0.5) in `weight = qw * sqrt(sigma2 + xb^2)` is over-sharp for learned grids with per-sub-block sigma2. Reducing to exponent 0.4 (`powf(..., 0.4f)`) improves KL by 1.27%. The quantizer was over-optimizing for outlier elements at the expense of the overall sub-block distribution.
+### 1. Weight formula exponent has significant headroom below 0.4 (exp-081)
+Reducing exponent from 0.4 to 0.35 improves KL by 2.05% (0.682340 → 0.668342). This is LARGER than the 1.27% improvement from 0.5→0.4, suggesting the optimal exponent may be well below 0.35. The softer weighting continues to benefit the quantizer by preventing outlier elements from dominating.
 
 ### 2. Sigma2 localization improves weight selectivity (exp-078)
 Per-sub-block sigma2 (32-element) is strictly better than per-superblock sigma2 (128-element). Further localization to per-chunk (8-element) regresses — the 32-element sub-block is the optimal granularity for the joint d optimization.
 
-### 3. Combined effect: exp-078 + exp-080 = 2.4% cumulative KL improvement
-The two experiments compound: better-localized sigma2 (exp-078) and softer exponent (exp-080) together improve KL from 0.699009 to 0.682340.
+### 3. Combined effect: exp-078 + exp-080 + exp-081 = 4.5% cumulative KL improvement
+The weight exponent experiments compound with per-sub-block sigma2: KL improved from 0.699009 (exp-064) to 0.668342 (exp-081), a 4.5% relative improvement.
 
 ## What Worked
+- **Weight exponent 0.35** (exp-081): KL 0.668342 (−2.05% from 0.682340)
 - **Weight exponent 0.4** (exp-080): KL 0.682340 (−1.27% from 0.691085)
 - **Per-sub-block sigma2** (exp-078): KL 0.691085 (−1.13% from 0.699009)
 - **65-candidate d optimization 0.5% step** (exp-064): KL 0.699009 (−0.52% from 0.702666)
@@ -55,7 +57,7 @@ without proportional benefit. Multi-round refinement with ±2 steps also failed 
 **Lesson**: The error-aware snap's even-valued centroids are not harmful — they contribute through
 the neighbor search path. Constraining to odd values reduces codebook expressiveness.
 
-## Current Code State (exp-080 — new best)
+## Current Code State (exp-081 — new best)
 - `nwant`: 8
 - `kmeans_iters`: 20
 - `num_trials`: 1 (E8 warm-start only)
@@ -65,7 +67,7 @@ the neighbor search path. Constraining to odd values reduces codebook expressive
 - Error-aware int8 snap (allows any value 0-127, no odd constraint)
 - 0 rounds of multi-round refinement
 - **Per-sub-block sigma2** for weight formula (exp-078)
-- **Weight exponent 0.4** (`powf(sigma2+xb^2, 0.4f)`) instead of sqrt (exp-080)
+- **Weight exponent 0.35** (`powf(sigma2+xb^2, 0.35f)`) instead of sqrt (exp-081)
 - **65-candidate d optimization** at 0.5% step, ±16% range (exp-064)
 - **Post-d grid index recomputation** with quantized scale (exp-055)
 
@@ -127,12 +129,12 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 **Lesson**: With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection doesn't matter. The codebook is essentially E8 with minor data-adaptive adjustments. Breakthroughs require structural changes (like nwant adjustment, exp-033) rather than training tweaks.
 
 ## Gap Analysis
-- **Best KL**: 0.682340 (exp-080)
-- **Unsloth target**: 0.721 (surpassed by 5.4%)
-- **New directions opened**: Weight formula exponent and sigma2 localization are NOT saturated. The exponent 0.4 is a single data point — the optimal exponent may be 0.35, 0.3, or adaptive. Per-sub-block sigma2 granularity is confirmed at 32 elements.
-- **Quantize time**: 355s (5.9 min) — exceeds 5-min soft limit due to powf vs sqrtf overhead. Could be optimized back to sqrtf + rescaling or using a fast pow approximation.
+- **Best KL**: 0.668342 (exp-081)
+- **Unsloth target**: 0.721 (surpassed by 7.3%)
+- **New directions opened**: Weight exponent tuning continues to deliver improvements. Moving from 0.5→0.4→0.35 gave cumulative 3.3% improvement. The optimal exponent may be even lower (0.3, 0.25) or adaptive per-sub-block.
+- **Quantize time**: 356s (5.9 min) — exceeds 5-min soft limit due to powf vs sqrtf overhead. Could be optimized back to sqrtf + rescaling or using a fast pow approximation.
 - **Index-scale coupling remains fragile**: Any two-way modification (changing both indices and scale) still causes catastrophic regression.
-- **Remaining headroom**: Weight exponent tuning is the most promising near-term direction. Other candidate: adaptive per-sub-block exponent based on local distribution shape.
+- **Remaining headroom**: Weight exponent 0.3 or 0.25 is the most promising next step. The improvement has been accelerating (0.5→0.4: -1.27%, 0.4→0.35: -2.05%), suggesting the true optimal may be well below 0.35.
 
 ## Key Findings: Experiments 056-067
 

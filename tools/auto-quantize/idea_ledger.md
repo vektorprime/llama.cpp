@@ -75,6 +75,7 @@
 | **078** | **Per-sub-block sigma2 for adaptive weight formula** | **IMPROVEMENT (0.691085)** |
 | 079 | Per-8D-chunk sigma2 for weight formula (further localization) | regression (0.715862) |
 | **080** | **Softer weight formula exponent (powf 0.4 instead of sqrt 0.5)** | **IMPROVEMENT (0.682340)** |
+| **081** | **Further soften weight exponent to 0.35 (from 0.4)** | **IMPROVEMENT (0.668342)** |
 
 ---
 
