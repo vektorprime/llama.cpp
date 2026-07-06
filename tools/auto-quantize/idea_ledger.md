@@ -358,3 +358,5 @@ This is different from exp-056's ±1 refinement because:
 
 **Files changed**: `ggml/src/ggml-quants.c` only — ~30 lines added after post-d refinement block.
 
+**Result**: KL=1.200646 — CATASTROPHIC REGRESSION (Δ = +0.489989, +69% from best 0.710657). Same failure as exp-050, exp-054, and exp-056: changing levels after index selection invalidates the index-scale coupling. Even a ±1 level change shifts the quantized scale by 2d, which is enough to break the post-d indices' match. The indices were selected for `d*(2*l_old+1)`, and with `l_new ≠ l_old`, the actual reconstruction uses a different scale, causing large errors. **Confirmed: indices and quantized scale must be optimized jointly. One-way modifications (indices→scale or scale→indices) are safe; two-way modifications (changing both) consistently fail. Reverted.**
+
