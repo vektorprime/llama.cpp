@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | 001 | Weight exponent 0.30 + per-sub-block sigma2 | Failed — quantize timed out (>7 min) |
-| 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | In progress |
+| 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | Failed — quantize timed out (>7 min) |
 
 ---
 
@@ -61,3 +61,7 @@
 3. Change weight formula from `sqrtf(sigma2 + xb[j]*xb[j])` to `exp2f(0.30f * log2f(sigma2_ib + xb[j]*xb[j]))`
 
 **Expected outcome:** KL improvement from ~0.0249 baseline, quantize completes within 7 min.
+
+**Actual outcome:** FAILED — quantize timed out at 7 min HARD limit. Only ~485/866 tensors completed (blk.36/63). `exp2f(0.30*log2f(x))` is still too slow — `log2f` is also expensive per element. The combined `log2f` + `exp2f` approach is not significantly faster than `powf`.
+
+**Lesson:** Any per-element transcendental math in the weight formula is too slow for 27B elements. The weight formula must use cheap operations only: `sqrtf`, multiplication, addition. Exponents other than 0.50 (sqrtf) or 0.25 (double sqrtf) require a different approach — precomputed LUT, or vectorized approximation.
