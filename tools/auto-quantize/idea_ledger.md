@@ -74,6 +74,7 @@
 | 077 | Align K-means weights with quantizer (add sqrt factor) | null (0.699) |
 | **078** | **Per-sub-block sigma2 for adaptive weight formula** | **IMPROVEMENT (0.691085)** |
 | 079 | Per-8D-chunk sigma2 for weight formula (further localization) | regression (0.715862) |
+| 080 | Softer weight formula exponent (0.4 instead of 0.5) | pending |
 
 ---
 
@@ -812,6 +813,30 @@ By computing sigma2 per 8D chunk (`sigma2_ch = mean_8(xb^2)`), each chunk's weig
 All 4 weight computation sites are changed uniformly — no metric mismatch.
 
 **Expected**: KL improvement from 0.691085 (Δ ~0.001-0.003, ~0.15-0.45% relative). The effect may be smaller than exp-078 (1.13%) because sub-block sigma2 already captures most of the localization benefit. But 8D-chunk sigma2 is strictly more local, and the change is risk-free (uniform across all stages).
+
+**Result**: KL=0.715862 — REGRESSION (Δ = +0.024777, +3.6% from best 0.691085). Per-chunk sigma2 overfits to local 8-element fluctuations. Within a 32-element sub-block, the 4 × 8D chunks share a joint d optimization and level quantization — they NEED a shared sigma2 baseline to properly weight inter-chunk trade-offs. Computing sigma2 per chunk makes the weight formula too sensitive to each chunk's local magnitude, biasing the optimization toward chunk-level characteristics at the expense of the sub-block's overall error profile. The 32-element sub-block (exp-078) is the optimal granularity for the weight baseline. **Reverted**.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (Reverted).
+
+### exp-080: Softer weight formula exponent (0.4 instead of 0.5) with per-sub-block sigma2
+**Hypothesis**: The weight formula `weight[i] = qw[i] * sqrt(sigma2_per_ib + xb[i]^2)` uses an exponent of 0.5 (via `sqrtf`). This gives large elements disproportionately high weight, potentially over-optimizing the quantizer for outlier elements at the expense of the sub-block's overall distribution.
+
+With per-sub-block sigma2 (exp-078), the baseline is already well-localized. The `sqrt(sigma2 + xb^2)` factor may still give too much weight to elements where |xb| >> sqrt(sigma2). Reducing the exponent from 0.5 to 0.4 (`powf(sigma2 + xb^2, 0.4f)`) softens the magnitude sensitivity, making the weight profile more uniform within each sub-block.
+
+This is the OPPOSITE direction from exp-076 (which removed sqrt entirely → exponent 1.0 → catastrophic regression 0.837). Softer weighting may better balance the optimization across all elements, preventing the largest element from dominating the sub-block's scale and index selection.
+
+Exp-076 showed that SHARPENING the weight (higher exponent) hurts badly. The optimal exponent likely lies between 0.3 and 0.5 — this experiment tests 0.4 as a moderate reduction.
+
+**Implementation**: 4 lines changed in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before:
+weight[i] = qw[i] * sqrtf(sigma2_per_ib[ib] + xb[i]*xb[i]);
+// After:
+weight[i] = qw[i] * powf(sigma2_per_ib[ib] + xb[i]*xb[i], 0.4f);
+```
+Same change at lines 4003, 4046, 4072.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003). If the sqrt is over-sharp, softening improves the balance. The change is uniform across all stages — no coupling issues.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
 
