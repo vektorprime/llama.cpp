@@ -3978,8 +3978,8 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
             float d_base = max_scale / 31.0f;
             float best_d = d_base;
             float best_err = FLT_MAX;
-            for (int is = -8; is <= 8; ++is) {
-                float d_try = d_base * (1.0f + is * 0.02f);
+            for (int is = -16; is <= 16; ++is) {
+                float d_try = d_base * (1.0f + is * 0.01f);
                 float id_try = 1.0f / d_try;
                 float err = 0.0f;
                 for (int ib = 0; ib < QK_K/32; ++ib) {

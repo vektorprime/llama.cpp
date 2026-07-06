@@ -424,3 +424,7 @@ for (int is = -16; is <= 16; ++is) {
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
+**Result**: KL=0.702666 — IMPROVEMENT (Δ = -0.002202, -0.31% from exp-061's 0.704868). The 1% step finds consistently better d within the ±16% range. KL improved from 0.704868 to 0.702666. PPL dropped from 26.12 to 26.02. Same top p stable (~60.98%). Quantize time unchanged (~292s). NEW BEST RESULT.
+
+**Why it works**: The 2% step d optimization (exp-061) found d within ~1% of the true optimum on average. The 1% step reduces the average offset to ~0.5%, capturing the remaining improvement. The quadratic error landscape means improvement diminishes with finer steps, which matches the observed pattern (4%→2%: 0.81% KL gain, 2%→1%: 0.31% KL gain). Expected next step (1%→0.5%): ~0.1% gain.
+
