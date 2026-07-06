@@ -54,6 +54,7 @@
 | 057 | Fix odd-value forcing in kmap construction and neighbor search | REGRESSION (0.712) |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | 059 | Odd-forced centroid scoring in neighbor search only (not kmap) | REGRESSION (0.712) |
+| 060 | Post-refinement per-sub-block level recomputation from updated indices | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -331,4 +332,29 @@ float q = (float)(2 * ((pg[i] - 1) / 2) + 1);
 **Files changed**: `ggml/src/ggml-quants.c` only — one line in `iq2_find_best_neighbour()`.
 
 **Result**: KL=0.712151 — REGRESSION (Δ = +0.001494, +0.21% from best 0.710657). Same KL as exp-057 which made both kmap and scoring changes. The odd-forced scoring change alone produces the same regression as the combined change, confirming that the kmap changes in exp-057 were not the cause — rather, the odd-forced scoring itself is detrimental. By making even-valued centroids score identically to their odd-forced equivalents, the neighbor search loses the Raw-value diversity that helped distinguish between centroids with the same odd-forced representation but different raw values. The raw-value scoring acts as a useful tiebreaker that allows the quantizer to maintain fine-grained distinctions between near-identical centroids. **Reverted**.
+
+### exp-060: Post-refinement per-sub-block level recomputation from updated indices
+**Hypothesis**: The post-d grid index refinement (exp-055) updates grid indices from G1 to G2 for the quantized scale `d*(2*l+1)`. However, the 4-bit level `l` for each sub-block was computed BEFORE the refinement, using G1's continuous LS-optimal scale `scales[ib]`. The levels are optimal for G1 but may be suboptimal for G2.
+
+After the refinement, G2 indices are stored in `q2[2*ib+0]`. The level `l` in `q2[2*ib+1]` bits 28-31 was computed as `nearest_int(0.5*(id*scales[ib]-1))` where `scales[ib]` is the optimal continuous scale for G1. For sub-blocks where indices changed, the optimal continuous scale for G2 may differ, suggesting a different level.
+
+By recomputing each sub-block's level using the closed-form LS-optimal continuous scale for G2, we align the quantized scale with the actually selected indices.
+
+**Implementation**: After the post-d refinement block (after line 4081), add a loop that:
+1. For each sub-block ib: read G2 indices from q2[2*ib+0]
+2. Compute LS-optimal continuous scale for G2:
+   - `sumqx = Σ w[i] * xb[i] * odd_force(pg[i]) * sign[i]`
+   - `sumq2 = Σ w[i] * odd_force(pg[i])^2`
+   - `scale_opt = sumqx / sumq2`
+3. Compute new level: `l_new = nearest_int(0.5*(1/d*scale_opt - 1))`
+4. Clamp to [0, 15], update q2[2*ib+1] if different
+
+This is different from exp-056's ±1 refinement because:
+- It uses the closed-form LS-optimal scale (principled, not iterative)
+- It does NOT change `d` (only per-sub-block level)
+- The index-scale coupling is addressed in one direction only (scale follows indices)
+
+**Expected**: Small KL improvement (Δ ~0.0002-0.001). For sub-blocks where indices changed, the optimal scale shifts slightly. Adjusting the 4-bit level corrects a consistent source of quantization error.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — ~30 lines added after post-d refinement block.
 
