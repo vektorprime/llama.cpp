@@ -464,3 +464,5 @@ for (int is = -64; is <= 64; ++is) {
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
+**Result**: KL=0.703630 — REGRESSION (Δ = +0.004621, +0.66% from best 0.699009). Despite being a strict superset of the 0.5% grid, the 0.25% step finds a WORSE d. This suggests floating-point error accumulation differences across the larger iteration count (129 vs 65) affect the tiebreaking between near-identical d candidates. The 0.5% step (65 candidates) represents the optimal resolution. **Reverted**.
+
