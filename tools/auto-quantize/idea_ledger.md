@@ -53,6 +53,8 @@
 | 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | REGRESSION (0.795) |
 | 057 | Fix odd-value forcing in kmap construction and neighbor search | REGRESSION (0.712) |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
+| 059 | Odd-forced centroid scoring in neighbor search only (not kmap) | REGRESSION (0.712) |
+| 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
 ---
