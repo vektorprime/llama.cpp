@@ -1,5 +1,7 @@
 # IQ2_XXS Auto-Research Synthesis — Session 2026-07-06
 
+## Status: Best KL = 0.716172 (exp-034, nwant=8). All experiments since (exp-035 through exp-047) null or regression.
+
 ## BREAKTHROUGH (exp-033): Neighbor search depth nwant=2→4 — KL=0.7166, surpasses Unsloth!
 
 **Increasing the neighbor search depth from `nwant=2` to `nwant=4` in `iq2xxs_rebuild_map_and_neighbours()` improved KL from 0.7238 to 0.7166 — a 1.0% relative improvement that BEATS the Unsloth target (0.721).**
@@ -52,17 +54,32 @@ without proportional benefit. Multi-round refinement with ±2 steps also failed 
 **Lesson**: The error-aware snap's even-valued centroids are not harmful — they contribute through
 the neighbor search path. Constraining to odd values reduces codebook expressiveness.
 
-## Current Code State
+## Current Code State (post exp-047 revert — back to exp-034 best)
 - `nwant`: 8 (was 2) — the key change from exp-033/034
 - `kmeans_iters`: 20
 - `num_trials`: 1 (E8 warm-start only)
 - `max_samples`: 16384
 - Single global grid with K-means (E8 warm-start)
-- Float-space L1-weighted K-means
+- Float-space L1-weighted K-means (standard, no trimming — exp-047 reverted)
 - Error-aware int8 snap (allows any value 0-127, no odd constraint)
 - 0 rounds of multi-round refinement
 
-## Recent Additions (exp-039 through exp-041)
+## Recent Additions (exp-042 through exp-047)
+
+| Exp | KL | Technique | Verdict |
+|-----|-----|-----------|---------|
+| 042 | 0.722 | Post-quantization grid refinement with quantized sub-block scales | Regression |
+| 043 | 0.717 | Wider quantizer scale search (±12 step 0.2) | Regression (marginal) |
+| 045 | 0.719 | 2-pass iterative grid-scale refinement during quantization | Regression |
+| 046 | 0.717 | Greedy per-element level perturbation after LS refinement | Regression |
+| 047 | 0.716 | Inlier-Focus K-means (Trimmed K-means, 10% outlier discarding) | Null (identical KL) |
+
+### exp-047: Inlier-Focus K-means null — trimming doesn't help when centroids barely move
+Discarding the top 10% of furthest samples per centroid during each K-means update produced identical KL (0.716172). The centroids start from E8 and barely drift in 20 iterations, so the "outliers" are the same samples each iteration and trimming their contribution doesn't change the centroid trajectory. This further confirms the K-means training is at a fixed point — the grid is essentially E8 with minimal data-adaptive adjustments, and training tweaks don't affect the outcome.
+
+**Lesson**: All K-means training variants (sample selection, weighted updates, outlier trimming, regularization) converge to the same near-E8 attractor. The remaining headroom for KL improvement must come from changes to the quantization SEARCH (nwant, neighbor structure) or the QUANTIZER ITSELF (scale handling, residual coding), not the grid values.
+
+## Earlier: exp-039 through exp-041
 
 | Exp | KL | Technique | Verdict |
 |-----|-----|-----------|---------|
@@ -85,10 +102,13 @@ Changing sample selection from uniform stride to imatrix-proportional CDF sampli
 - **Best KL**: 0.716172 (exp-034)
 - **Unsloth target**: 0.721 (surpassed!)
 - **Remaining gap**: None to Unsloth; new benchmark set
-- **Next directions**: The grid training space is saturated — all K-means variants, sample approaches, and post-processing have been tried. Neighbor search (nwant) was the only successful lever. Future work should either (a) revisit cross-tensor accumulation with nwant=8, (b) try structural codebook changes (hybrid E8+learned), or (c) explore multi-scale quantization refinements.
+- **Grid training is saturated**: 13 consecutive experiments (exp-035 through exp-047) have produced either null or regression results. Every K-means variant (weighted sampling, outlier trimming, E8 regularization, cross-tensor, more iterations, etc.) converges to the same near-E8 grid. Neighbor search (nwant) was the only lever that ever improved KL.
+- **Next directions must change strategy**: Grid training space is exhausted. The quantizer search (kmap neighbor structure, distance metrics during quantization) and structural format changes are the remaining unexplored levers.
 
 ## Remaining Research Directions
-1. **Cross-tensor accumulation WITH nwant=8**: Previously tried with nwant=4 (exp-036) and regressed. nwant=8 might compensate for the reduced per-tensor focus.
-2. **Hybrid E8+K-means grid**: Replace low-count centroids with their E8 equivalents to maintain coverage diversity.
-3. **Multi-scale quantization**: After grid quantization, refine the super-block scale `d` per tensor using least-squares.
-4. **Grid deduplication**: Ensure all 256 kmap entries are unique by perturbing colliding centroids (theoretical; exp-038's odd-only approach over-constrained).
+1. **Cross-tensor accumulation WITH nwant=8**: Previously tried with nwant=4 (exp-036) and regressed. nwant=8 might compensate for the reduced per-tensor focus. (Untested combination)
+2. **Hybrid E8+K-means grid**: Replace low-count centroids with their E8 equivalents to maintain coverage diversity. (Untested)
+3. **Quantization-aware neighbor distance**: Weight the kmap neighbor distance by imatrix importance during kmap construction, not just during quantization. (Untested)
+4. **Multi-codebook quantization**: Store 2+ grids per tensor, select best per superblock with 1-bit selector. (Requires format change — speculative)
+5. **Learn the quantizer scale `d` per superblock**: Instead of selecting from discrete candidates, learn the optimal scale per block via gradient descent on quantization loss. (Computational cost concern)
+6. **Beyond K-means: Low-bitwidth quantization using the fixed E8 grid with learned scale per centroid**: Each centroid gets its own learned scale factor, effectively creating a scaled codebook. (Requires format change)
