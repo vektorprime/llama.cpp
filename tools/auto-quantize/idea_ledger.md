@@ -88,6 +88,7 @@
 | 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
 | 092 | Adaptive weight exponent per sub-block via CV | REGRESSION (0.680, +2.1%) |
 | **094** | **Post-refinement level recomputation with index re-verification (changed-index sub-blocks only)** | **CATASTROPHIC REGRESSION (1.040)** |
+| **099** | **L1-based weight formula (sigma2+xb² → mean_abs+|xb|)** | **PENDING** |
 
 ---
 
@@ -1354,3 +1355,24 @@ for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.10f);
 ```
 
 **Expected**: Small KL improvement (Δ ~0.0005-0.002 from 0.662001) or null if the optimum is a broad plateau around 0.06.
+
+### exp-099: L1-based weight formula — replace sigma2 (mean of squares) with mean_abs (mean of |xb|)
+
+**Hypothesis**: The weight formula `weight[i] = qw[i] * powf(sigma2 + xb², exponent)` uses an L2-based magnitude baseline `sigma2 = mean(xb²)`. The quantizer's evaluation uses L1 distance (weighted L1 in neighbor search, L1-weighted error). The L2-based baseline is the only L2 component in the entire pipeline; the L2 mean-of-squares is more sensitive to outliers than L1 mean-of-abs.
+
+By changing to an L1-based baseline `mean_abs = mean(|xb|)` with `powf(mean_abs + |xb|, exponent)`, the weight formula aligns with the quantizer's native L1 metric. For sub-blocks with outlier elements, the L1 baseline is less inflated, preserving better per-element weight discrimination.
+
+This is structurally different from:
+- **exp-078**: Changed sigma2 granularity superblock→sub-block (still L2-based)
+- **exp-079**: Per-chunk sigma2 (still L2, regressed from over-localization)  
+- **exp-087**: Linear-L1 `1+|xb|` (no per-sub-block baseline, no powf — catastrophic)
+- **exp-091**: Trimmed-mean sigma2 (still L2-based, regressed)
+- **This changes the fundamental metric from L2 (sum of squares) to L1 (sum of abs)**
+
+**Implementation**: 4 lines changed in `quantize_row_iq2_xxs_impl()`:
+1. Line 3858-3860: Replace `s2 += xb[i]*xb[i]` and `sigma2_per_ib[ib] = s2/32` with `s1 += fabsf(xb[i])` and `abs_mean_per_ib[ib] = s1/32`
+2. Lines 3861, 4003, 4046, 4072: Replace `sigma2_per_ib[ib] + xb[...]*xb[...]` with `abs_mean_per_ib[ib] + fabsf(xb[...])`
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.004, ~0.15-0.6% relative) from 0.662001. The L1-based baseline should be particularly beneficial for attention tensors with outlier-heavy sub-blocks. The effect compounds across all 95 IQ2_XXS tensors.
