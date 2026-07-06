@@ -296,8 +296,11 @@ Algorithm:
 
 ```
 1. READ STATE: results.tsv, idea_ledger.md, synthesis.md, current code
-   Also commit any uncommitted results.tsv changes from prior experiments:
-   git add tools/auto-quantize/results.tsv tools/auto-quantize/idea_ledger.md && git commit -m "auto-research: churn"
+   - idea_ledger.md has an Experiment Index at the top — read that first for a quick
+     scan of what's been tried. Then `grep "### exp-NNN:" idea_ledger.md` for details
+     on specific experiments you want to understand.
+   - Also commit any uncommitted results.tsv changes from prior experiments:
+     git add tools/auto-quantize/results.tsv tools/auto-quantize/idea_ledger.md && git commit -m "auto-research: churn"
 
 2. PROPOSE HYPOTHESIS: log to idea_ledger.md (commit this so ledger is saved):
    git add tools/auto-quantize/idea_ledger.md && git commit -m "exp-NNN: hypothesis: ..."

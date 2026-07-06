@@ -1,5 +1,58 @@
 # IQ2_XXS Auto-Research Idea Ledger
 
+## Experiment Index
+
+| Exp | Description | Outcome |
+|-----|-------------|---------|
+| 001 | Float-space centroid training → int8 snap at end | null |
+| 002 | Activation-weighted K-means with imatrix | improvement |
+| 003 | Residual quantization — second pass refines grid | improvement |
+| 004 | Multi-round error-aware refinement | null |
+| 005 | Per-tensor-type codebooks | improvement |
+| 006 | Gradient-based super-block scale refinement | regression |
+| 009 | Reduced K-means iterations 60→40 | null (speedup) |
+| 010-015 | Various K-means variants (trials, samples, weighting, distance, seed) | all null |
+| 016 | Per-tensor codebooks without category sharing | catastrophic |
+| 017 | Single-trial 100-iter warm-start only | null (speedup) |
+| 018 | Remove multi-round refinement (0 rounds) | null (speedup) |
+| 019 | Annealing noise in K-means | failed |
+| 020 | Single global grid (no per-category) | null |
+| 021 | 256 K-means iterations | null (slower) |
+| 022 | Depth-based grid categories | null |
+| 023 | E8 lattice baseline (no learning) | baseline |
+| 024 | Direct int8-space K-means | null |
+| 025 | Quantize without --imatrix | failed |
+| 026 | Exhaustive codebook search during quant | regression |
+| 027 | Force centroids to {1,3,5,7} | null |
+| 028 | K-means with 2-bit truncated distance | failed |
+| 029 | Match K-means weights to quant formula | failed |
+| 031 | Skip learning after 1st tensor, 20 iters | null (speedup) |
+| 032 | Accumulated cross-tensor K-means++ | regression |
+| **033** | **Increase neighbor search nwant=2→4** | **IMPROVEMENT (0.7166)** |
+| 034 | Increase neighbor search nwant=4→8 | marginal (kept) |
+| 035 | K-means++ multi-trial with nwant=8 | null |
+| 036 | Cross-tensor sample accumulation v2 | regression |
+| 037 | Cross-tensor with per-tensor L1 normalization | catastrophic |
+| 038 | Odd-only centroids + refinement | regression |
+| 039 | Density-aware centroid splitting (LBG) | catastrophic |
+| 040 | E8-regularized K-means | null |
+| 041 | Importance-proportional CDF sampling | null |
+| 042 | Post-quantization grid refinement | regression |
+| 043 | Wider scale search + iterative refinement | regression |
+| 045 | 2-pass iterative grid-scale refinement | regression |
+| 046 | Greedy per-element level perturbation | regression |
+| 047 | Inlier-Focus K-means (trimmed 10%) | null |
+| 048 | Dot-product neighbor search criterion | regression |
+| **049** | **Superblock scale d optimization (9 candidates)** | **IMPROVEMENT (0.715144)** |
+| 050 | Post-d sub-block 4-bit scale exhaustive search | catastrophic |
+| 051 | Two-stage adaptive d optimization | regression |
+| 052 | Gain-Shape K-Means (GSKM) | null |
+| 053 | Sign parity fix re-evaluation | regression |
+| 054 | Post-d grid index recomputation (buggy) | catastrophic |
+| **055** | **Post-d grid index recomputation (corrected)** | **IMPROVEMENT (0.710657)** |
+
+---
+
 ## Session: 2026-07-03
 
 ### exp-20260703-001: Float-space centroid training → int8 snap at end
@@ -198,4 +251,6 @@ This is a targeted refinement that costs ~1 additional pass (no scale search), a
 5. Update if better
 
 **Expected**: Small improvement (Δ ~0.0002-0.001). The corrected implementation should demonstrate the true effect of matching grid indices to the quantized scale.
+
+**Result**: KL=0.710657 — IMPROVEMENT (Δ = −0.004487 from 0.715144). The post-d-optimization grid index recomputation works: grid indices chosen for the continuous per-sub-block scale were indeed suboptimal for the final quantized scale `d*(2*l+1)`. The corrected implementation matches grid indices to the actual inference-time scale, reducing quantization error. This is the new best result.
 
