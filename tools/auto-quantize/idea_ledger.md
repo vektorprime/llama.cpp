@@ -74,3 +74,12 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Result**: KL = 0.716172 (identical to exp-034 best). PPL = 26.216, Same top p = 60.492%. **Null result** — lambda=0.15 too weak. K-means starting from E8 already stays near E8 after 20 iterations; centroids barely drift. Regularization is redundant when warm-start is already E8.
 
 **Lesson**: E8 regularization is unnecessary because centroids don't drift far from E8 origins with current training (1 tensor, 20 iters, 16384 samples).
+
+### exp-042: Post-quantization grid refinement with quantized sub-block scales
+**Hypothesis**: During quantization, the grid indices (which 8D centroid best represents each 8-element block) are optimized for a continuous-scale candidate. After the search, sub-block scales are quantized to 4 bits: `actual_scale = d * (2*l + 1)`. This 4-bit rounding changes the effective scale, making the initial grid indices suboptimal. By running a second grid search pass using the **actual quantized scale** instead of the continuous candidate scale, we can find better centroid matches that compensate for scale quantization error.
+
+**Implementation**: Save per-sub-block xval and waux during the first quantization pass. After `d` and 4-bit scale indices are computed, loop over sub-blocks again. For each 8-element group, compute `lq = nearest_int(0.5 * (xval / quant_scale - 1))`, clamp to [0, 3], and look up the best grid index via kmap (or neighbor fallback). Replace the grid index in the output.
+
+**Expected**: KL reduction from 0.7162 to ~0.714-0.715. The grid indices will be better matched to the actual (quantized) scale rather than an intermediate continuous value.
+
+**Rationale for trying this now**: All K-means training variants (trials, iters, samples, distance, regularization, centroid constraints, initialization, cross-tensor) produce identical KL=0.716172. The only successful lever was nwant (neighbor search depth). This experiment targets the quantization SEARCH algorithm itself — specifically the mismatch between the scale used during grid search and the scale used in the final reconstruction — which is completely orthogonal to K-means training.

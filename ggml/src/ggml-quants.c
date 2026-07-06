@@ -3841,6 +3841,8 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
     float  waux[32];
     uint8_t block_signs[4];
     uint32_t q2[2*(QK_K/32)];
+    float xval_save[QK_K/32][32];
+    float waux_save[QK_K/32][32];
 
     for (int ibl = 0; ibl < nbl; ++ibl) {
 
@@ -3972,6 +3974,8 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
             GGML_ASSERT(scale >= 0);
             scales[ib] = scale;
             max_scale = MAX(max_scale, scale);
+            memcpy(xval_save[ib], xval, 32 * sizeof(float));
+            memcpy(waux_save[ib], waux, 32 * sizeof(float));
         }
 
         if (!max_scale) {
@@ -3987,6 +3991,34 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
             l = MAX(0, MIN(15, l));
             q2[2*ib+1] |= ((uint32_t)l << 28);
         }
+
+        /* Refinement: re-optimize grid indices given the quantized (4-bit) sub-block scales.
+         * The initial grid search optimized indices for the continuous scale candidate;
+         * the 4-bit scale quantization changes the effective scale, making indices suboptimal.
+         * This pass re-searches grid matches using the actual quantized scale. */
+        for (int ib = 0; ib < QK_K/32; ++ib) {
+            int ls = (q2[2*ib+1] >> 28) & 0xF;
+            float quant_scale = d * (2*ls + 1);
+            float id_q = 1.0f/quant_scale;
+            const float * xv = xval_save[ib];
+            const float * wa = waux_save[ib];
+            for (int k = 0; k < 4; ++k) {
+                uint16_t u = 0;
+                for (int i = 0; i < 8; ++i) {
+                    int l_q = nearest_int(0.5f*(id_q*xv[8*k+i]-1));
+                    l_q = MAX(0, MIN(kMaxQ-1, l_q));
+                    u |= (l_q << 2*i);
+                }
+                int grid_index = kmap_q2xs[u];
+                if (grid_index < 0) {
+                    const uint16_t * neighbours = kneighbors_q2xs - kmap_q2xs[u] - 1;
+                    grid_index = iq2_find_best_neighbour(neighbours, kgrid_q2xs, xv + 8*k, wa + 8*k, quant_scale, L + 8*k);
+                }
+                q2[2*ib+0] &= ~((uint32_t)0xFF << 8*k);
+                q2[2*ib+0] |= ((uint32_t)grid_index << 8*k);
+            }
+        }
+
         memcpy(y[ibl].qs, q2, QK_K/4);
     }
 }
