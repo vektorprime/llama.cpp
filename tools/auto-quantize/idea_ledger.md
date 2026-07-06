@@ -1290,3 +1290,26 @@ Exp-077 tried this approach with the OLD quantizer weight formula (`sqrt(sigma2 
 **Files changed**: `ggml/src/ggml-quants.c` only — `iq2xxs_learn_grid()` (~15 lines added/modified).
 
 **Risk**: LOW. The change only affects K-means training (not the quantizer search). Even if the centroids move in an unhelpful direction, the post-d refinement and d optimization still use the correct quantizer weight formula. The effect is bounded by the extent of centroid drift from E8, which is small (20 iterations from warm-start).
+
+### exp-096: Uniform neighbor search weighting — `waux = 1.0f` (zero importance weighting, pure L2-driven selection)
+
+**Hypothesis**: The neighbor search weighting trend shows: softer waux → better KL.
+- exp-090: waux=weight (effective 0.30) → REGRESSION (KL 0.682)
+- exp-082: waux=sqrtf(weight) (effective 0.15) → KL 0.666
+- exp-093: waux=powf(weight,0.20) (effective 0.06) → KL 0.662 (IMPROVEMENT)
+
+If the optimal is effectively zero weighting (neighbor search should be purely L2-driven), then waux=1.0f should give the best KL. For rare off-map patterns (~5% of chunks), the importance weights are noisy — the L2 distance between the centroid values and the 2-bit pattern is a more robust selection criterion.
+
+The post-d refinement still uses wtmp with exponent 0.35 for importance-weighted index refinement after scale quantization. So importance is still applied — just in the right stage (post-d, not pre-d).
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c:3862`:
+```c
+// Before:
+for (int i = 0; i < 32; ++i) waux[i] = powf(weight[i], 0.20f);
+// After:
+for (int i = 0; i < 32; ++i) waux[i] = 1.0f;
+```
+
+**Expected**: KL improvement (Δ ~0.001-0.003 from 0.662001). The extreme case tests whether zero effective weighting is optimal.
+
+**Risk**: LOW — only affects neighbor search (~5% of chunks). Post-d refinement still uses importance-aware wtmp.
