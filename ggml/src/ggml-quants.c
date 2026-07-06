@@ -3507,44 +3507,13 @@ void iq2xxs_learn_grid(const float * GGML_RESTRICT x, const float * GGML_RESTRIC
     float * sample_weights = (float *)malloc(8 * n_samples * sizeof(float));
     GGML_ASSERT(samples && sample_weights);
 
-    int64_t n_groups = n_total / 8;
-    if (weights) {
-        float * group_imp = (float *)malloc(n_groups * sizeof(float));
-        float total_imp = 0.0f;
-        GGML_ASSERT(group_imp);
-        for (int64_t idx = 0; idx < n_groups; ++idx) {
-            float sum = 0.0f;
-            for (int k = 0; k < 8; ++k) {
-                sum += weights[(idx*8 + k) % n_per_row];
-            }
-            group_imp[idx] = sum;
-            total_imp += sum;
-        }
-        unsigned int rng = 12345u;
-        for (int64_t s = 0; s < n_samples; ++s) {
-            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
-            float r = ((float)(rng & 0x7FFFFFFF) / 2147483648.0f) * total_imp;
-            float cum = 0.0f;
-            int64_t idx = n_groups - 1;
-            for (int64_t t = 0; t < n_groups; ++t) {
-                cum += group_imp[t];
-                if (cum >= r) { idx = t; break; }
-            }
-            for (int k = 0; k < 8; ++k) {
-                samples[8*s + k] = fabsf(x[idx*8 + k]);
-                sample_weights[8*s + k] = weights[(idx*8 + k) % n_per_row];
-            }
-        }
-        free(group_imp);
-    } else {
-        int64_t step = n_total / 8 / n_samples;
-        if (step < 1) step = 1;
-        for (int64_t s = 0; s < n_samples; ++s) {
-            int64_t idx = (s * step) % n_groups;
-            for (int k = 0; k < 8; ++k) {
-                samples[8*s + k] = fabsf(x[idx*8 + k]);
-                sample_weights[8*s + k] = 1.0f;
-            }
+    int64_t step = n_total / 8 / n_samples;
+    if (step < 1) step = 1;
+    for (int64_t s = 0; s < n_samples; ++s) {
+        int64_t idx = (s * step) % (n_total / 8);
+        for (int k = 0; k < 8; ++k) {
+            samples[8*s + k] = fabsf(x[idx*8 + k]);
+            sample_weights[8*s + k] = weights ? weights[(idx*8 + k) % n_per_row] : 1.0f;
         }
     }
 
