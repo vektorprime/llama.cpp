@@ -587,3 +587,33 @@ The neighbor search uses `waux[i] = sqrt(weight[i])` independently, preserving t
 
 **Files changed**: `ggml/src/ggml-quants.c` only — ~10 lines added across 3 locations.
 
+---
+
+## Session: 2026-07-06 (continued) — Structural level encoding scheme
+
+### exp-071: Exhaustive 4-bit level search (replace nearest-int with weighted-reconstruction-error minimization)
+**Hypothesis**: The current sub-block scale level is selected by `l = nearest_int(0.5*(id*scales[ib]-1))` (line 4024), which minimizes the Euclidean distance between the continuous scale and the quantized scale `d*(2*l+1)`. However, the quantizer's TRUE objective is weighted reconstruction error across the sub-block's 32 elements:
+
+```
+min_l  sum_{k=0..3} sum_{i=0..7} w[8k+i] * (xb[8k+i] - d*(2*l+1) * centroid_{gidx(k)}[i] * sign[8k+i])^2
+```
+
+The nearest-level rule minimizes `|scales[ib] - d*(2*l+1)|`, which is only optimal when:
+1. All elements have equal weights (w[i] = const)
+2. All centroid values are equal (centroid[i] = const)
+3. The grid index is independent of the level
+
+None of these hold in practice. By exhaustively evaluating all 16 possible 4-bit levels for each sub-block and picking the one with minimum weighted reconstruction error (using the same error computation as the d optimization), we can find a level that genuinely minimizes the quantizer's objective.
+
+**Why this is structurally novel**:
+- Changes the LEVEL ENCODING SCHEME — how the 4-bit scale value is selected from the continuous scale
+- Unlike exp-050 (which changed levels AFTER quantization and broke the index-scale coupling), this changes level selection DURING the initial encoding, BEFORE the post-d refinement. The grid indices were chosen at the optimal continuous scale, so re-evaluating levels with the chosen indices is safe (same as how the d optimization evaluates d candidates with fixed indices)
+- Unlike exp-070 (which biased level computation toward important dimensions via alpha-scaling), this directly minimizes the actual objective without heuristics
+- It's a one-way modification: levels → d → indices (fixed during level evaluation). No feedback loop.
+
+**Implementation**: Replace the nearest-int level selection (lines 4023-4027) with a 16-candidate exhaustive search using the weighted reconstruction error computation from the d optimization (lines 3992-4005). The cost is negligible: 16 × 32 = 512 multiply-adds per sub-block.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003). For sub-blocks with uneven importance weights or large centroid value variation, the optimal level may be ±1 from the nearest-int value. The effect compounds across ~8 sub-blocks × 95 tensors.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — ~35 lines replaced (lines 4022-4027).
+
