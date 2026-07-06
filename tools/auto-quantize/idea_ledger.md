@@ -58,7 +58,8 @@
 | 061 | Finer d optimization grid (17 candidates at 2% step instead of 9 at 4%) | IMPROVEMENT (0.704868) |
 | 062 | Wider d optimization range (±24% 2% step, 25 candidates) | REGRESSION (0.713) |
 | 063 | Finer d optimization grid (33 candidates at 1% step, ±16% range) | IMPROVEMENT (0.702666) |
-| 064 | Finest d optimization grid (65 candidates at 0.5% step, ±16% range) | PENDING |
+| 064 | Finest d optimization grid (65 candidates at 0.5% step, ±16% range) | IMPROVEMENT (0.699009) |
+| 065 | Ultra-fine d optimization grid (129 candidates at 0.25% step, ±16% range) | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -449,4 +450,17 @@ for (int is = -32; is <= 32; ++is) {
 **Result**: KL=0.699009 — IMPROVEMENT (Δ = -0.003657, -0.52% from exp-063's 0.702666). The 0.5% step surprisingly gives MORE gain than 1% step (0.52% vs 0.31%), suggesting the error landscape has structure below 1% resolution that the 0.5% step can capture but 1% cannot. This is the FIRST result below KL=0.7. PPL dropped to 25.90. Same top p improved to 61.11%. NEW BEST RESULT.
 
 **Why it works**: The d optimization error landscape is not a simple quadratic — it has fine-grained structure (e.g., discrete level quantization effects) that only emerges at 0.5% resolution. The level `l = nearest_int(0.5*(id_try*scales[ib]-1))` shifts at specific id_try thresholds. At 1% step, some of these thresholds are missed, causing the d selection to average over poor-local-level regions. At 0.5% step, the search resolves individual level transitions, finding d values that consistently produce better level matches across all sub-blocks.
+
+### exp-065: Ultra-fine d optimization grid (129 candidates at 0.25% step, ±16% range)
+**Hypothesis**: The 0.5% step gave unexpected gain (0.52%) suggesting the error landscape has structure below 1%. At 0.25% step with 129 candidates, we further resolve the error landscape, potentially finding d values at individual level transition boundaries where the coarser steps make compromises.
+
+**Implementation**: One-line change:
+```c
+for (int is = -64; is <= 64; ++is) {
+    float d_try = d_base * (1.0f + is * 0.0025f);
+```
+
+**Expected**: Very small KL improvement (Δ ~0.00005-0.00015). Approaching the continuous limit.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
