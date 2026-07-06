@@ -50,7 +50,7 @@
 | 053 | Sign parity fix re-evaluation | regression |
 | 054 | Post-d grid index recomputation (buggy) | catastrophic |
 | **055** | **Post-d grid index recomputation (corrected)** | **IMPROVEMENT (0.710657)** |
-| 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | PENDING |
+| 056 | Post-d coordinate descent: second d optimization + ±1 level refinement | REGRESSION (0.795) |
 
 ---
 
@@ -269,4 +269,6 @@ Both steps are safe because: (a) d optimization only evaluates candidates withou
 **Implementation**: ~40 lines added after the post-d grid index recomputation block (after line 4081) in `quantize_row_iq2_xxs_impl`.
 
 **Expected**: Small KL improvement (Δ ~0.0005-0.002) from 0.710657. The coordinate descent should better align d with the actual quantized-scale grid indices.
+
+**Result**: KL=0.794917 — REGRESSION (Δ = +0.084260, +11.9% from best 0.710657). The second d optimization changed the superblock scale `d`, which changed all 4-bit scale levels `l` via `nearest_int(0.5*(id*scales[ib]-1))`. The post-d grid indices (G2) were optimized for the original quantized scale `d1*(2*l1+1)`. With `d2 ≠ d1`, the new scale `d2*(2*l2+1)` mismatched G2, causing higher error. The ±1 refinement further compounded the mismatch by independently adjusting sub-block levels, breaking the joint d balance. **Lesson**: Grid indices and quantized scale must be optimized jointly — changing d after grid selection invalidates the indices. This is the same failure mode as exp-045 (coordinate descent between grid and scale overfits).
 
