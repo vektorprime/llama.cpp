@@ -328,3 +328,5 @@ float q = (float)(2 * ((pg[i] - 1) / 2) + 1);
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line in `iq2_find_best_neighbour()`.
 
+**Result**: KL=0.712151 — REGRESSION (Δ = +0.001494, +0.21% from best 0.710657). Same KL as exp-057 which made both kmap and scoring changes. The odd-forced scoring change alone produces the same regression as the combined change, confirming that the kmap changes in exp-057 were not the cause — rather, the odd-forced scoring itself is detrimental. By making even-valued centroids score identically to their odd-forced equivalents, the neighbor search loses the Raw-value diversity that helped distinguish between centroids with the same odd-forced representation but different raw values. The raw-value scoring acts as a useful tiebreaker that allows the quantizer to maintain fine-grained distinctions between near-identical centroids. **Reverted**.
+
