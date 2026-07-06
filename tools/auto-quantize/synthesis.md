@@ -34,25 +34,44 @@ The nwant=4 change adds negligible compute cost. Quantize time was 142 seconds.
 ## What Worked
 - **nwant=2→4** (exp-033): KL improved from 0.7238 to 0.7166 (−1.0%, beats Unsloth)
 
+## What Didn't Work (exp-035 through exp-038)
+
+| Exp | KL | Description | Verdict |
+|-----|-----|-------------|---------|
+| 035 | 0.7162 | 5 KMPP trials nwant=8 | Null (identical) |
+| 036 | 0.723 | Cross-tensor accumulation (4 tensors) | Regression |
+| 037 | 2.379 | Cross-tensor + L1 normalization | Catastrophic |
+| 038 | 0.720 | Odd-only snap + 3-round ±2 refinement | Regression |
+
+### exp-038: Odd-only centroid enforcement — grid over-constrained
+Forcing centroid values to odd [1,3,5,...,127] to prevent kmap collisions caused REGRESSION (0.716→0.720). The kmap collision issue was theoretical but in practice the neighbor search path
+(fallback for non-direct-mapped patterns) already covers all 256 entries. Even-valued centroids
+still participate in the neighbor list. The odd-only constraint removed valid centroid positions
+without proportional benefit. Multi-round refinement with ±2 steps also failed to improve.
+
+**Lesson**: The error-aware snap's even-valued centroids are not harmful — they contribute through
+the neighbor search path. Constraining to odd values reduces codebook expressiveness.
+
 ## Current Code State
-- `nwant`: 4 (was 2) — the key change
+- `nwant`: 8 (was 2) — the key change from exp-033/034
 - `kmeans_iters`: 20
 - `num_trials`: 1 (E8 warm-start only)
 - `max_samples`: 16384
 - Single global grid with K-means (E8 warm-start)
 - Float-space L1-weighted K-means
-- Error-aware int8 snap
+- Error-aware int8 snap (allows any value 0-127, no odd constraint)
 - 0 rounds of multi-round refinement
 
 ## Gap Analysis
-- **Best KL**: 0.7166 (exp-033)
+- **Best KL**: 0.716172 (exp-034)
 - **Unsloth target**: 0.721 (surpassed!)
 - **Remaining gap**: None to Unsloth; new benchmark set
-- **Next directions**: Even wider neighbor search (nwant=6? 8?), per-tensor neighbor lists, or revisit K-means refinement now that search is better
+- **Next directions**: Still open — neighbor search is maxed at nwant=8, grid training is
+  1-tensor E8-warm-start only. Cross-tensor and refinement approaches consistently regress.
 
 ## Remaining Research Directions
-1. **Even wider neighbor search**: Try nwant=6, nwant=8 to see if further gains possible
-2. **Per-tensor neighbor lists**: Different nwant per tensor category
-3. **Revisit K-means refinement**: With better neighbor search, grid values may now benefit from more K-means iterations/trials
-4. **More aggressive multi-round refinement**: Now that search is better, ±1 GD might help
-5. **Combine best-learned grid with wider search**: Current code already does this
+1. **Even wider neighbor search**: Already at nwant=8; nwant=10+ may add more noise than signal
+2. **Per-tensor neighbor lists**: Different nwant per tensor category — untried
+3. **More K-means iterations with nwant=8**: 20 iters is conservative; 40-60 iters untested at nwant=8
+4. **Cross-tensor accumulation WITHOUT normalization**: Raw pooling from 2-3 tensors with nwant=8 — previously tried with nwant=4 and regressed; worth re-testing with nwant=8
+5. **Grid pruning**: Remove redundant centroids (kmap collisions) post-training to ensure all 256 entries are unique at the 2-bit level — prune then re-fill with split of highest-error centroid
