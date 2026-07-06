@@ -11,6 +11,7 @@
 | 104 | Tighter d optimization range ±15% at 0.5% step (61 candidates) | NULL |
 | 105 | Correct sign parity re-evaluation for changed-index chunks in post-d refinement (fix exp-066 bug) | REGRESSION (0.731) |
 | 106 | Multi-tensor incremental K-means refinement (sequential) on 5 tensors after initial E8 warm-start | NULL (0.662001) |
+| 107 | Widen initial per-sub-block scale search (is-loop) from ±0.6 to ±1.2 range (25 candidates) | PENDING |
 
 ---
 
@@ -1714,3 +1715,32 @@ The K-means loop for refinement is identical to the main loop but with 5 iterati
 This confirms the synthesis finding: "With 1-tensor E8-warm-start K-means, the grid is already near its fixed point after 20 iterations. Sample selection, weighting, and training data diversity don't matter. The codebook is essentially E8 with minor data-adaptive adjustments — and those adjustments are already optimal after a single tensor."
 
 **Reversion**: `git checkout -- ggml/src/ggml-quants.c` — code changes discarded (null result, no KL improvement).
+
+---
+
+### exp-107: Wider initial per-sub-block scale search (is-loop ±0.6→±1.2, 25 candidates)
+
+**Hypothesis**: The initial per-sub-block scale search loop (`is = -6..6`, step 0.1, 13 candidates) finds the best continuous scale for each sub-block by evaluating `sumqx^2/sumq2` for each `id_try = (5+is*0.1)/eff_max`. This range (±0.6 id, ~±13.6% scale) has NEVER been widened in the current code state. Exp-043 (early code state, KL ~0.716) tried widening to ±12 step 0.2 and regressed, but the current code has:
+1. Per-sub-block sigma2 (exp-078)
+2. Softer weight exponent 0.30 (exp-082)
+3. waux = powf(weight, 0.20) eff exp 0.06 (exp-093)
+4. 65-candidate d optimization (exp-064)
+5. Post-d refinement (exp-055)
+
+With the current weight formula, `make_qp_quants` may systematically misestimate the optimal per-sub-block scale for sub-blocks with non-uniform importance weights or outlier-heavy element distributions. A wider is-loop (double the range) lets the per-sub-block scale find better values, which feeds better grid indices into all downstream stages (d optimization, post-d refinement).
+
+This is a ONE-WAY modification: changing the is-loop range only affects the initial per-sub-block scale and index selection. The d optimization operates on whatever indices emerge. No coupling issues.
+
+**Implementation**: One-line change in `ggml/src/ggml-quants.c:3900`:
+```c
+// Before:
+for (int is = -6; is <= 6; ++is) {
+// After:
+for (int is = -12; is <= 12; ++is) {
+```
+
+**Expected**: Small KL improvement (Δ ~0.0001-0.0005) or null. The is-loop selects the best continuous per-sub-block scale, and the current ±0.6 range covers most cases. But for ~5-10% of sub-blocks with extreme importance-weighted distributions, the optimal scale may be further from the `make_qp_quants` nominal. The wider range captures these.
+
+**Risk**: LOW. One-line change, no coupling with other stages. Extra computation: 25/13 ≈ 1.9x more is evaluations per sub-block, negligible time cost.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — line 3900.
