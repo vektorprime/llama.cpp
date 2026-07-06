@@ -54,7 +54,8 @@
 | 057 | Fix odd-value forcing in kmap construction and neighbor search | REGRESSION (0.712) |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | 059 | Odd-forced centroid scoring in neighbor search only (not kmap) | REGRESSION (0.712) |
-| 060 | Post-refinement per-sub-block level recomputation from updated indices | PENDING |
+| 060 | Post-refinement per-sub-block level recomputation from updated indices | CATASTROPHIC (1.201) |
+| 061 | Finer d optimization grid (17 candidates at 2% step instead of 9 at 4%) | PENDING |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -359,4 +360,25 @@ This is different from exp-056's ±1 refinement because:
 **Files changed**: `ggml/src/ggml-quants.c` only — ~30 lines added after post-d refinement block.
 
 **Result**: KL=1.200646 — CATASTROPHIC REGRESSION (Δ = +0.489989, +69% from best 0.710657). Same failure as exp-050, exp-054, and exp-056: changing levels after index selection invalidates the index-scale coupling. Even a ±1 level change shifts the quantized scale by 2d, which is enough to break the post-d indices' match. The indices were selected for `d*(2*l_old+1)`, and with `l_new ≠ l_old`, the actual reconstruction uses a different scale, causing large errors. **Confirmed: indices and quantized scale must be optimized jointly. One-way modifications (indices→scale or scale→indices) are safe; two-way modifications (changing both) consistently fail. Reverted.**
+
+### exp-061: Finer d optimization grid (2% step instead of 4%)
+**Hypothesis**: The current d optimization searches 9 candidates from `d_base * (1 ± 4*0.04)` = ±16% in 4% steps. The optimal d falls between 4% candidates for some superblocks, introducing quantization error that the finer 2% step grid can capture.
+
+By doubling the number of candidates (17 from -8 to +8 with 0.02 step) while keeping the same ±16% range, we find d values closer to the true optimum. The cost is ~1.9x more error evaluations, but the d optimization is already cheap (~0.9s for 9 candidates → ~1.7s for 17).
+
+**Implementation**: One-line change in `quantize_row_iq2_xxs_impl()`:
+```c
+// Before:
+for (int is = -4; is <= 4; ++is) {
+    float d_try = d_base * (1.0f + is * 0.04f);
+// After:
+for (int is = -8; is <= 8; ++is) {
+    float d_try = d_base * (1.0f + is * 0.02f);
+```
+
+This is a pure one-way modification (changes d without touching indices). The indices are fixed during d evaluation, and only d changes. Safe.
+
+**Expected**: Small KL improvement (Δ ~0.0001-0.0005). The finer step reduces the worst-case d quantization error from ~2% to ~1% of the optimal value.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — one line in `quantize_row_iq2_xxs_impl()`.
 
