@@ -7,6 +7,7 @@
 | 001 | Weight exponent 0.30 + per-sub-block sigma2 | Failed — quantize timed out (>7 min) |
 | 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | Failed — quantize timed out (>7 min) |
 | 003 | Weight exponent 0.30 + per-sub-block sigma2 (20 min timeout) | Regression — KL 0.025029 vs 0.024916 baseline (slightly worse) |
+| 004 | Superblock d candidate search (±8%, 33 candidates, 0.5% step) | TBD |
 
 ---
 
@@ -91,3 +92,19 @@
 1. IQ4_XS has a 16-entry non-uniform codebook vs IQ2_XXS learned grid — weight exponent affects very different quantization dynamics
 2. The baseline weight formula `qw * sqrtf(sigma2 + x^2)` with global sigma2 may already be near-optimal for IQ4_XS
 3. Per-sub-block sigma2 may cause overfitting to local statistics, increasing variance without improving accuracy
+
+---
+
+## exp-004: Superblock d candidate search (±8%, 33 candidates, 0.5% step)
+
+**Hypothesis:** The current superblock d is computed as `-max_scale/32` — picking maximum dynamic range for the 4-bit sub-block levels. This ignores the weighted reconstruction error across all sub-blocks. In IQ2_XXS, a candidate search over d (~65 candidates, ±16% range, 0.5% step) was the second-biggest improvement (~2% KL gain). The same approach should transfer to IQ4_XS: search 33 candidates (±8%, 0.5% steps) around `d_base = -max_scale/32`, pick the one minimizing `sum(sub-block weighted MSE)`. This is cheap (33 candidates × 4 sub-blocks × 32 elements = 4224 extra MACs per superblock — negligible vs the existing algorithm).
+
+**Changes:**
+1. Replace lines 5653-5675: instead of `float d = -max_scale/32;` directly, try candidates `d_try = d_base * (1.0 + is * 0.005)` for `is = -16..16`
+2. For each candidate, compute weighted reconstruction error across all non-zero sub-blocks
+3. Pick the d with minimum error, then recompute L with quantized sub-block scales
+4. Skip `scales[ib] == 0` sub-blocks (all-zeros)
+
+**Expected outcome:** KL improvement from 0.024916 baseline, targeting 0.0245 or better. Quantize time should increase by <5% (negligible overhead). Should complete well within 20 min.
+
+**Transfer note:** This same idea was the second-biggest improvement in IQ2_XXS. The d-candidate search doesn't depend on the codebook structure — it's purely about better superblock scale selection given sub-block scale levels.
