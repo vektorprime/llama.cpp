@@ -74,3 +74,10 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Result**: KL = 0.716172 (identical to exp-034 best). PPL = 26.216, Same top p = 60.492%. **Null result** — lambda=0.15 too weak. K-means starting from E8 already stays near E8 after 20 iterations; centroids barely drift. Regularization is redundant when warm-start is already E8.
 
 **Lesson**: E8 regularization is unnecessary because centroids don't drift far from E8 origins with current training (1 tensor, 20 iters, 16384 samples).
+
+### exp-041: Importance-weighted sample selection for K-means training
+**Hypothesis**: Currently, K-means training draws samples with uniform stride from the first IQ2_XXS tensor, giving equal representation to low- and high-importance weight regions. By sampling proportionally to imatrix importance, the grid focuses capacity on weight regions that matter most for output quality.
+
+**Implementation**: Replace uniform stride sampling with inverse-CDF sampling weighted by mean imatrix weight per 8D group. High-importance groups contribute more training samples.
+
+**Expected**: Small KL reduction (0.001-0.005) from 0.7162. Improves grid accuracy where it matters most for KL divergence.
