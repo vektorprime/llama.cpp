@@ -13,12 +13,6 @@ The IQ4_XS type uses **4-bit non-linear quantization** with a fixed 16-entry
 non-uniform codebook (`kvalues_iq4nl`), sub-blocks of 32 elements, and a
 superblock scale `d` shared across 4 sub-blocks with 4-bit quantized levels.
 
-Research directions include:
-- **Weight formula tuning** — the `qw * powf(sigma2 + xb^2, p)` pattern
-- **Superblock d optimization** — try candidates of `d`, pick min weighted error
-- **Post-d refinement** — re-evaluate 4-bit codebook selection after d known
-- **Codebook tuning** — the `kvalues_iq4nl` table can potentially be learned
-
 ## Model Architecture: Qwen3.6-27B
 
 | Property | Value |
@@ -33,39 +27,99 @@ Research directions include:
 | Gated Attention | 24 Q-heads × 256 + 4 KV-heads × 256, RoPE dim 64 |
 | FFN intermediate | 17408 |
 
-## Baselines (to establish)
+## Baselines
 
-| Experiment | KL | PPL | Same top P | Size | Notes |
-|-----------|-----|-----|------------|------|-------|
-| IQ4_XS default quant (no tuning) | TODO | TODO | TODO | ~ GB | First experiment: establish baseline |
+| Experiment | KL | PPL | Same top P | Base PPL | Notes |
+|-----------|-----|-----|------------|----------|-------|
+| Q8_0 reference (Qwen3.6-27B-Q8) | 0.0 (identity) | 6.7917 | 100% | 6.7917 | ~9.6 bpw, near-lossless |
+| **IQ4_XS default (Bartowski)** | **0.0249** | **6.8952** | **94.17%** | 6.7917 | ~4.5 bpw, baseline to beat |
 
 ## Models and Data
 
 | Resource | Path |
 |---|---|
-| BF16 model (source) | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf` |
-| Reference logits (LOCKED — generate first) | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits` |
-| Imatrix | `/home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf` |
-| Eval data (LOCKED) | `/home/user/llm/wikitext-2-raw/wiki.test.raw` |
-| Calibration data | `/home/user/llm/models/Qwen3.6-27B/bartowski_calibration_data_v5.txt` |
+| BF16 model (source for quant) | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-bf16-00001-of-00002.gguf` |
+| Q8_0 model (reference) | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8_0.gguf` |
+| Reference logits (LOCKED) | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8.logits` |
+| Imatrix | `/llmdata/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf` |
+| Eval data (LOCKED) | `/llmdata/Qwen3.6-27B/wiki.test.raw` |
+| Calibration data | `/llmdata/Qwen3.6-27B/bartowski_calibration_data_v5.txt` |
+| Quantized output (experiments) | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf` (overwrites each experiment) |
 
-## First-Time Setup: Generate Reference Logits
+## IQ4_XS Architecture
 
-Before any experiments, generate the BF16 reference logits (one-time, ~20 min):
-
-```bash
-CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-perplexity \
-  -m /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf \
-  -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
-  -t 8 -c 512 --chunks 200 \
-  -fa on --cache-type-k bf16 --cache-type-v bf16 \
-  --no-mmap -ngl 999 -np 1 \
-  --kl-divergence \
-  --kl-divergence-base /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits 2>&1
+### Block structure (`block_iq4_xs` in `ggml/src/ggml-common.h`):
+```c
+typedef struct {
+    ggml_half d;                    // 2 bytes — superblock scale
+    uint16_t scales_h;              // 2 bytes — high bits of 4 sub-block 4-bit scales
+    uint8_t  scales_l[QK_K/64];     // 4 bytes — low bits of 4 sub-block 4-bit scales
+    uint8_t  qs[QK_K/2];            // 128 bytes — 4-bit quantized values (half byte each)
+} block_iq4_xs;                     // 136 bytes for 256 elements = 4.25 bpw
 ```
 
-(The `--kl-divergence-base` flag with a `.logits` path that doesn't exist
-will compute reference logits and SAVE them. Run ONCE, then the file is locked.)
+### Quantization pipeline:
+- 256-element superblock → 4 sub-blocks of 32 elements
+- Each sub-block: choose 4-bit codebook entry from `kvalues_iq4nl` (16 non-uniform values)
+- Sub-block scale: 4-bit level via `l = nearest_int(0.5*(id*scale-1))`
+- Superblock scale `d`: shared, optimized via candidate search (or `max_scale/31`)
+- Weight formula: `w[i] = qw[i] * sqrtf(sigma2_per_ib + xb[i]*xb[i])`
+
+### Key function:
+- `quantize_row_iq4_nl_impl(QK_K, 32, src, &d, qs, &scales_h, scales_l, scales, weight, L, kvalues_iq4nl, qw, 7)` — the inner quantize kernel for one superblock
+
+### No learned grid:
+Unlike IQ2_XXS, IQ4_XS has **no 8D codebook grid, no kmap, no neighbor search**.
+The 16-entry non-uniform codebook is fixed (`kvalues_iq4nl`).
+
+## Quantization
+
+```bash
+rm -f /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf
+./build/bin/llama-quantize \
+  --imatrix /llmdata/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf \
+  /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-bf16-00001-of-00002.gguf \
+  /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf IQ4_XS
+```
+
+**Quantization limit: 7 minutes HARD.** If a change pushes quantize time over
+7 min, it must be abandoned UNLESS it delivers ≥10% KL improvement (e.g., 0.025→0.0225).
+
+## Evaluation (LOCKED — never change these flags)
+
+```bash
+CUDA_VISIBLE_DEVICES=0 build/bin/llama-perplexity \
+  -m /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS.gguf \
+  -f /llmdata/Qwen3.6-27B/wiki.test.raw \
+  -t 8 -c 512 --chunks 200 \
+  -fa on --cache-type-k bf16 --cache-type-v bf16 \
+  --no-mmap -ngl 999 \
+  --kl-divergence --kl-divergence-base /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8.logits
+```
+
+**Use `CUDA_VISIBLE_DEVICES=0`** (RTX 5090, CC 12.0) for eval.
+Device 0 now works for this model.
+
+## Editable Files
+
+### Core quantization:
+- `ggml/src/ggml-quants.c` — `quantize_row_iq4_nl_impl()`, weight formulas, d optimization
+- `ggml/src/ggml-quants.c` — `quantize_iq4_xs()` — IQ4_XS entry point
+- `ggml/src/ggml-quants.h` — declarations
+
+### Locked (never touch):
+- `tools/perplexity/**` — evaluation binary and source
+- `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8.logits` — reference logits
+- `/llmdata/Qwen3.6-27B/wiki.test.raw` — evaluation data
+
+## GPU Info
+
+| Device | Model | VRAM | CC | Use |
+|--------|-------|------|-----|-----|
+| 0 | RTX 5090 | 32110 MB | 12.0 | USE FOR EVAL (works for this model) |
+| 1 | RTX 3080 | 20054 MB | 8.6 | Available |
+| 2 | RTX 3080 | 20054 MB | 8.6 | Available |
+| 3 | RTX 3050 | 5806 MB | 8.6 | Available |
 
 ## IQ4_XS Architecture
 
@@ -109,22 +163,16 @@ rm -f /tmp/quantized-model.gguf
 ## Evaluation (LOCKED — never change these flags)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-perplexity \
+CUDA_VISIBLE_DEVICES=0 build/bin/llama-perplexity \
   -m MODEL.gguf \
-  -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+  -f /llmdata/Qwen3.6-27B/wiki.test.raw \
   -t 8 -c 512 --chunks 200 \
   -fa on --cache-type-k bf16 --cache-type-v bf16 \
-  --no-mmap -ngl 999 -np 1 \
-  --kl-divergence \
-  --kl-divergence-base /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits
+  --no-mmap -ngl 999 \
+  --kl-divergence --kl-divergence-base /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8.logits
 ```
 
-**Use `CUDA_VISIBLE_DEVICES=1`** (RTX 3080, CC 8.6). Device 0 (RTX 5090, CC 12.0)
-lacks kernel images and produces "no kernel image available" errors.
-
-Note: The 27B model requires significant VRAM for eval. Ensure the eval
-finishes within timeout (increase timeout if needed). With --no-mmap -ngl 999,
-expect ~20-30 GB VRAM usage on the eval GPU.
+**Use `CUDA_VISIBLE_DEVICES=0`** (RTX 5090, CC 12.0) for eval. Device 0 works on this model.
 
 ## Editable Files
 
@@ -164,21 +212,20 @@ expect ~20-30 GB VRAM usage on the eval GPU.
 4. BUILD: cmake --build build -j16
 
 5. QUANTIZE — must finish in ≤7 minutes (HARD limit, unless ≥10% KL gain):
-   rm -f /tmp/quantized-model.gguf
+   rm -f /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf
    timeout 420 ./build/bin/llama-quantize \
-     --imatrix /home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf \
-     /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf \
-     /tmp/quantized-model.gguf IQ4_XS
+     --imatrix /llmdata/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf \
+     /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-bf16-00001-of-00002.gguf \
+     /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf IQ4_XS
 
-6. EVALUATE (always device 1):
-   CUDA_VISIBLE_DEVICES=1 timeout 600 ./build/bin/llama-perplexity \
-     -m /tmp/quantized-model.gguf \
-     -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+6. EVALUATE (always device 0, locked flags):
+   CUDA_VISIBLE_DEVICES=0 timeout 600 build/bin/llama-perplexity \
+     -m /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf \
+     -f /llmdata/Qwen3.6-27B/wiki.test.raw \
      -t 8 -c 512 --chunks 200 -fa on \
      --cache-type-k bf16 --cache-type-v bf16 \
-     --no-mmap -ngl 999 -np 1 \
-     --kl-divergence \
-     --kl-divergence-base /home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits
+     --no-mmap -ngl 999 \
+     --kl-divergence --kl-divergence-base /llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8.logits
    Capture ALL lines of output — do NOT grep-filter. You need ALL of:
    ====== Perplexity statistics ======
      Mean PPL(Q), Mean PPL(base), Cor(...), Mean ln(PPL(Q)/PPL(base)),

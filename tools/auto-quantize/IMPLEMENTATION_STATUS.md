@@ -28,22 +28,23 @@ Transferred findings from the IQ2_XXS research (best KL 0.662001, 68 experiments
 
 | Resource | Path |
 |---|---|
-| BF16 model | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.gguf` |
-| BF16 reference logits | `/home/user/llm/models/Qwen3.6-27B/Qwen3.6-27B-BF16.logits` |
-| Imatrix | `/home/user/llm/models/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf` |
-| Eval data | `/home/user/llm/wikitext-2-raw/wiki.test.raw` |
-| Calibration data | `/home/user/llm/models/Qwen3.6-27B/bartowski_calibration_data_v5.txt` |
+| BF16 model | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-bf16-00001-of-00002.gguf` |
+| Reference logits | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-Q8.logits` |
+| Imatrix | `/llmdata/Qwen3.6-27B/imatrix_bartowski_q3.6-27b.gguf` |
+| Eval data | `/llmdata/Qwen3.6-27B/wiki.test.raw` |
+| Calibration data | `/llmdata/Qwen3.6-27B/bartowski_calibration_data_v5.txt` |
+| Quantized output (experiments) | `/llmdata/Qwen3.6-27B/Qwen_Qwen3.6-27B-IQ4_XS-exp.gguf` |
 
 ## GPU Info
 
 | Device | Model | VRAM | CC |
 |--------|-------|------|-----|
-| 0 | RTX 5090 | 32110 MB | 12.0 |
-| 1 | RTX 3080 | 20054 MB | 8.6 |
-| 2 | RTX 3080 | 20054 MB | 8.6 |
-| 3 | RTX 3050 | 5806 MB | 8.6 |
+| 0 | RTX 5090 | 32110 MB | 12.0 | **USE FOR EVAL** (works for this model) |
+| 1 | RTX 3080 | 20054 MB | 8.6 | Available |
+| 2 | RTX 3080 | 20054 MB | 8.6 | Available |
+| 3 | RTX 3050 | 5806 MB | 8.6 | Available |
 
-**Use device 1 (RTX 3080)** for eval: `CUDA_VISIBLE_DEVICES=1`
+**Use device 0 (RTX 5090)** for eval: `CUDA_VISIBLE_DEVICES=0`
 
 Device 0 (RTX 5090, CC 12.0) lacks kernel images in the CUDA build and
 produces "no kernel image is available for execution on the device" errors.

@@ -23,6 +23,6 @@ Follow the **Experiment Loop** section in program.md exactly. Every cycle:
 
 - Never modify `tools/perplexity/`, reference logits, or eval data.
 - Never change the evaluation command or its flags.
-- Always use `CUDA_VISIBLE_DEVICES=1` for GPU eval.
+- Always use `CUDA_VISIBLE_DEVICES=0` for GPU eval (RTX 5090, works for this model).
 - Append to results.tsv — never overwrite past rows.
 - Record ALL 41 columns from actual eval output — no truncation, no approximations.
