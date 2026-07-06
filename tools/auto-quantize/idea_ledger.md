@@ -6,7 +6,7 @@
 |-----|-------------|---------|
 | 001 | Weight exponent 0.30 + per-sub-block sigma2 | Failed — quantize timed out (>7 min) |
 | 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | Failed — quantize timed out (>7 min) |
-| 003 | Weight exponent 0.30 + per-sub-block sigma2 (20 min timeout) | In progress |
+| 003 | Weight exponent 0.30 + per-sub-block sigma2 (20 min timeout) | Regression — KL 0.025029 vs 0.024916 baseline (slightly worse) |
 
 ---
 
@@ -83,4 +83,11 @@
    ```
 3. Change weight formula to: `weight[j] = qw[j] * powf(sigma2_ib + xb[j]*xb[j], 0.30f)`
 
-**Expected outcome:** KL improvement from 0.024916 baseline (stock). Quantize expected to complete within 20 min given the increased timeout. Improvement expected: --30% KL reduction to ~0.017 based on IQ2_XXS transfer results.
+**Expected outcome:** KL improvement from 0.024916 baseline (stock). Quantize expected to complete within 20 min given the increased timeout. Improvement expected: ~30% KL reduction to ~0.017 based on IQ2_XXS transfer results.
+
+**Actual outcome:** Regression — KL 0.025029 ± 0.001012 vs baseline 0.024916. Quantize completed in 700.25s (11.7 min), well within timeout. Eval completed on device 1 (RTX 3080, device 0 had CUDA error). KL slightly increased, PPL 6.8974 vs baseline 6.8952, Same top p 94.194% vs 94.17% (marginally better). Net result: no improvement, minor regression.
+
+**Lesson:** Weight exponent 0.30 + per-sub-block sigma2 does NOT transfer to IQ4_XS the same way it did for IQ2_XXS. Possible reasons:
+1. IQ4_XS has a 16-entry non-uniform codebook vs IQ2_XXS learned grid — weight exponent affects very different quantization dynamics
+2. The baseline weight formula `qw * sqrtf(sigma2 + x^2)` with global sigma2 may already be near-optimal for IQ4_XS
+3. Per-sub-block sigma2 may cause overfitting to local statistics, increasing variance without improving accuracy
