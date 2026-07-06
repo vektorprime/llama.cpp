@@ -1,15 +1,20 @@
-# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06
+# IQ2_XXS Auto-Research Synthesis — Session 2026-07-06 (Updated exp-078)
 
-## Status: Best KL = 0.699009 (exp-064, 65-candidate d optimization at 0.5% step). First result below 0.7 KL. Previous best was 0.710657 (exp-055).
+## Status: Best KL = 0.691085 (exp-078, per-sub-block sigma2). Previous best was 0.699009 (exp-064, 65-candidate d optimization).
 
-## BREAKTHROUGH (exp-061/063/064): Progressive d optimization step refinement
+## BREAKTHROUGH (exp-078): Per-sub-block sigma2 — weight formula localization
 
-**Reducing the d optimization step from 4% → 2% → 1% → 0.5% (increasing candidates from 9 → 17 → 33 → 65, same ±16% range) improved KL from 0.710657 to 0.699009 — a total of 1.64% relative improvement.**
+**Computing sigma2 per 32-element sub-block instead of globally per 128-element superblock improves KL from 0.699009 to 0.691085 — a 1.13% relative improvement.** This is the first successful experiment after 14 consecutive null/regressions (exp-065 through exp-077).
+
+The global sigma2 (`mean(xb^2)` over 128 elements) was dominated by the largest-magnitude sub-block, giving small-value sub-blocks inflated weight baselines. Per-sub-block sigma2 correctly localizes the weight formula to each sub-block's intrinsic magnitude, improving quantization selectivity.
 
 | Experiment | KL Divergence | PPL | Same Top P | Q-Time | Key Technique |
 |-----------|--------------|-----|------------|--------|---------------|
 | **Unsloth target** | 0.721 | 26.44 | 60.25% | — | Reference |
-| **exp-064 (NEW BEST)** | **0.699009** | **25.90** | **61.11%** | **5.0 min** | **0.5% d step (65 candidates)** |
+| **exp-078 (NEW BEST)** | **0.691085** | **25.69** | **61.29%** | **5.0 min** | **Per-sub-block sigma2** |
+| **exp-064** | 0.699009 | 25.90 | 61.11% | 5.0 min | 0.5% d step (65 candidates) |
+| exp-063 | 0.702666 | 26.02 | 60.98% | 4.9 min | 1% d step (33 candidates) |
+| exp-061 | 0.704868 | 26.12 | 60.97% | 4.8 min | 2% d step (17 candidates) |
 | **exp-063** | 0.702666 | 26.02 | 60.98% | 4.9 min | 1% d step (33 candidates) |
 | **exp-061** | 0.704868 | 26.12 | 60.97% | 4.8 min | 2% d step (17 candidates) |
 | exp-055 | 0.710657 | 26.26 | 60.61% | 4.8 min | Post-d grid index recomputation |
