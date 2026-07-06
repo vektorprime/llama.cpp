@@ -110,3 +110,19 @@
 **Transfer note:** This same idea was the second-biggest improvement in IQ2_XXS. The d-candidate search doesn't depend on the codebook structure — it's purely about better superblock scale selection given sub-block scale levels.
 
 **Actual outcome:** Regression — KL 0.031630 ± 0.001150 vs baseline 0.024916. PPL improved slightly (6.8660 vs 6.8952) but KL is significantly worse, especially in the median percentile (0.009577 vs ~0.007 baseline). Same top p 93.76% vs 94.17% (worse). The candidate search increased median KL substantially, suggesting that picking d purely by minimizing weighted reconstruction error over the initial L assignments overfits to sub-optimal codebook indices. The initial L assignments were made with per-block d, not superblock d, so the reconstruction error proxy used in the search is mismatched. Quantize time increased from 700s → 782s as expected.
+
+---
+
+## exp-005: Post-d level perturbation (±1 level around chosen l)
+
+**Hypothesis:** After the superblock d and per-sub-block levels `l` are finalized, the codebook entries are chosen with `idl = 1/(d*l)`. While `l` is optimal in isolation (nearest integer to `id*scales[ib]`), the interaction between `l` and the 32 codebook entries may be suboptimal. Trying `l-1` and `l+1` as alternatives — re-evaluating all 32 codebook entries with the new quantized scale `d * l_try` — may find a better combination. This is analogous to the post-d refinement from IQ2_XXS.
+
+**Changes:** After the existing superblock d quantization loop (lines 5659-5675), add a level perturbation pass:
+1. Save per-sub-block levels `l` before packing
+2. For each sub-block, try `l-1`, `l`, `l+1`
+3. For each candidate level, re-evaluate ALL 32 codebook entries via `best_index_int8()`
+4. Compute weighted reconstruction error for each candidate
+5. Pick the level + codebook indices combination with minimum error
+6. If level changed, repack the scale bits in `scales_l` and `scales_h`
+
+**Expected outcome:** Small KL improvement (~0.2-0.5% reduction to ~0.0248-0.02485). The level perturbation is cheap (3× re-evaluation of 32 elements per sub-block = 384 extra `best_index_int8` calls per superblock, negligible overhead). Quantize time should increase by <1%.
