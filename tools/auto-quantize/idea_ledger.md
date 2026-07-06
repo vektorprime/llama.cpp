@@ -382,3 +382,7 @@ This is a pure one-way modification (changes d without touching indices). The in
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line in `quantize_row_iq2_xxs_impl()`.
 
+**Result**: KL=0.704868 — IMPROVEMENT (Δ = -0.005789, -0.81% from best 0.710657). The finer d optimization grid (17 candidates at 2% steps, ±16% range) finds better superblock scales that the coarser 4% grid misses. KL improved from 0.710657 to 0.704868. PPL dropped from 26.26 to 26.12. Same top p improved from 60.61% to 60.97%. Quantize time unchanged (~290s). This is the NEW BEST RESULT.
+
+**Why it works**: The d optimization error landscape has a relatively narrow minimum (~2-3% wide at optimal resolution). The previous 4% step grid could miss this minimum by up to 2%. The 2% step grid halves the worst-case d offset, finding scales consistently closer to the true optimum. The improvement (0.81% relative KL reduction) is larger than expected because the 4% steps systematically missed the optimal d for many superblocks, and the correction compounds across all 95 IQ2_XXS tensors.
+
