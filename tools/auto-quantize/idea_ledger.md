@@ -6,7 +6,8 @@
 |-----|-------------|---------|
 | 100 | Decouple imatrix from magnitude in waux — waux = qw * (sigma2+xb^2)^0.06 | REGRESSION |
 | 101 | Remove sigma2 baseline from main quantization weight only | REGRESSION |
-| **102** | **Sharpen post-d refinement weight exponent 0.35→0.40 (keep d-opt 0.35)** | **IN PROGRESS** |
+| 102 | Sharpen post-d refinement weight exponent 0.35→0.40 (keep d-opt 0.35) | NULL |
+| **103** | **Change d optimization objective from sum to max-of-sub-block-errors** | **IN PROGRESS** |
 
 ---
 
@@ -1463,6 +1464,46 @@ Line 4003 (d-opt) stays at 0.35. Lines 3861 (main) stays at 0.30. Line 3862 (wau
 **Risk**: MODERATE — the post-d uses sharper weights for both the neighbor search AND the error comparison. If the sharper weight makes the neighbor search too selective (narrowing the candidate pool), it could miss good centroids. However, the neighbor list is from kmap (precomputed), so the candidate pool is fixed — only the scoring criterion changes.
 
 **Files changed**: `ggml/src/ggml-quants.c` only — lines 4046, 4072.
+
+---
+
+### exp-103: Change d optimization objective from sum-of-errors to max-of-sub-block-errors
+
+**Hypothesis**: The current d optimization minimizes the TOTAL weighted quantization error across all 4 sub-blocks (128 elements). This sum objective can select a d that works well for 3 sub-blocks but poorly for 1 — the high-error sub-block is "tolerated" if the other 3 sub-blocks have low error.
+
+By using a MAX objective (minimize the worst sub-block error), the d optimization must find a d that balances ALL sub-blocks. This is principled because:
+1. The superblock structure shares one scale `d` across all 4 sub-blocks — the scale should be chosen to accommodate the MOST demanding sub-block
+2. A sub-block with high error after quantization contributes disproportionately to the model's KL divergence, so preventing one sub-block from being very bad is more important than making three sub-blocks slightly better
+3. The max objective naturally handles cases where `d_base = max_scale/31` overestimates the optimal d (because the max-scale sub-block isn't the most quantization-sensitive)
+
+**Implementation**: In `ggml/src/ggml-quants.c`, lines 3985-4011 (d optimization loop):
+```c
+// Before:
+float err = 0.0f;
+for (int ib = 0; ib < QK_K/32; ++ib) {
+    ... compute per-sub-block error ...
+    err += w * diff * diff;       // sum across sub-blocks
+}
+if (err < best_err) { best_err = err; ... }
+
+// After:
+float err_max = 0.0f;
+for (int ib = 0; ib < QK_K/32; ++ib) {
+    float err_ib = 0.0f;
+    ... compute per-sub-block error ...
+    err_ib += w * diff * diff;    // sum within sub-block only
+    if (err_ib > err_max) err_max = err_ib;  // track max
+}
+if (err_max < best_err) { best_err = err_max; ... }
+```
+
+This is a one-way modification (only changes which d is selected, doesn't touch indices/levels). Safe to revert.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.004) from 0.662001. The effect is bounded because d is already well-tuned by the sum objective. The max objective should help only when sub-block errors are imbalanced — a subset of superblocks.
+
+**Risk**: LOW — the d optimization is a one-way modification. Even if the max objective selects a worse d on average (regression), the change is easily revertible. No coupling with other quantizer stages.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — lines 3985-4011.
 
 ---
 
