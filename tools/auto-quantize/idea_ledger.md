@@ -659,3 +659,22 @@ Computational cost: ~16x inner loop (~15-20s added, well under 5-min limit).
 
 **Expected**: KL improvement from 0.699009 (Δ ~0.001-0.005). The nearest-int level is only optimal for uniform weights; with imatrix weighting, the true optimal level may be ±1-2 from nearest_int.
 
+### exp-074: Level-Perturbation Centroid Search (LPCS) — evaluate alternative centroids via perturbed 8-bit patterns
+**Hypothesis**: The kmap maps 8-bit patterns (2-bit levels for 4 elements in an 8D chunk) to the L2-closest centroid. But the quantization objective is weighted L1/L2 reconstruction error at the final scale (which depends on d, sub-block level, and centroid). The L2-closest centroid for a given pattern may not be the best by weighted reconstruction error — a DIFFERENT 8-bit pattern (off by ±1 in one element) might map to a centroid that produces lower overall weighted error.
+
+For each 8D chunk, after the primary centroid is selected via kmap, try perturbing each element's 2-bit level by ±1 (if within [0,3]). For each perturbation, compute the new 8-bit pattern, look up the kmap for an alternative centroid, and evaluate weighted reconstruction error at the current scale. Pick the best centroid.
+
+This is fundamentally different from exp-069 (kmap2) because:
+- Exp-069 tried the SECOND-CLOSEST centroid by L2 for the SAME 8-bit pattern
+- This tries centroids from DIFFERENT 8-bit patterns (nearby patterns)
+- The level perturbation directly reflects the trade-off: slightly worsen one element's quantization for a centroid with better overall match
+- The kmap's L2 criterion selects centroids by 8D Euclidean distance to the pattern, but the actual objective is weighted reconstruction at the scale — nearby patterns can produce better centroids for the weighted objective
+
+**Implementation**: Modify `quantize_row_iq2_xxs_impl()` in two places:
+1. **Final encoding** (after line 3941): After setting L from the kmap centroid, try alternative centroids via level perturbation. Evaluate weighted error at the sub-block scale. Update L if better.
+2. **Post-d refinement** (after line 4077): Similarly, after finding a new centroid via kmap/neighbor at the quantized scale, try alternatives via level perturbation.
+
+Cost: ~4-8 alternative centroid evaluations per 8D chunk via fast kmap lookup (O(1)). Total: ~0.5s added per tensor, negligible.
+
+**Expected**: Small KL improvement (Δ ~0.001-0.003). The kmap L2 criterion is usually close to optimal, but for edge cases with non-uniform importance weights and the quantized scale mismatch, the perturbed-pattern centroid may reduce error. Effect compounds across 95 IQ2_XXS tensors × ~100 superblocks each.
+
