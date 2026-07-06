@@ -3974,6 +3974,44 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
             max_scale = MAX(max_scale, scale);
         }
 
+        if (max_scale > 0) {
+            float d_base = max_scale / 31.0f;
+            float best_d = d_base;
+            float best_err = FLT_MAX;
+            for (int is = -4; is <= 4; ++is) {
+                float d_try = d_base * (1.0f + is * 0.04f);
+                float id_try = 1.0f / d_try;
+                float err = 0.0f;
+                for (int ib = 0; ib < QK_K/32; ++ib) {
+                    if (scales[ib] <= 0.0f) continue;
+                    int l = nearest_int(0.5f * (id_try * scales[ib] - 1.0f));
+                    l = MAX(0, MIN(15, l));
+                    float scale_q = d_try * (2.0f * l + 1.0f);
+                    const float * xb = xbl + 32*ib;
+                    const float * qw = quant_weights + QK_K*ibl + 32*ib;
+                    for (int k = 0; k < 4; ++k) {
+                        uint32_t gidx = (q2[2*ib+0] >> (8*k)) & 0xFF;
+                        if (gidx >= 256) continue;
+                        const int8_t * pg = (const int8_t *)(kgrid_q2xs + gidx);
+                        uint8_t signs_k = (q2[2*ib+1] >> (7*k)) & 0x7F;
+                        for (int i = 0; i < 8; ++i) {
+                            float cval = (float)(2 * ((pg[i] - 1) / 2) + 1);
+                            if (signs_k & (1 << i)) cval = -cval;
+                            float recon = scale_q * cval;
+                            float diff = xb[8*k + i] - recon;
+                            float w = qw[8*k + i] * sqrtf(sigma2 + xb[8*k + i] * xb[8*k + i]);
+                            err += w * diff * diff;
+                        }
+                    }
+                }
+                if (err < best_err) {
+                    best_err = err;
+                    best_d = d_try;
+                }
+            }
+            max_scale = best_d * 31.0f;
+        }
+
         if (!max_scale) {
             memset(y[ibl].qs, 0, QK_K/4);
             continue;
