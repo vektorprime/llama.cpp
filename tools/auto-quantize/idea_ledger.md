@@ -7,7 +7,7 @@
 | 001 | Weight exponent 0.30 + per-sub-block sigma2 | Failed — quantize timed out (>7 min) |
 | 002 | Weight exponent 0.30 + per-sub-block sigma2 (FAST pow: exp2f) | Failed — quantize timed out (>7 min) |
 | 003 | Weight exponent 0.30 + per-sub-block sigma2 (20 min timeout) | Regression — KL 0.025029 vs 0.024916 baseline (slightly worse) |
-| 004 | Superblock d candidate search (±8%, 33 candidates, 0.5% step) | TBD |
+| 004 | Superblock d candidate search (±8%, 33 candidates, 0.5% step) | Regression — KL 0.031630 vs 0.024916 baseline (worse) |
 
 ---
 
@@ -108,3 +108,5 @@
 **Expected outcome:** KL improvement from 0.024916 baseline, targeting 0.0245 or better. Quantize time should increase by <5% (negligible overhead). Should complete well within 20 min.
 
 **Transfer note:** This same idea was the second-biggest improvement in IQ2_XXS. The d-candidate search doesn't depend on the codebook structure — it's purely about better superblock scale selection given sub-block scale levels.
+
+**Actual outcome:** Regression — KL 0.031630 ± 0.001150 vs baseline 0.024916. PPL improved slightly (6.8660 vs 6.8952) but KL is significantly worse, especially in the median percentile (0.009577 vs ~0.007 baseline). Same top p 93.76% vs 94.17% (worse). The candidate search increased median KL substantially, suggesting that picking d purely by minimizing weighted reconstruction error over the initial L assignments overfits to sub-optimal codebook indices. The initial L assignments were made with per-block d, not superblock d, so the reconstruction error proxy used in the search is mismatched. Quantize time increased from 700s → 782s as expected.
