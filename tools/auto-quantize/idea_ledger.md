@@ -498,3 +498,5 @@ for (int is = -16; is <= 16; ++is) {
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
+**Result**: KL=0.701711 — REGRESSION (Δ = +0.002702, +0.39% from best 0.699009). The ±8% range is too narrow — some superblocks need d values beyond 8% of d_base. Exp-064's ±16% at 0.5% step (65 candidates) remains optimal. **Reverted**.
+
