@@ -62,7 +62,7 @@
 | 065 | Ultra-fine d optimization grid (129 candidates at 0.25% step, ±16% range) | REGRESSION (0.704) |
 | 066 | Post-d refinement with centroid-aware sign parity re-evaluation | CATASTROPHIC (0.815) |
 | 067 | Narrower d optimization range (±8% at 0.5% step, 33 candidates) | REGRESSION (0.702) |
-| **068** | **Quantizer-aware K-means assignment (scale-aware dot-product criterion)** | **PENDING** |
+| 068 | Quantizer-aware K-means assignment (scale-aware dot-product criterion) | CATASTROPHIC (12.31) |
 | 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
 | **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
 
@@ -533,5 +533,7 @@ Assign to centroid with maximum score. Centroid update (weighted average with im
 
 **Files changed**: `ggml/src/ggml-quants.c` only — assignment criterion in `iq2xxs_learn_grid()` K-means loop.
 
-**Status**: PENDING
+**Result**: KL=12.309862 — CATASTROPHIC REGRESSION. The scale-aware assignment (`sumqx^2/sumq2`) groups samples by direction (shape), but the centroid update averages per-dimension weighted means, which destroys shape information. Since the score is scale-invariant, samples with very different magnitudes but similar directions are assigned to the same centroid. The component-wise centroid update averages over all magnitudes, losing magnitude diversity. After 20 iterations, centroids collapse to non-representative values, producing a grid with no discriminative power — the same failure mode as exp-037 (cross-tensor normalization, KL=2.379) but amplified because ALL samples are now poorly represented. **Fundamental issue**: K-means requires the same metric for both assignment and centroid update — mismatching them breaks convergence guarantees. **Reverted**.
+
+**Lesson**: The quantizer-aware assignment is incompatible with the weighted-mean centroid update. To align K-means with the quantizer objective, a different centroid update would be needed (e.g., updating shapes and gains separately as in GSKM, exp-052), but GSKM was also null. This confirms that the E8 warm-start dominates the fixed point regardless of training objective.
 
