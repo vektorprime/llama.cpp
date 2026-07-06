@@ -56,3 +56,10 @@ K-means pass on the residual. This allows the grid to adapt to quantization arti
 **Hypothesis**: If nwant=2→4 produced a significant improvement (0.7238→0.7166), then nwant=4→8 may capture even more relevant centroid candidates for off-map 2-bit patterns. Learned K-means grids lack the regular distance structure of E8 lattices; each additional distance level can include grid points that are better matches for specific patterns. Going from 2→4 gave ~40% more neighbors; 4→8 may give diminishing but still positive returns.
 
 **Expected**: Small KL reduction (0.0005-0.002) from 0.7166. Quantize time may increase ~60-120s but should stay well under 5 min.
+
+### exp-035: Re-enable K-means++ multi-trial init with nwant=8 neighbor search
+**Hypothesis**: K-means++ trials (exp-017) showed no benefit with nwant=2 because the narrow neighbor search (2 distance levels) limited the quantizer's ability to exploit better grid values. With nwant=8's wider search, grid quality should now matter more — a grid with better-distributed centroids (found through K-means++ init + E8 warm-start) should enable the quantizer to find superior matches for each 2-bit pattern.
+
+The current grid uses single-trial E8 warm-start only (20 iters, `num_trials=1`). Activate the full 5-trial pipeline (index 0 = E8 warm-start, indices 1-4 = K-means++ init) so the best of 5 initializations is picked. Learning time increases ~20-40s but quantize time stays at 272s (nwant=8).
+
+**Expected**: KL reduction from 0.7162 to ~0.7155-0.7158. The wider search window (nwant=8) finally allows better-initialized grids to realize their quality advantage during quantization.
