@@ -63,8 +63,7 @@
 | 066 | Post-d refinement with centroid-aware sign parity re-evaluation | CATASTROPHIC (0.815) |
 | 067 | Narrower d optimization range (±8% at 0.5% step, 33 candidates) | REGRESSION (0.702) |
 | 068 | Quantizer-aware K-means assignment (scale-aware dot-product criterion) | CATASTROPHIC (12.31) |
-| 058 | Scale-aware robust post-d grid index refinement + closed-form d recomputation | REGRESSION (0.721) |
-| **059** | **Odd-forced scoring in neighbor search only (not kmap)** | **PENDING** |
+| **069** | **Second-best centroid evaluation (kmap2) — structural change** | **PENDING** |
 
 ---
 
@@ -536,4 +535,36 @@ Assign to centroid with maximum score. Centroid update (weighted average with im
 **Result**: KL=12.309862 — CATASTROPHIC REGRESSION. The scale-aware assignment (`sumqx^2/sumq2`) groups samples by direction (shape), but the centroid update averages per-dimension weighted means, which destroys shape information. Since the score is scale-invariant, samples with very different magnitudes but similar directions are assigned to the same centroid. The component-wise centroid update averages over all magnitudes, losing magnitude diversity. After 20 iterations, centroids collapse to non-representative values, producing a grid with no discriminative power — the same failure mode as exp-037 (cross-tensor normalization, KL=2.379) but amplified because ALL samples are now poorly represented. **Fundamental issue**: K-means requires the same metric for both assignment and centroid update — mismatching them breaks convergence guarantees. **Reverted**.
 
 **Lesson**: The quantizer-aware assignment is incompatible with the weighted-mean centroid update. To align K-means with the quantizer objective, a different centroid update would be needed (e.g., updating shapes and gains separately as in GSKM, exp-052), but GSKM was also null. This confirms that the E8 warm-start dominates the fixed point regardless of training objective.
+
+---
+
+## Session: 2026-07-06 (continued) — Structural quantization search change
+
+### exp-069: Second-best centroid evaluation (kmap2) — structural change to centroid selection
+**Hypothesis**: The current quantization algorithm selects centroids for each 8D chunk by:
+1. Computing 2-bit levels from absolute weight values (after sign parity fix)
+2. Looking up the 2-bit pattern in kmap → gets the SINGLE closest centroid (by L2 distance in 8D space)
+3. If the pattern is off-map (no direct match), using neighbor search which evaluates MULTIPLE candidates by weighted L1
+
+The structural blind spot: **For the ~96% of chunks with a DIRECT kmap match, the algorithm uses the single L2-closest centroid WITHOUT considering alternatives.** But a different centroid with a slightly different 2-bit pattern may produce better reconstruction at the actual scale and with importance weights. The L2-closest centroid minimizes `||centroid - 2*level+1||` in unweighted 8D space, but the quantizer's objective is `min sum w[i]*|scale*centroid[i] - xval[i]|` — a weighted L1 with scale multiplication. These objectives differ, especially when:
+   - The importance weights are highly non-uniform across the 8 dimensions
+   - The scale shifts the centroid values relative to the data
+   - The centroid's odd-forced values produce different effective levels
+
+**Solution**: Build a `kmap2` lookup table that stores the SECOND-CLOSEST centroid (by L2 distance) for each 2-bit pattern with a direct kmap match. During quantization, evaluate both the primary and secondary centroid candidates for each chunk, and pick the better one by weighted L1 reconstruction error at the current scale.
+
+**Why this is structurally novel**:
+- ALL prior experiments either modified the codebook (K-means variants, init, refinement) or the scale search (d step, range, post-d refinement)
+- This modifies the CENTROID SELECTION CRITERION during quantization — the fundamental bridge between the 2-bit pattern and the grid entry
+- It's a one-way modification (centroid lookup changes, inference unchanged — same grid, same 8-bit index stored)
+- It directly addresses the mismatch between L2-based kmap and L1-weighted quantizer objective
+
+**Implementation**:
+1. **ggml/src/ggml-quants.c**: Add static `g_iq2_xxs_kmap2` array
+2. **iq2xxs_rebuild_map_and_neighbours()**: For each 2-bit pattern with a direct kmap match, compute L2 distances to all 256 centroids, find the second-closest (excluding the direct match), store in kmap2
+3. **quantize_row_iq2_xxs_impl()**: In the initial scale search loop AND in the final encoding, when kmap returns a direct match, also check kmap2 for the second-best candidate. Evaluate both using weighted L1 at the current scale. Pick the better one.
+
+**Expected**: KL improvement from 0.699009. The effect may be small (~0.1-0.5%) because most 2-bit patterns have their closest centroid well-separated from the second-closest. But for patterns with near-collisions (two centroids mapping to nearly the same 2-bit pattern), the second-best centroid may be significantly better for the weighted L1 objective. The improvement compounds across ~95 IQ2_XXS tensors.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — ~40 lines added.
 
