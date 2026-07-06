@@ -148,3 +148,18 @@ We can find a better d that captures both extreme cases and fine-grained precisi
 
 **Result**: KL=0.742319 — REGRESSION vs best 0.715144. The two-stage search with coarse 6% step selects a suboptimal candidate in the first stage, then the fine stage locks in on a local minimum near this poor pick. The original single-stage ±16% at 4% steps explores the local neighborhood of d_base more effectively. The wider step (6% vs 4%) in the coarse stage is too aggressive — it skips over the global minimum region. **Lesson**: The d optimization's ±16% 4% single-stage grid is already optimally tuned for this problem. Widening the range or adding a second stage degrades quality by introducing local minima that capture spurious patterns rather than genuine scale relationships.
 
+### exp-052: Gain-Shape K-Means (GSKM) for codebook centroid updates
+**Hypothesis**: Standard K-means computes centroids as the arithmetic mean of assigned vectors. In high dimensions (8D), vectors within a cluster become nearly orthogonal, so the mean shrinks toward the origin (Jensen's inequality: ||E[x]|| ≤ E[||x||]). This is especially bad for the IQ2_XXS 8D codebook with only 256 centroids, where each centroid must cover a wide angular cone. GSKM decouples centroids into:
+- **shape** (unit-norm direction vector) — updated from unit-normalized assigned points
+- **gain** (scalar magnitude) — the mean projection of assigned points onto the shape
+
+By separating shape and magnitude updates, GSKM prevents the mean-shrinking problem that undermines standard K-means in high-dimensional spaces. The shape captures the directional pattern within a cluster, and the gain captures the average magnitude. This should produce centroids that better represent the weight distribution with less distortion.
+
+**Implementation**: Replace the standard weighted-mean centroid update in the K-means loop (lines 3617-3651) with a GSKM update. For each iteration:
+1. Assignment (unchanged — L1-weighted nearest centroid)
+2. Shape update: normalize each sample to unit length, accumulate weighted direction sum per centroid, re-normalize
+3. Gain update: weighted mean projection of assigned samples onto the new shape direction
+4. Reconstruct centroid = gain × shape
+
+**Expected**: KL improvement from 0.715144 to ~0.710-0.714. GSKM should produce more diverse centroids that better span the angular space, reducing quantization error for high-dimensional weight patterns.
+
