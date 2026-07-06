@@ -2,7 +2,7 @@
 
 ## Status: Best KL = 0.666162 (exp-082, weight exponent 0.30). No improvement since exp-082.
 
-## Plateaud: exp-083 through exp-090 all regressed or null
+## Plateaud: exp-083 through exp-094 all regressed or null
 
 **exp-082's weight exponent 0.30 remains the best (KL 0.666162). All 8 subsequent experiments regressed.** The weight formula has been exhaustively explored — exponent values from 0.25 to 1.0, asymmetric profiles, ratio clamping, normalization — all regressed or null.
 

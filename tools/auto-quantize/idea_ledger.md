@@ -87,7 +87,7 @@
 | 090 | Remove sqrtf from waux (align neighbor weight) | REGRESSION (0.682) |
 | 091 | Outlier-robust sigma2 using trimmed mean | REGRESSION (0.682) |
 | 092 | Adaptive weight exponent per sub-block via CV | REGRESSION (0.680, +2.1%) |
-| **094** | **Post-refinement level recomputation with index re-verification (changed-index sub-blocks only)** | **IN PROGRESS** |
+| **094** | **Post-refinement level recomputation with index re-verification (changed-index sub-blocks only)** | **CATASTROPHIC REGRESSION (1.040)** |
 
 ---
 
@@ -1251,7 +1251,9 @@ Previous experiments that tried recomputing levels after post-d refinement (exp-
 
 **Expected**: Small KL improvement (Δ ~0.001-0.004). The effect compounds across all superblocks where post-d refinement changed indices AND the level needs updating. The re-verification ensures robustness.
 
-**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~35 lines added after line 4082).
+**Result**: KL=1.040147 — CATASTROPHIC REGRESSION (Δ = +0.373985, +56% from best 0.666162). Same failure mode as exp-060. Even though level recomputation was restricted to changed-index sub-blocks only, changing the 4-bit level (even by 1) shifts the quantized scale `d*(2*l+1)` by `2*d`, which is enough to invalidate the post-d indices selected for the old quantized scale. The re-verification step cannot fix this: when the level changes, the scale changes, and the indices selected for the new scale are simply different from those selected for the old scale — the index-scale coupling is broken regardless of re-verification. **Confirmed: any modification that changes the 4-bit level after grid index selection causes catastrophic regression. The index-scale coupling is inviolable — indices must be selected for the final quantized scale, and the final quantized scale must be derived from the selected indices. No post-hoc adjustment works.**
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (~35 lines added after line 4082). **Reverted**.
 
 ---
 
