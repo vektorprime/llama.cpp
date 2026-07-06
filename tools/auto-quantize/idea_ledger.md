@@ -446,3 +446,7 @@ for (int is = -32; is <= 32; ++is) {
 
 **Files changed**: `ggml/src/ggml-quants.c` only — one line change.
 
+**Result**: KL=0.699009 — IMPROVEMENT (Δ = -0.003657, -0.52% from exp-063's 0.702666). The 0.5% step surprisingly gives MORE gain than 1% step (0.52% vs 0.31%), suggesting the error landscape has structure below 1% resolution that the 0.5% step can capture but 1% cannot. This is the FIRST result below KL=0.7. PPL dropped to 25.90. Same top p improved to 61.11%. NEW BEST RESULT.
+
+**Why it works**: The d optimization error landscape is not a simple quadratic — it has fine-grained structure (e.g., discrete level quantization effects) that only emerges at 0.5% resolution. The level `l = nearest_int(0.5*(id_try*scales[ib]-1))` shifts at specific id_try thresholds. At 1% step, some of these thresholds are missed, causing the d selection to average over poor-local-level regions. At 0.5% step, the search resolves individual level transitions, finding d values that consistently produce better level matches across all sub-blocks.
+
