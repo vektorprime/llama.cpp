@@ -74,7 +74,7 @@
 | 077 | Align K-means weights with quantizer (add sqrt factor) | null (0.699) |
 | **078** | **Per-sub-block sigma2 for adaptive weight formula** | **IMPROVEMENT (0.691085)** |
 | 079 | Per-8D-chunk sigma2 for weight formula (further localization) | regression (0.715862) |
-| 080 | Softer weight formula exponent (0.4 instead of 0.5) | pending |
+| **080** | **Softer weight formula exponent (powf 0.4 instead of sqrt 0.5)** | **IMPROVEMENT (0.682340)** |
 
 ---
 
@@ -838,5 +838,9 @@ Same change at lines 4003, 4046, 4072.
 
 **Expected**: Small KL improvement (Δ ~0.001-0.003). If the sqrt is over-sharp, softening improves the balance. The change is uniform across all stages — no coupling issues.
 
-**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()`.
+**Result**: KL=0.682340 — IMPROVEMENT (Δ = -0.008745, -1.27% from best 0.691085). NEW BEST RESULT. The softer exponent (0.4) outperforms the original sqrt (exponent 0.5). Reducing the magnitude weight exponent softens the dynamic range, preventing outlier elements from dominating the sub-block optimization. PPL dropped from 25.69 to 25.41. Quantize time increased from ~299s to ~355s due to powf being slower than sqrtf.
+
+**Why it works**: The weight formula `weight = qw * sqrt(sigma2 + xb^2)` = `qw * (sigma2 + xb^2)^0.5`. The exponent 0.5 means elements with |xb| >> sqrt(sigma2) get weight qw*|xb| — proportional to their magnitude. With exponent 0.4, they get weight qw*|xb|^0.8 — still magnitude-sensitive but less extreme. This better balances the optimization across all elements within a sub-block, allowing the d optimization and scale selection to find a configuration that minimizes total weighted error without over-prioritizing the largest element.
+
+**Files changed**: `ggml/src/ggml-quants.c` only — `quantize_row_iq2_xxs_impl()` (4 lines: sqrtf → powf(..., 0.4f)). **KEPT** (new best).
 
