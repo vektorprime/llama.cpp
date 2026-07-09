@@ -14,6 +14,7 @@
 | 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
 | 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Regression — KL 0.025410 vs 0.024811 best |
 | 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Regression — KL 0.027991 vs 0.024811 best |
+| 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Pending |
 
 ---
 
@@ -223,3 +224,13 @@
 **Actual outcome:** Regression — KL 0.027991 ± 0.001172 vs best 0.024811. PPL 6.9329 (worst of all experiments). Same top p 93.841% (worst of all). Quantize time 645.66s (only ~3s faster than exp-007's 648.93s — sigma2 computation was negligible). Removing the sigma2 floor caused a 13% degradation in KL.
 
 **Lesson:** The sigma2 floor in the weight formula is critical for IQ4_XS. Without it, small-magnitude weights get near-zero importance, allowing the quantizer to make large relative errors on them. The sigma2 term ensures that ALL weights matter, regardless of magnitude. This is especially important for IQ4_XS because the fixed 16-entry codebook has limited resolution — errors on small weights compound through downstream layers. The sigma2 floor acts as a regularization that distributes quantization error evenly across all weight magnitudes.
+
+---
+
+## exp-011: Increase ntry from 7 to 10 (more per-sub-block d refinement)
+
+**Hypothesis:** exp-008 showed that reducing ntry from 7 to 3 caused a 7.7% KL regression. This strongly suggests that more d refinement iterations improve quantization quality. Increasing ntry from 7 to 10 gives 21 candidate d values per sub-block (vs 15 for ntry=7), providing finer search for the optimal per-sub-block d. The lesson from exp-008 is that the inner loop refinement is critical for finding good d values. Quantize time should increase proportionally: ~649s * (21/15) = 909s, within the 20-min limit.
+
+**Changes:** In `quantize_iq4_xs()` line 5742, change ntry from 7 to 10.
+
+**Expected outcome:** KL improvement from 0.024811 to ~0.0245-0.0247. Quantize time ~900s.
