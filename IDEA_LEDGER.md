@@ -8,7 +8,29 @@
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
+| exp-004 | Scale-Min DPCM: delta-encode sub-block scales/mins, compress 12→9 bytes | PENDING |
 
+## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
+
+**Hypothesis:** Within a super-block of 256 elements, adjacent sub-blocks (of 32 elements each) have highly correlated scale and min values because weight statistics change gradually. The current format stores 8 independent 6-bit scale/min pairs packed into 12 bytes. By encoding the first sub-block's scale/min as full 6-bit values (12 bits) and the remaining 7 sub-blocks' scales and mins as 4-bit signed deltas from the base values (-8 to +7 range), we compress the scales[] array from 12 bytes (96 bits) to 9 bytes (72 bits to fit 68 bits). This saves 3 bytes per 144-byte superblock = 2.08% reduction ≈ 11 MB for the whole model.
+
+Key premise: sub-block scale/min values within a super-block typically vary by ≤7 from each other, so 4-bit deltas capture nearly all cases. Clamping overflow introduces minor loss but preserves the full asymmetric quantization framework (d + dmin + per-sub-block mins intact) unlike exp-003. The 4-bit weight data (qs[]) and fp16 superblock scales (d, dmin) remain unchanged.
+
+**Changes:**
+1. `ggml/src/ggml-common.h`: Define `K_SCALE_SIZE_CLONE = 9`, change block struct to use it, update static_assert
+2. `ggml/src/ggml-quants.c`: Write new quantize/dequantize/quantize_q functions with DPCM scale encoding (no wrapper calls to Q4_K)
+3. `ggml/src/ggml.c` + `ggml-cpu/ggml-cpu.c`: Update type_traits type_size (auto-computed from sizeof)
+4. `ggml/src/ggml-cpu/quants.c`: Update dispatcher wrapper
+5. `ggml/src/ggml-cuda/convert.cu`: Write new dequant kernel with DPCM scale decode; register in dequant dispatch
+6. `ggml/src/ggml-cuda/common.cuh`: Update type_traits
+7. `ggml/src/ggml-cuda/mmq.cu`: Return false from should_use_mmq for clone type
+8. `ggml/src/ggml-cuda/mmvq.cu`: Return false from should_use_mmvq for clone type
+
+**Expected outcome:** GGUF size reduces by ~11 MB (2.08%). The delta encoding may introduce small sub-block scale errors from clamping but should be acceptable. KLD should stay near baseline; same top p should remain ≥ 86.387%.
+
+**Actual outcome:** TBD
+
+---
 ## exp-003: Symmetric Sub-block Quantization with 8-bit Scales (SSQ-8)
 
 **Hypothesis:** The Q4_K_M_CLONE block stores 14 bytes of scale metadata (2B d + 2B dmin + 12B 6-bit packed scales+mins) for asymmetric per-sub-block quantization. However, within small sub-blocks of 32 elements, weight distributions are approximately zero-centered, making the min offsets mostly redundant. By switching to symmetric quantization (no mins/dmin) with 8-bit int8 per-sub-block scales, we can: (1) remove dmin (save 2B), (2) replace 12B 6-bit packed scales with 8 plain int8 scales (save 4B), keeping 128B qs unchanged. Total: 144→138 bytes (4.17% reduction ≈ 21 MB for whole model). The 8-bit scales (256 levels vs 64) provide finer granularity to partially compensate for the loss of per-sub-block min offset. Research on K-quant formats shows 8-bit scales work well for Q6_K (which is symmetric), supporting this approach.
