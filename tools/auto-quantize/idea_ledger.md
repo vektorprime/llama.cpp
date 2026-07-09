@@ -10,6 +10,7 @@
 | 004 | Superblock d candidate search (±8%, 33 candidates, 0.5% step) | Regression — KL 0.031630 vs 0.024916 baseline (worse) |
 | 005 | Post-d level perturbation (±1 around chosen l) | Regression — KL 0.025166 vs 0.024916 baseline |
 | 006 | K-means learned 16-entry codebook from weight samples | Regression — KL 0.027259 vs 0.024916 baseline |
+| 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Pending |
 
 ---
 
@@ -155,3 +156,21 @@
 4. K-means on BF16 weight samples targets weight-space reconstruction, not output-space KL divergence
 
 **Next directions:** Instead of changing the codebook globally, consider learning per-tensor-type codebooks, or using the importance matrix to weight K-means. Alternatively, keep the existing codebook but improve the scale/level assignment (exp-003, 004, 005 already explored this path).
+
+---
+
+## exp-007: Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf)
+
+**Hypothesis:** exp-003 changed BOTH the sigma2 scope (global→per-sub-block) AND the weight exponent (0.50→0.30), producing a regression (KL 0.025029 vs 0.024916). It is unclear whether the regression was caused by the exponent change or the sigma2 scope change. By keeping the original exponent (0.50, sqrtf) but using per-sub-block sigma2 instead of global superblock sigma2, we isolate the sigma2 effect. Per-sub-block sigma2 provides a more locally accurate variance estimate for the importance weight formula `qw[j] * sqrtf(sigma2 + xb[j]^2)`, since each 32-element sub-block may have different scale characteristics. This is cheap: only 32 multiply-adds per sub-block (vs 256 for global sigma2, actually fewer total ops).
+
+**Changes:** In `quantize_row_iq4_nl_impl()`:
+1. Remove global sigma2 computation at lines 5589-5591
+2. Inside the `ib` loop, add per-sub-block sigma2 computation:
+   ```c
+   float sigma2_ib = 0;
+   for (int j = 0; j < block_size; ++j) sigma2_ib += xb[j]*xb[j];
+   sigma2_ib *= 2.f/block_size;
+   ```
+3. Change weight formula from `sqrtf(sigma2 + xb[j]*xb[j])` to `sqrtf(sigma2_ib + xb[j]*xb[j])`
+
+**Expected outcome:** If the exp-003 regression was solely from the exponent change, per-sub-block sigma2 with sqrtf should improve KL. If the regression was from per-sub-block sigma2 causing overfitting, KL will regress. Quantize time unchanged.
