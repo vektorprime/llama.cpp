@@ -24,13 +24,16 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-001 | Remove ATTENTION_QKV Q5_K boost (dead code) | 529,297,440 | 0.062947 | 86.387% | NULL |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN | 501,452,832 | 0.073436 | 85.483% | REGRESSION |
 | exp-003 | Symmetric sub-block quant with 8-bit scales (no dmin) | 520,165,920 | 0.114585 | 82.501% | REGRESSION |
+| exp-004 | 5+3b scale/min per sub-block (8-byte scales, 140B block) | 523,209,760 | 0.077500 | 85.427% | REGRESSION |
 
-## Key Insights (as of exp-003)
+## Key Insights (as of exp-004)
 
-1. **Asymmetric quantization is essential at 4 bits**: exp-003 removed per-sub-block mins/dmin (going symmetric) and replaced 6-bit packed scales with 8-bit int8 per-sub-block scales. KLD increased 82% (0.063→0.115) — far beyond the threshold. The per-sub-block min offsets provide grid centering for skewed weight distributions within sub-blocks. Finer scale quantization (8-bit vs 6-bit) cannot compensate for loss of grid offset freedom.
+1. **Asymmetric quantization is essential at 4 bits**: exp-003 removed per-sub-block mins/dmin (going symmetric). KLD increased 82%. Per-sub-block min offsets provide grid centering for skewed weight distributions within sub-blocks.
 
-2. **Per-tensor mixing boosts are essential**: exp-002 showed that Q6_K upgrades for WV and FFN_DOWN in stock Q4_K_M are not cosmetic — removing them degrades KLD by 16.7%. These tensors are high-importance.
+2. **Per-tensor mixing boosts are essential**: exp-002 showed Q6_K upgrades for WV and FFN_DOWN in stock Q4_K_M are not cosmetic — removing them degrades KLD by 16.7%.
 
-3. **Dead code traps exist**: exp-001 found the ATTENTION_QKV boost code path is unreachable. Always verify code paths before targeting them.
+3. **Scale and min precision are both critical**: exp-004 reduced scale precision 6→5 bits and min precision 6→3 bits while keeping the asymmetric framework intact. Even this caused KLD increase of 23.1%. Mins especially need more than 3 bits — 8 levels is too coarse for proper sub-block grid centering. Scales at 5 bits also degrade.
 
-4. **Future direction**: Block-level compression should preserve asymmetry (dmin + per-sub-block mins). Promising angles: (a) scale-min correlation encoding — since scale and min tend to be proportional within a super-block, encode mins as deltas from scales using fewer bits, (b) reduce per-sub-block scale/min precision from 6-bit to 5-bit while keeping both, (c) mixed sub-block precision — use fewer bits for low-variance sub-blocks.
+4. **Size-quality tradeoff is steep**: All 4 experiments have either been null (dead code), or achieved size reduction at unacceptable quality cost. The KLD threshold (0.062947) is narrow — even 1.15% size reduction can push KLD beyond it.
+
+5. **Future direction**: Focus on lossless-within-margin compression. DPCM/delta encoding of scale-min pairs (keeping same 6+6 bit precision but exploiting inter-sub-block correlation to reduce total bits) is the most promising approach. Mixed precision using importance-weighted sub-blocks is another. Simple precision reduction won't work — need encoding schemes that preserve effective precision.

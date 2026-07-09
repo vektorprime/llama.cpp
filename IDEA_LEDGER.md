@@ -8,7 +8,7 @@
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
-| exp-004 | Scale-Min DPCM: delta-encode sub-block scales/mins, compress 12→9 bytes | PENDING |
+| exp-004 | Reduce scale/min from 6+6b to 5+3b per sub-block (8-byte scales, 140-byte block) | REGRESSION |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -28,7 +28,13 @@ Key premise: sub-block scale/min values within a super-block typically vary by �
 
 **Expected outcome:** GGUF size reduces by ~11 MB (2.08%). The delta encoding may introduce small sub-block scale errors from clamping but should be acceptable. KLD should stay near baseline; same top p should remain ≥ 86.387%.
 
-**Actual outcome:** TBD
+**Actual outcome:** REGRESSION — size reduced from 529,297,440 to 523,209,760 bytes (~6.1 MB, 1.15% reduction), but quality degraded:
+- KLD: 0.077500 (vs baseline 0.062947) — 23.1% increase, far above threshold
+- Same top p: 85.427% (vs baseline 86.387%) — below threshold by 0.96pp
+- RMS Δp: 6.380% (vs baseline 5.753%)
+- PPL: 23.568 (vs baseline 22.450) — 5.0% worse
+
+**Lesson:** Reducing sub-block scale precision from 6 to 5 bits and min precision from 6 to 3 bits causes significant quality loss despite preserving the asymmetric framework. The 3-bit mins (8 levels vs 64) are too coarse to provide adequate sub-block grid centering. While not as catastrophic as removing mins entirely (exp-003), the precision loss is still unacceptable. The scales[] compression approach is valid but needs a different encoding scheme that better preserves precision — e.g., delta encoding (DPCM) that keeps the range but reduces entropy, or vector quantization of the scale/min pairs.
 
 ---
 ## exp-003: Symmetric Sub-block Quantization with 8-bit Scales (SSQ-8)
