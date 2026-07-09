@@ -6,7 +6,7 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
-| exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | Pending |
+| exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 
 ## NOTE
 
@@ -46,6 +46,14 @@ should stay below 0.062947. Same top p should remain near baseline.
 2. `src/llama-quant.cpp` line 599: Remove `ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_CLONE` from FFN_DOWN Q6_K boost condition
 
 **Expected outcome:** GGUF size reduces by 10-15 MB. KLD may increase slightly but should stay ≤ 0.062947. Same top p should remain ≥ 86.387%.
+
+**Actual outcome:** REGRESSION — size reduced from 529,297,440 to 501,452,832 bytes (~27.8 MB, 5.3% reduction), but metrics degraded:
+- GGUF size: 501,452,832 bytes (vs baseline 529,297,440 bytes)
+- KLD: 0.073436 (vs baseline 0.062947) — exceeded threshold by 16.7%
+- Same top p: 85.483% (vs baseline 86.387%) — below threshold by 0.904pp
+- RMS Δp: 6.165% (vs baseline 5.753%)
+
+**Lesson:** The Q6_K boost for ATTENTION_WV and FFN_DOWN tensors in Q4_K_M is NOT a "grace" boost — it's essential for maintaining quality. Removing it causes significant KLD increase (+16.7%) and same top p drop. The WV (attention value) and FFN_DOWN tensors are critical to model accuracy. Future experiments should focus on block-level struct compression (reducing qs or scales bytes) rather than removing per-tensor quality boosts, as the latter has too large a quality impact.
 
 ---
 
