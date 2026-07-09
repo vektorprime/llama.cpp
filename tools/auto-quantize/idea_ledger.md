@@ -17,6 +17,7 @@
 | 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Regression — KL 0.025423 vs 0.024811 best |
 | 012 | Symmetric codebook (reflect positive side to negative) | Regression — KL 0.030841 vs 0.024811 best |
 | 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Regression — KL 0.025394 vs 0.024811 best |
+| 014 | Use qw directly as weight (pure importance, no magnitude) | Pending |
 
 ---
 
@@ -268,3 +269,13 @@
 **Actual outcome:** Regression — KL 0.025394 vs best 0.024811. PPL 6.9081, Same top p 94.082%. Quantize time 649s (unchanged). Halving the sigma2 floor made the weight more magnitude-dependent, which degraded KL.
 
 **Lesson:** The sigma2 factor of 2.0 is optimal. Factor 1.0 (smaller floor, more element-weight variation) and factor 0.0 (no floor, exp-010, KL 0.028) are both worse. The factor 2.0 provides exactly the right amount of regularization to balance individual element precision against sub-block-level quality. This parameter appears tuned to optimality.
+
+---
+
+## exp-014: Use qw directly as weight (pure importance, no magnitude term)
+
+**Hypothesis:** The current weight formula `qw[j] * sqrtf(sigma2_ib + xb[j]^2)` multiplies the imatrix importance by a magnitude term. If the imatrix values (`qw`) already encode both importance and magnitude (since they come from Hessian diagonal, which scales with weight magnitude), then adding the `sqrtf(sigma2 + xb^2)` term is redundant and potentially distorting. Using `weight[j] = qw[j]` directly (pure importance weighting) eliminates the magnitude dependency entirely, letting the imatrix's authority dominate. This is unexplored — all previous experiments kept the magnitude term.
+
+**Changes:** Replace `qw[j] * sqrtf(sigma2_ib + xb[j]*xb[j])` with just `qw[j]`.
+
+**Expected outcome:** Could go either way. If imatrix already captures magnitude, this helps. If magnitude adds unique signal, this regresses.
