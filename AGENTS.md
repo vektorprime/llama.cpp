@@ -76,6 +76,24 @@ and dequantization logic as Q4_K_M.
 - `uint8_t qs[QK_K/2]` (128 bytes) — 4-bit quantized values (half-byte per element)
 - **Total: 144 bytes per 256 elements = 4.5 bpw**
 
+## Research Direction
+
+**DO NOT modify per-tensor mixing** (which tensors get Q6_K vs Q4_K etc.). That
+path reduces quality without meaningful size gains.
+
+**DO focus on novel compression of the block itself:**
+- Shrink `qs[]` (128 → 112 bytes): 3.5 bpw by packing fewer 4-bit values
+- Shrink `scales[]` (12 → 8 bytes): fewer scale bits per superblock
+- Tighter encoding: variable-length codes, adaptive bit allocation
+- Multi-level quantization: secondary codebooks, residual quantization
+- Mixed precision: different bpw per substructure within the superblock
+
+**Use the web search tool** to find the latest arXiv papers and research on
+LLM weight compression, novel quantization formats, and GPU-friendly encoding
+schemes. Search terms like "llm weight compression 2025", "novel quantization
+format gptq", "4-bit quantization improvements", "quip quantization" etc.
+Get ideas from cutting-edge research before coding.
+
 ## Baselines
 
 | Quant | GGUF Size | PPL | KLD | Same top P | RMS Δp |
@@ -125,8 +143,10 @@ editable files; that list will always be stale.
    - Also commit any uncommitted results.tsv changes from prior experiments:
      git add results.tsv IDEA_LEDGER.md && git commit -m "auto-research: churn"
 
-2. PROPOSE HYPOTHESIS: log to IDEA_LEDGER.md (commit so it's saved):
-   git add IDEA_LEDGER.md && git commit -m "exp-NNN: hypothesis: ..."
+2. RESEARCH + PROPOSE HYPOTHESIS:
+   - Search the web for recent arXiv papers and novel quantization techniques
+   - Log your hypothesis to IDEA_LEDGER.md
+   - Commit: git add IDEA_LEDGER.md && git commit -m "exp-NNN: hypothesis: ..."
 
 3. EDIT CODE: modify source files (DO NOT COMMIT yet)
 
