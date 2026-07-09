@@ -5586,10 +5586,6 @@ static void quantize_row_iq4_nl_impl(const int super_block_size, const int block
         const float * quant_weights,
         const int ntry) {
 
-    float sigma2 = 0;
-    for (int j = 0; j < super_block_size; ++j) sigma2 += x[j]*x[j];
-    sigma2 *= 2.f/super_block_size;
-
     memset(q4, 0, super_block_size/2);
     dh[0] = GGML_FP32_TO_FP16(0.f);
 
@@ -5599,7 +5595,10 @@ static void quantize_row_iq4_nl_impl(const int super_block_size, const int block
         uint8_t * Lb = L + ib*block_size;
         if (quant_weights) {
             const float * qw = quant_weights + ib*block_size;
-            for (int j = 0; j < block_size; ++j) weight[j] = qw[j] * sqrtf(sigma2 + xb[j]*xb[j]);
+            float sigma2_ib = 0;
+            for (int j = 0; j < block_size; ++j) sigma2_ib += xb[j]*xb[j];
+            sigma2_ib *= 2.f/block_size;
+            for (int j = 0; j < block_size; ++j) weight[j] = qw[j] * sqrtf(sigma2_ib + xb[j]*xb[j]);
         } else {
             for (int j = 0; j < block_size; ++j) weight[j] = xb[j]*xb[j];
         }
