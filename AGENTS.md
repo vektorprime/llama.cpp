@@ -135,8 +135,8 @@ editable files; that list will always be stale.
 ## Experiment Loop
 
 ```
-0. READ Q4_K_CLONE_INFO.md — understand every file the clone touches before
-   writing any code. This is the authoritative reference for the clone.
+0. READ Q4_K_CLONE_INFO.md AND PITFALLS.md — understand every file the clone
+   touches and known traps before writing any code.
 
 1. READ STATE: results.tsv, IDEA_LEDGER.md, SYNTHESIS.md, current code
    - IDEA_LEDGER.md has an Experiment Index at the top — read that first for a
@@ -211,7 +211,11 @@ editable files; that list will always be stale.
 
 10. SYNTHESIS (every 5 experiments): update SYNTHESIS.md
 
-11. REPEAT
+11. UPDATE PITFALLS.md: if you encountered any bug, misconfiguration, or
+    time-sink that could be avoided in future experiments, add 1-3 sentences
+    to PITFALLS.md before returning.
+
+12. REPEAT
 ```
 
 ## Integrity Rules
