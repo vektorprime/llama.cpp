@@ -31,6 +31,70 @@ block_q4_K_M_CLONE  (144 bytes, identical to block_q4_K):
 Constants: `QK_K = 256`, `K_SCALE_SIZE = 12`, `QR4_K = 2`, `QI4_K = 32`
 (defined in `ggml/src/ggml-common.h`)
 
+## Dequantization Formula
+
+Each 256-element superblock is split into 8 sub-blocks of 32 elements each.
+The dequant formula for a single weight:
+
+```
+x = d * sc * q - min * m
+```
+
+Where:
+- `d` = super-block scale (`GGML_FP16_TO_FP32(block.d)`, a float16 converted to float32)
+- `min` = super-block minimum offset (`GGML_FP16_TO_FP32(block.dmin)`)
+- `sc` = sub-block scale (6-bit unsigned, 0..63, unpacked from `scales[]`)
+- `m` = sub-block minimum multiplier (6-bit unsigned, 0..63, unpacked from `scales[]`)
+- `q` = 4-bit quantized value (nibble from `qs[]`: low nibble for first 32 elements, high nibble for next 32)
+
+The dequant loop (from `dequantize_row_q4_K` in `ggml/src/ggml-quants.c:1582`):
+```c
+for each of 8 sub-blocks:
+    get_scale_min_k4(i, scales, &sc, &m);  // unpack 6-bit sc and m from scales[]
+    d1 = d * sc;   m1 = min * m;
+    for 32 elements:  y[l] = d1 * (q[l] & 0xF)      - m1;   // low nibble
+    for 32 elements:  y[l] = d1 * (q[l] >> 4)       - m1;   // high nibble
+```
+
+### Scale/Min Packing in the 12-byte `scales[]` Field
+
+The 12 bytes store **8 pairs** of `(6-bit scale, 6-bit min)` — one pair per
+sub-block of 64 elements. The packing function `get_scale_min_k4`
+(`ggml/src/ggml-quants.c:862`) unpacks them:
+
+```
+Bytes 0-3:    scale[i] = q[i] & 63        // bottom 6 bits
+              min[i]   = q[i+4] & 63      // bottom 6 bits
+
+Bytes 4-11:   scale[i] = (q[i+4] & 0xF) | ((q[i-4] >> 6) << 4)
+              min[i]   = (q[i+4] >> 4)   | ((q[i-0] >> 6) << 4)
+```
+
+The 96 bits of scale data (8 pairs × 12 bits each) pack into 12 bytes.
+Each scale/min is 6 bits, so 8×2×6 = 96 bits = 12 bytes.
+
+## Known Constraints
+
+Do NOT rediscover these:
+
+1. **Bit removal without recovery is not a valid experiment.** Simply shrinking
+   `qs[]`, `scales[]`, or removing `dmin` discards information without any
+   method to reconstruct it. Every byte removed from the block must be paired
+   with a technique that preserves the lost information: encoding, correlation
+   exploitation, secondary quantization, adaptive bit allocation, etc. If your
+   hypothesis is "make X smaller", it's incomplete. The hypothesis must be
+   "make X smaller BY encoding/compressing/correlating it with Y".
+
+2. **Scale precision matters.** The 6-bit scale quantization (0..63) in
+   `scales[]` is already aggressive for 4-bit weights. Reducing scale precision
+   makes `d * sc` too coarse to track sub-block variance, causing rapid
+   quality erosion.
+
+3. **Promising directions:** scale-min correlation encoding (mins often
+   correlate with scales, enabling delta encoding), mixed sub-block precision
+   (fewer bits for low-variance sub-blocks), and secondary quantization
+   (codebook-based compression of scales or qs).
+
 ## Complete File Inventory
 
 These are ALL the files that contain clone-related code. When making changes to
