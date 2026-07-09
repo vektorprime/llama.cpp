@@ -116,6 +116,9 @@ editable files; that list will always be stale.
 ## Experiment Loop
 
 ```
+0. READ Q4_K_CLONE_INFO.md — understand every file the clone touches before
+   writing any code. This is the authoritative reference for the clone.
+
 1. READ STATE: results.tsv, IDEA_LEDGER.md, SYNTHESIS.md, current code
    - IDEA_LEDGER.md has an Experiment Index at the top — read that first for a
      quick scan of what's been tried. Then grep for details.
