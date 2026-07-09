@@ -5597,7 +5597,7 @@ static void quantize_row_iq4_nl_impl(const int super_block_size, const int block
             const float * qw = quant_weights + ib*block_size;
             float sigma2_ib = 0;
             for (int j = 0; j < block_size; ++j) sigma2_ib += xb[j]*xb[j];
-            sigma2_ib *= 2.f/block_size;
+            sigma2_ib *= 4.f/block_size;
             for (int j = 0; j < block_size; ++j) weight[j] = qw[j] * sqrtf(sigma2_ib + xb[j]*xb[j]);
         } else {
             for (int j = 0; j < block_size; ++j) weight[j] = xb[j]*xb[j];

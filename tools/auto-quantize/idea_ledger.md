@@ -19,7 +19,7 @@
 | 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Regression — KL 0.025394 vs 0.024811 best |
 | 014 | Use qw directly as weight (pure importance, no magnitude) | Regression — KL 0.025307 vs 0.024811 best |
 | 015 | Use 2nd-largest scale for superblock d (not max) | Regression — KL 0.141747 (worst) |
-| 016 | ntry=5 (halfway between 3-regression and 7-optimal) | Pending |
+| 016 | ntry=5 (halfway between 3-regression and 7-optimal) | Regression — KL 0.024915 (≈stock), confirms ntry=7 optimal |
 
 ---
 
