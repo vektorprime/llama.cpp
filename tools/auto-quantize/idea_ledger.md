@@ -11,7 +11,7 @@
 | 005 | Post-d level perturbation (±1 around chosen l) | Regression — KL 0.025166 vs 0.024916 baseline |
 | 006 | K-means learned 16-entry codebook from weight samples | Regression — KL 0.027259 vs 0.024916 baseline |
 | 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Improvement — KL 0.024811 vs 0.024916 baseline (marginal) |
-| 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Pending |
+| 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
 
 ---
 
@@ -189,3 +189,7 @@
 **Changes:** In `quantize_iq4_xs()` at `ggml/quants.c:5742`, change `ntry` from 7 to 3.
 
 **Expected outcome:** KL improvement from the current best 0.024811. Quantize time should decrease from ~649s to ~350-400s.
+
+**Actual outcome:** Regression — KL 0.026841 ± 0.001174 vs best 0.024811. PPL 6.9243 vs 6.9131 (worse). Same top p 94.108% vs 94.018% (slightly better). Quantize time 386.14s vs 648.93s (as predicted). ntry=3 completed 2x faster but at significant KL cost.
+
+**Lesson:** The hypothesis that per-sub-block d overfits with ntry=7 was wrong. The inner loop refinement (lines 5631-5645) is critical for finding good per-sub-block d values. 15 candidates (ntry=7) is not overfitting — it's necessary for the basic quantization quality. The ~90s saved in quantize time is not worth the 8% KL regression. This also implies that INCREASING ntry might help further (e.g., ntry=15).
