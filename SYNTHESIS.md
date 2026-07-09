@@ -14,12 +14,12 @@ This is a **template/example**. Replace when real experiments are run.
 
 ## Research Objective
 
-Reduce GGUF file size below 508 MB while maintaining:
-- KLD ≤ 0.035490
-- Same top p ≥ 89.613%
+Reduce GGUF file size below 505 MB while maintaining:
+- KLD ≤ 0.062947
+- Same top p ≥ 86.387%
 
 ## Results Summary
 
 | Exp | Description | Size (MB) | KLD | Same top p | Status |
 |-----|-------------|-----------|-----|------------|--------|
-| — | Q4_K_M baseline | 508 | 0.035490 | 89.613% | Baseline |
+| — | Q4_K_M baseline | 505 | 0.062947 | 86.387% | Baseline |
