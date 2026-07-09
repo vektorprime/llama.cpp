@@ -9,7 +9,7 @@
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
 | exp-004 | Reduce scale/min from 6+6b to 5+3b per sub-block (8-byte scales, 140-byte block) | REGRESSION |
-| exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (9-byte scales, 141B block) | PENDING |
+| exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (10-byte scales, 142B block) | REGRESSION |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -136,9 +136,13 @@ Dual anchors halve the maximum DPCM chain length from 7 to 3 steps, bounding cum
 
 **Expected outcome:** GGUF size reduces by ~11 MB (2.08%). KLD should stay near baseline 0.062947; same top p ≥ 86.387%. Delta clamping errors should be minimal because adjacent sub-blocks within a superblock have highly correlated statistics.
 
-**Actual outcome:** PENDING
+**Actual outcome:** REGRESSION — size reduced from 529,297,440 to 526,253,600 bytes (~3 MB, 0.57% reduction), but quality degraded:
+- KLD mean: 0.180095 (vs baseline 0.062947) — 186% increase, far above threshold
+- Same top p: 78.472% (vs baseline 86.387%) — below threshold by 7.92pp
+- RMS Δp: 10.060% (vs baseline 5.753%)
+- PPL: 25.380 (vs baseline 22.450) — 13.1% worse
 
-**Lesson:** PENDING
+**Lesson:** DPCM delta encoding compounds errors across chains, even with dual anchors (max 3-step chain). The inter-sub-block scale/min deltas within a superblock are sometimes larger than the 4-bit range (-8 to +7), causing clamping. Furthermore, the error accumulates: if subblock 1's delta is clamped, subblocks 2-3 are decoded from an incorrect base, amplifying the error. The correlation between adjacent sub-blocks is not strong enough to overcome the precision loss from delta encoding. For scale/min compression to work with DPCM, delta ranges of at least 5-6 bits are needed, which limits the compression achievable. Future directions should explore non-DPCM compression methods: codebook-based vector quantization of scale-min pairs, or exploiting the scale-min correlation within the SAME sub-block (delta-encode m from sc rather than from previous m).
 
 ---
 
