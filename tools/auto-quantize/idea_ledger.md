@@ -17,7 +17,7 @@
 | 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Regression — KL 0.025423 vs 0.024811 best |
 | 012 | Symmetric codebook (reflect positive side to negative) | Regression — KL 0.030841 vs 0.024811 best |
 | 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Regression — KL 0.025394 vs 0.024811 best |
-| 014 | Use qw directly as weight (pure importance, no magnitude) | Pending |
+| 014 | Use qw directly as weight (pure importance, no magnitude) | Regression — KL 0.025307 vs 0.024811 best |
 
 ---
 
@@ -279,3 +279,7 @@
 **Changes:** Replace `qw[j] * sqrtf(sigma2_ib + xb[j]*xb[j])` with just `qw[j]`.
 
 **Expected outcome:** Could go either way. If imatrix already captures magnitude, this helps. If magnitude adds unique signal, this regresses.
+
+**Actual outcome:** Regression — KL 0.025307 vs best 0.024811. PPL 6.8952 (matches stock exactly). Same top p 94.245% (BEST of all experiments — better than stock 94.17%!). Quantize time 649s (unchanged). Using pure qw improved PPL and Same top p but worsened KL. The magnitude term `sqrtf(sigma2 + xb^2)` is needed for KL divergence specifically, while simple importance weighting is better for PPL.
+
+**Lesson:** The magnitude component of the weight formula contributes to KL alignment with the reference distribution, while pure imatrix weighting improves PPL. This suggests KL and PPL optimize differently: KL cares about distribution-level accuracy (preserving token probabilities) which benefits from magnitude-weighted quantization, while PPL cares about overall probability mass which benefits from pure importance weighting.
