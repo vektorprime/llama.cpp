@@ -13,7 +13,7 @@
 | 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Improvement — KL 0.024811 vs 0.024916 baseline (marginal) |
 | 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
 | 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Regression — KL 0.025410 vs 0.024811 best |
-| 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Pending |
+| 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Regression — KL 0.027991 vs 0.024811 best |
 
 ---
 
@@ -219,3 +219,7 @@
 **Changes:** In `quantize_row_iq4_nl_impl()`, remove the sigma2_ib computation and sqrtf, replacing with `weight[j] = qw[j] * xb[j]*xb[j]`.
 
 **Expected outcome:** Unknown — could improve KL by removing unnecessary sigma2 distortion, or regress by removing beneficial floor. Quantize time should decrease by ~5-10s.
+
+**Actual outcome:** Regression — KL 0.027991 ± 0.001172 vs best 0.024811. PPL 6.9329 (worst of all experiments). Same top p 93.841% (worst of all). Quantize time 645.66s (only ~3s faster than exp-007's 648.93s — sigma2 computation was negligible). Removing the sigma2 floor caused a 13% degradation in KL.
+
+**Lesson:** The sigma2 floor in the weight formula is critical for IQ4_XS. Without it, small-magnitude weights get near-zero importance, allowing the quantizer to make large relative errors on them. The sigma2 term ensures that ALL weights matter, regardless of magnitude. This is especially important for IQ4_XS because the fixed 16-entry codebook has limited resolution — errors on small weights compound through downstream layers. The sigma2 floor acts as a regularization that distributes quantization error evenly across all weight magnitudes.
