@@ -9,6 +9,7 @@
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
 | exp-004 | Reduce scale/min from 6+6b to 5+3b per sub-block (8-byte scales, 140-byte block) | REGRESSION |
+| exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (9-byte scales, 141B block) | PENDING |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -107,6 +108,37 @@ should stay below 0.062947. Same top p should remain near baseline.
 - RMS Δp: 6.165% (vs baseline 5.753%)
 
 **Lesson:** The Q6_K boost for ATTENTION_WV and FFN_DOWN tensors in Q4_K_M is NOT a "grace" boost — it's essential for maintaining quality. Removing it causes significant KLD increase (+16.7%) and same top p drop. The WV (attention value) and FFN_DOWN tensors are critical to model accuracy. Future experiments should focus on block-level struct compression (reducing qs or scales bytes) rather than removing per-tensor quality boosts, as the latter has too large a quality impact.
+
+---
+
+## exp-005: Dual-Anchor DPCM Delta Encoding of Scale-Min Pairs
+
+**Hypothesis:** The Q4_K_M_CLONE block stores 8 independent (6-bit scale, 6-bit min) pairs in 12 bytes (96 bits). Adjacent sub-blocks within a 256-element superblock have correlated scale and min values because weight statistics change gradually across rows. Instead of storing all 8 pairs independently, we use Dual-Anchor Differential Pulse Code Modulation (DPCM):
+
+- **Two anchors** at sub-blocks 0 and 4 (full 6+6 bits each = 24 bits)
+- **Six deltas** for sub-blocks 1-3 and 5-7 (4-bit signed scale delta + 4-bit signed min delta = 8 bits each, 48 bits total)
+- **Total: 72 bits = 9 bytes** (3-byte savings, 25% compression of scales[], 2.08% of block)
+
+Dual anchors halve the maximum DPCM chain length from 7 to 3 steps, bounding cumulative delta error to ≤21 per variable (3 × ±7). Anchor reinjection at the midpoint prevents error cascading across the full superblock.
+
+**Recovery method:** During dequant, unpack the two anchor bases and six deltas. Reconstruct each sub-block's scale and min via DPCM accumulation from the nearest anchor, with clamping to [0,63]. When the actual delta ≤ ±7, the encoding is lossless for that pair. Only outlier sub-blocks with larger inter-sub-block changes experience clamping.
+
+**Key difference from exp-004's 5+3 approach:** This preserves 6-bit precision for ALL non-clamped sub-blocks. The delta width (4-bit = ±7) is chosen to match expected inter-sub-block variation. Unlike simple precision reduction, most information is preserved through reconstruction.
+
+**Changes:**
+1. `ggml/src/ggml-common.h`: Add `K_SCALE_SIZE_CLONE = 9`, change scales[] size, update static_assert
+2. `ggml/src/ggml-quants.c`: Write new quantize/dequantize/quantize_q functions with DPCM scale encoding (no more thin wrappers)
+3. `ggml/src/ggml-cuda/convert.cu`: Write new CUDA dequant kernel with DPCM scale decode; register in dispatch
+4. `ggml/src/ggml-cuda/mmq.cu`: Return false from should_use_mmq for clone type
+5. `ggml/src/ggml-cuda/mmvq.cu`: Return false from should_use_mmvq for clone type
+6. `ggml/src/ggml-cpu/ggml-cpu.c`: type_traits auto-update from sizeof
+7. `ggml/src/ggml.c`: type_traits auto-update from sizeof
+
+**Expected outcome:** GGUF size reduces by ~11 MB (2.08%). KLD should stay near baseline 0.062947; same top p ≥ 86.387%. Delta clamping errors should be minimal because adjacent sub-blocks within a superblock have highly correlated statistics.
+
+**Actual outcome:** PENDING
+
+**Lesson:** PENDING
 
 ---
 
