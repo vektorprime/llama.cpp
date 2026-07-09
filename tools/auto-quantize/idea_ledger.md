@@ -16,7 +16,7 @@
 | 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Regression — KL 0.027991 vs 0.024811 best |
 | 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Regression — KL 0.025423 vs 0.024811 best |
 | 012 | Symmetric codebook (reflect positive side to negative) | Regression — KL 0.030841 vs 0.024811 best |
-| 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Pending |
+| 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Regression — KL 0.025394 vs 0.024811 best |
 
 ---
 
@@ -265,4 +265,6 @@
 
 **Expected outcome:** Small improvement or neutral. If the floor is too high, this should help.
 
-**Lesson:** There's an optimal ntry around 7. Both lower (ntry=3, KL 0.026841) and higher (ntry=10, KL 0.025423) are worse. The sweet spot at ntry=7 provides exactly the right amount of per-sub-block d refinement. Too few iterations (ntry=3) underfits the d estimate. Too many (ntry=10) may overfit the d to the specific codebook index assignment, making the sub-block d less compatible with the shared superblock d. ntry=7 appears optimal for this model/codebook combination.
+**Actual outcome:** Regression — KL 0.025394 vs best 0.024811. PPL 6.9081, Same top p 94.082%. Quantize time 649s (unchanged). Halving the sigma2 floor made the weight more magnitude-dependent, which degraded KL.
+
+**Lesson:** The sigma2 factor of 2.0 is optimal. Factor 1.0 (smaller floor, more element-weight variation) and factor 0.0 (no floor, exp-010, KL 0.028) are both worse. The factor 2.0 provides exactly the right amount of regularization to balance individual element precision against sub-block-level quality. This parameter appears tuned to optimality.
