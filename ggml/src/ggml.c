@@ -770,6 +770,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_q4_K,
         .from_float_ref           = (ggml_from_float_t) quantize_row_q4_K_ref,
     },
+    [GGML_TYPE_Q4_K_M_CLONE] = {
+        .type_name                = "q4_K_M_CLONE",
+        .blck_size                = QK_K,
+        .type_size                = sizeof(block_q4_K_M_CLONE),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_q4_K_M_CLONE,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_q4_K_M_CLONE_ref,
+    },
     [GGML_TYPE_Q5_K] = {
         .type_name                = "q5_K",
         .blck_size                = QK_K,
@@ -7739,6 +7747,7 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q2_K:    result = quantize_q2_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q3_K:    result = quantize_q3_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q4_K:    result = quantize_q4_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q4_K_M_CLONE: result = quantize_q4_K_M_CLONE(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q5_K:    result = quantize_q5_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

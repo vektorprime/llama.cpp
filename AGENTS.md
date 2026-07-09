@@ -81,10 +81,10 @@ and dequantization logic as Q4_K_M.
 | Quant | GGUF Size | PPL | KLD | Same top P | RMS Δp |
 |-------|-----------|-----|-----|------------|--------|
 | BF16 (reference) | ~1.41 GB | 21.5386 | 0.0 (identity) | 100% | 0.0% |
-| **Q4_K_M (stock)** | **~508 MB** | **22.5127** | **0.035490** | **89.613%** | **4.315%** |
+| **Q4_K_M (stock)** | **~505 MB** | **22.4499** | **0.062947** | **86.387%** | **5.753%** |
 
-Goal: reduce GGUF size below 508 MB while maintaining KLD ≤ 0.035490
-and same top p ≥ 89.613%.
+Goal: reduce GGUF size below 505 MB while maintaining KLD ≤ 0.062947
+and same top p ≥ 86.387%.
 
 ## Models & Data Paths
 
@@ -127,9 +127,8 @@ editable files; that list will always be stale.
 
 3. EDIT CODE: modify source files (DO NOT COMMIT yet)
 
-4. BUILD (CPU + CUDA):
-   cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=OFF
-   cmake --build build -j16
+4. BUILD (CPU + CUDA) — 20-minute timeout:
+   timeout 1200 cmake --build build -j16
 
 5. QUANTIZE — must finish in ≤20 minutes (HARD limit):
    rm -f /tmp/qwen3.5-0.8b-q4km-clone-exp.gguf

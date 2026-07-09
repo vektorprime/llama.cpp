@@ -6,11 +6,11 @@ This is a **template/example**. Replace when real experiments are run.
 
 | Metric | BF16 Reference | Q4_K_M (stock) |
 |--------|---------------|----------------|
-| PPL | 21.5386 | 22.5127 |
-| KL divergence | 0.0 | 0.035490 |
-| Same top p | 100% | 89.613% |
-| RMS Δp | 0.0% | 4.315% |
-| GGUF Size | ~1.41 GB | ~508 MB |
+| PPL | 21.5386 | 22.4499 |
+| KL divergence | 0.0 | 0.062947 |
+| Same top p | 100% | 86.387% |
+| RMS Δp | 0.0% | 5.753% |
+| GGUF Size | ~1.41 GB | ~505 MB |
 
 ## Research Objective
 

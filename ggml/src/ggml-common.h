@@ -327,6 +327,20 @@ typedef struct {
 } block_q4_K;
 static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
+// Q4_K_M_CLONE — exact structural copy of Q4_K for size-reduction research
+typedef struct {
+    GGML_EXTENSION union {
+        struct {
+            ggml_half d;
+            ggml_half dmin;
+        } GGML_COMMON_AGGR_S;
+        ggml_half2 dm;
+    } GGML_COMMON_AGGR_U;
+    uint8_t scales[K_SCALE_SIZE];
+    uint8_t qs[QK_K/2];
+} block_q4_K_M_CLONE;
+static_assert(sizeof(block_q4_K_M_CLONE) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K_M_CLONE block size/padding");
+
 // 5-bit quantization
 // 8 blocks of 32 elements each
 // weight is represented as x = a * q + b

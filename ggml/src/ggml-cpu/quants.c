@@ -82,6 +82,12 @@ void quantize_row_q4_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
     quantize_row_q4_K_ref(x, y, k);
 }
 
+void quantize_row_q4_K_M_CLONE(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_K == 0);
+    block_q4_K_M_CLONE * GGML_RESTRICT y = vy;
+    quantize_row_q4_K_M_CLONE_ref(x, y, k);
+}
+
 // ====================== 5-bit (de)-quantization
 
 void quantize_row_q5_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {

@@ -1692,6 +1692,20 @@ size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     return nrow * row_size;
 }
 
+// ====================== Q4_K_M_CLONE — thin wrappers around Q4_K (identical struct layout)
+
+void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_CLONE * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q4_K_ref(x, (block_q4_K *)y, k);
+}
+
+void dequantize_row_q4_K_M_CLONE(const block_q4_K_M_CLONE * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    dequantize_row_q4_K((const block_q4_K *)x, y, k);
+}
+
+size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    return quantize_q4_K(src, dst, nrow, n_per_row, quant_weights);
+}
+
 // ====================== 5-bit (de)-quantization
 
 void quantize_row_q5_K_ref(const float * GGML_RESTRICT x, block_q5_K * GGML_RESTRICT y, int64_t k) {
@@ -6190,6 +6204,10 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_Q4_K:
             {
                 VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K, data, nb, d, dmin);
+            } break;
+        case GGML_TYPE_Q4_K_M_CLONE:
+            {
+                VALIDATE_ROW_DATA_DM_F16_IMPL(block_q4_K_M_CLONE, data, nb, d, dmin);
             } break;
         case GGML_TYPE_Q5_K:
             {
