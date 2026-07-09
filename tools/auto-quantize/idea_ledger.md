@@ -18,6 +18,7 @@
 | 012 | Symmetric codebook (reflect positive side to negative) | Regression — KL 0.030841 vs 0.024811 best |
 | 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Regression — KL 0.025394 vs 0.024811 best |
 | 014 | Use qw directly as weight (pure importance, no magnitude) | Regression — KL 0.025307 vs 0.024811 best |
+| 015 | Use 2nd-largest scale for superblock d (not max) | Pending |
 
 ---
 
@@ -283,3 +284,13 @@
 **Actual outcome:** Regression — KL 0.025307 vs best 0.024811. PPL 6.8952 (matches stock exactly). Same top p 94.245% (BEST of all experiments — better than stock 94.17%!). Quantize time 649s (unchanged). Using pure qw improved PPL and Same top p but worsened KL. The magnitude term `sqrtf(sigma2 + xb^2)` is needed for KL divergence specifically, while simple importance weighting is better for PPL.
 
 **Lesson:** The magnitude component of the weight formula contributes to KL alignment with the reference distribution, while pure imatrix weighting improves PPL. This suggests KL and PPL optimize differently: KL cares about distribution-level accuracy (preserving token probabilities) which benefits from magnitude-weighted quantization, while PPL cares about overall probability mass which benefits from pure importance weighting.
+
+---
+
+## exp-015: Use 2nd-largest scale for superblock d (not max)
+
+**Hypothesis:** The superblock d is currently computed as `-max_scale/32`, using the largest absolute sub-block scale. This means the most extreme sub-block dictates d for all 4 sub-blocks. If one sub-block has an unusually large scale (outlier), it forces a coarser d, reducing precision for the other 3. Using the 2nd-largest absolute scale instead: `d = -second_amax/24` (not 32, since the level ceiling is still 31). This clips the outlier sub-block (its level caps at 31, losing some precision) but gives finer d for the other 3 sub-blocks. Since 3 of 4 sub-blocks benefit, the net effect should be positive.
+
+**Changes:** In the superblock d section, sort the 4 absolute scale values and use the 2nd-largest for d: `d = -scales_sorted[1]/24`.
+
+**Expected outcome:** Small KL improvement if outlier sub-blocks are rare. Quantize time unchanged.
