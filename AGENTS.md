@@ -1,47 +1,92 @@
-# AGENTS.md — Auto-Research Sub-Agent Instructions
+# AGENTS.md — Q4_K_M_CLONE Auto-Research Agent
 
 You are an **auto-research agent** for the Q4_K_M_CLONE quantization research project.
-Your sole directive is to follow the protocol in `PROGRAM.md`.
 
 ## Objective
 
-Reduce the **GGUF file size** of Q4_K_M_CLONE quantization without compromising
-**KL divergence** and **same top p** relative to the stock Q4_K_M baseline.
+Reduce the **GGUF file size** of Q4_K_M_CLONE quantization without degrading
+**KL divergence** and **same top p** metrics. The baseline is stock Q4_K_M.
 
-## Startup
+## Architecture
 
-1. Read `PROGRAM.md` in its entirety.
-2. Read `results.tsv` for experiment history.
-3. Read `IDEA_LEDGER.md` for past hypotheses.
-4. Read `SYNTHESIS.md` for the latest synthesis.
-5. Read the current implementation in `ggml/src/ggml-quants.c` (search `q4_k_m_clone`).
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Agent Controller (opencode Task tool)                            │
+│                                                                   │
+│  Orchestrates the loop. Mediates tool calls. Enforces:            │
+│   - LOCKED files (eval, reference logits, Q4_K_M ref)             │
+│   - METRIC constraints (size, KLD, same top p) — gatekeeper       │
+│   - Git discipline (commit code, revert on regression)            │
+│                                                                   │
+│  ┌────────────────────────┐  ┌─────────────────────────────────┐ │
+│  │ Code Editor             │  │ Experiment Runner               │ │
+│  │ - Edits ggml-quants.c   │  │ - Build: cmake --build          │ │
+│  │ - ggml-quants.h         │  │ - Quantize: llama-quantize      │ │
+│  │ - ggml-common.h         │  │ - Eval: llama-perplexity        │ │
+│  │ - ggml.c / ggml-cpu.c   │  │   (LOCKED flags, no changes)    │ │
+│  │ - ggml-cuda/*.cu        │  │ - Size: ls -l output.gguf       │ │
+│  │ - llama-quant.cpp       │  │                                 │ │
+│  │ - Not locked files      │  │                                 │ │
+│  └──────────┬─────────────┘  └────────────────┬────────────────┘ │
+│             │                                  │                  │
+└─────────────┼──────────────────────────────────┼──────────────────┘
+              │                                   │
+              ▼                                   ▼
+┌──────────────────────────┐   ┌───────────────────────────────────┐
+│ Experiment Code           │   │ Immutable Evaluation Pipeline      │
+│                           │   │                                    │
+│ ggml-quants.c             │   │ llama-perplexity — LOCKED          │
+│ ggml-common.h             │   │ Reference logits — LOCKED          │
+│ ggml-quants.h             │   │ Wikitext-2 test  — LOCKED          │
+│ ggml-cpu/ggml-cpu.c       │   │ Q4_K_M ref GGUF — LOCKED          │
+│ ggml.c                    │   │                                    │
+│ ggml-cpu/ops.cpp          │   │                                    │
+│ ggml-cuda/                │   │                                    │
+└──────────────────────────┘   └───────────────────────────────────┘
+```
 
-## Execution
+**Lock the judge, not the researcher.**
 
-Follow the **Experiment Loop** section in PROGRAM.md exactly. Every cycle:
-- Propose a hypothesis → log to IDEA_LEDGER.md
-- Edit code → DO NOT commit before build/quantize/eval
-- Build → quantize (≤20 min, timeout 1200) → evaluate → record to results.tsv
-- If KLD improved and size reduced (or same): keep code.
-  If regressed/null: `git checkout -- ggml/src/ggml-quants.c` to discard code, keep results.
+## Model Architecture: Qwen3.5-0.8B
 
-## Rules
+| Property | Value |
+|----------|-------|
+| Type | Causal Language Model with Vision Encoder |
+| Parameters | 0.8B |
+| Hidden Dim | 1024 |
+| Token Embedding | 248320 (padded, tied to LM output) |
+| Layers | 24 |
+| Context Length | 262,144 native |
+| Hidden Layout | 6 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN)) |
+| Gated DeltaNet | 16 V-heads × 128 + 16 QK-heads × 128 |
+| Gated Attention | 8 Q-heads × 256 + 2 KV-heads × 256, RoPE dim 64 |
+| FFN Intermediate | 3584 |
+| MTP | trained with multi-steps |
 
-- Never modify `tools/perplexity/`, reference logits, or eval data.
-- Never change the evaluation command or its flags.
-- Always use `CUDA_VISIBLE_DEVICES=3` for GPU eval.
-- Append to results.tsv — never overwrite past rows.
-- Record ALL 42 columns from actual eval output — no truncation, no approximations.
+## Q4_K_M_CLONE Architecture
+
+Q4_K_M_CLONE is an exact structural copy of Q4_K_M, created as a sandbox for
+size-reduction research. It uses the same block structure, quantization algorithm,
+and dequantization logic as Q4_K_M.
+
+### Block structure (`block_q4_K_M_CLONE` — identical to `block_q4_K`):
+- `ggml_half d` (2 bytes) — super-block scale for quantized scales
+- `ggml_half dmin` (2 bytes) — super-block scale for quantized mins
+- `uint8_t scales[K_SCALE_SIZE]` (12 bytes) — scales and mins, 6-bit quantized
+- `uint8_t qs[QK_K/2]` (128 bytes) — 4-bit quantized values (half-byte per element)
+- **Total: 144 bytes per 256 elements = 4.5 bpw**
 
 ## Baselines
 
-| Quant | GGUF Size | KLD | Same top p |
-|-------|-----------|-----|------------|
-| Q4_K_M (stock) | ~508 MB | 0.035490 | 89.613% |
+| Quant | GGUF Size | PPL | KLD | Same top P | RMS Δp |
+|-------|-----------|-----|-----|------------|--------|
+| BF16 (reference) | ~1.41 GB | 21.5386 | 0.0 (identity) | 100% | 0.0% |
+| **Q4_K_M (stock)** | **~508 MB** | **22.5127** | **0.035490** | **89.613%** | **4.315%** |
 
-Goal: reduce GGUF size below this baseline while maintaining (or improving) KLD and same top p.
+Goal: reduce GGUF size below 508 MB while maintaining KLD ≤ 0.035490
+and same top p ≥ 89.613%.
 
-## Model & Data Paths
+## Models & Data Paths
 
 | Resource | Path |
 |---|---|
@@ -49,21 +94,109 @@ Goal: reduce GGUF size below this baseline while maintaining (or improving) KLD 
 | Q4_K_M reference (LOCKED) | `/home/user/llm/models/Qwen3.5-0.8B/Qwen3.5-0.8B-Q4_K_M.gguf` |
 | Reference logits (LOCKED) | `/home/user/llm/models/Qwen3.5-0.8B-BF16.logits` |
 | Eval data (LOCKED) | `/home/user/llm/wikitext-2-raw/wiki.test.raw` |
-| Quantized output (experiments) | `/tmp/qwen3.5-0.8b-q4km-clone-exp.gguf` |
+| Quantized output (experiments) | `/tmp/qwen3.5-0.8b-q4km-clone-exp.gguf` (overwrites each experiment) |
 
 ## GPU Info
 
-| Device | Model | Use |
-|--------|-------|-----|
-| 3 | RTX 3050 | USE FOR EVAL |
+| Device | Model | VRAM | Use |
+|--------|-------|------|-----|
+| 3 | RTX 3050 | 5806 MB | USE FOR EVAL |
 
-## Editable Files
+## Locked Files (do not modify)
 
-- `ggml/src/ggml-quants.c` — Q4_K_M_CLONE quantize/dequantize
-- `ggml/src/ggml-quants.h` — declarations
-- `ggml/src/ggml-common.h` — block struct
-- `ggml/src/ggml.c` — type traits
-- `ggml/src/ggml-cpu/ggml-cpu.c` — CPU traits
-- `ggml/src/ggml-cuda/*` — CUDA backend
-- `src/llama-quant.cpp` — per-tensor mixing
-- `tools/quantize/quantize.cpp` — CLI
+- `tools/perplexity/**` — eval binary and source
+- `/home/user/llm/models/Qwen3.5-0.8B/Qwen3.5-0.8B-BF16.gguf` — BF16 input model
+- `/home/user/llm/models/Qwen3.5-0.8B/Qwen3.5-0.8B-Q4_K_M.gguf` — Q4_K_M reference
+- `/home/user/llm/models/Qwen3.5-0.8B-BF16.logits` — reference logits
+- `/home/user/llm/wikitext-2-raw/wiki.test.raw` — eval data
+
+Everything else in the repo is fair game. Do NOT maintain a whitelist of
+editable files; that list will always be stale.
+
+## Experiment Loop
+
+```
+1. READ STATE: results.tsv, IDEA_LEDGER.md, SYNTHESIS.md, current code
+   - IDEA_LEDGER.md has an Experiment Index at the top — read that first for a
+     quick scan of what's been tried. Then grep for details.
+   - Also commit any uncommitted results.tsv changes from prior experiments:
+     git add results.tsv IDEA_LEDGER.md && git commit -m "auto-research: churn"
+
+2. PROPOSE HYPOTHESIS: log to IDEA_LEDGER.md (commit so it's saved):
+   git add IDEA_LEDGER.md && git commit -m "exp-NNN: hypothesis: ..."
+
+3. EDIT CODE: modify source files (DO NOT COMMIT yet)
+
+4. BUILD (CPU + CUDA):
+   cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=OFF
+   cmake --build build -j16
+
+5. QUANTIZE — must finish in ≤20 minutes (HARD limit):
+   rm -f /tmp/qwen3.5-0.8b-q4km-clone-exp.gguf
+   timeout 1200 ./build/bin/llama-quantize \
+     /home/user/llm/models/Qwen3.5-0.8B/Qwen3.5-0.8B-BF16.gguf \
+     /tmp/qwen3.5-0.8b-q4km-clone-exp.gguf Q4_K_M_CLONE
+
+6. EVALUATE (always device 3, locked flags):
+   CUDA_VISIBLE_DEVICES=3 timeout 1200 build/bin/llama-perplexity \
+     -m /tmp/qwen3.5-0.8b-q4km-clone-exp.gguf \
+     -f /home/user/llm/wikitext-2-raw/wiki.test.raw \
+     -t 8 -c 256 --chunks 250 -fa on \
+     --cache-type-k bf16 --cache-type-v bf16 \
+     --no-mmap -ngl 999 -np 1 \
+     --kl-divergence --kl-divergence-base /home/user/llm/models/Qwen3.5-0.8B-BF16.logits
+   Capture ALL lines of output — do NOT grep-filter. You need ALL of:
+   ====== Perplexity statistics ======
+     Mean PPL(Q), Mean PPL(base), Cor(...), Mean ln(PPL(Q)/PPL(base)),
+     Mean PPL(Q)/PPL(base), Mean PPL(Q)-PPL(base)
+   ====== KL divergence statistics ======
+     Mean, Maximum, 99.9%, 99.0%, 95.0%, 90.0%, Median,
+     10.0%, 5.0%, 1.0%, 0.1%, Minimum
+   ====== Token probability statistics ======
+     Mean, Maximum, 99.9%, 99.0%, 95.0%, 90.0%, 75.0%, Median,
+     25.0%, 10.0%, 5.0%, 1.0%, 0.1%, Minimum, RMS Δp, Same top p
+
+7. MEASURE SIZE: check GGUF size:
+   ls -l /tmp/qwen3.5-0.8b-q4km-clone-exp.gguf
+
+8. RECORD: append results to results.tsv — ALL 42 columns:
+   timestamp, exp_id, code_sha, parent_sha, description, status,
+   gguf_size_bytes, base_type, diffusion, refine_iterations, model_size_mb,
+   quantize_time_s, eval_time_s, tokens_per_sec,
+   ppl, ppl_base, ppl_cor, ppl_ln_ratio, ppl_ratio, ppl_diff,
+   kld_mean, kld_max, kld_99_9, kld_99_0, kld_95_0, kld_90_0,
+   kld_median, kld_10_0, kld_5_0, kld_1_0, kld_0_1, kld_min,
+   dp_mean, dp_max, dp_99_9, dp_99_0, dp_95_0, dp_90_0, dp_75_0,
+   dp_median, dp_25_0, dp_10_0, dp_5_0, dp_1_0, dp_0_1, dp_min,
+   dp_rms, same_top_p
+   Tab-separated, one row per experiment.
+
+9. EVALUATE OUTCOME and COMMIT:
+   a) If SIZE REDUCED and KLD/same top p maintained (or improved):
+      git add -A && git commit -m "exp-NNN: hypothesis — results: size=..., KLD=..., same_top_p=..."
+
+   b) If REGRESSED or NULL:
+      # Revert ALL code. Keep only persistent record-keeping files:
+      git add results.tsv IDEA_LEDGER.md SYNTHESIS.md
+      git checkout -- .
+      git add results.tsv IDEA_LEDGER.md SYNTHESIS.md
+      git commit -m "auto-research: record exp-NNN (regression/null)"
+
+   c) If build/quantize FAILS:
+      git checkout -- .
+      git commit --allow-empty -m "auto-research: record exp-NNN (failed)"
+
+10. SYNTHESIS (every 5 experiments): update SYNTHESIS.md
+
+11. REPEAT
+```
+
+## Integrity Rules
+
+- NEVER regenerate the BF16 reference logits or modify eval data/models
+- NEVER change evaluation parameters (context length, chunks, cache types, device)
+- ALWAYS record every experiment (even failures) in results.tsv
+- NEVER change past rows in results.tsv
+- NEVER use `git commit --amend` or rewrite history
+- Code commits only for improvements. Regressions/null → discard code, keep results.
+- Always reset working tree to clean state (no experimental code) before next experiment.
