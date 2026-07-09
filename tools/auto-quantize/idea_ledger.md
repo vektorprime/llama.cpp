@@ -9,7 +9,7 @@
 | 003 | Weight exponent 0.30 + per-sub-block sigma2 (20 min timeout) | Regression — KL 0.025029 vs 0.024916 baseline (slightly worse) |
 | 004 | Superblock d candidate search (±8%, 33 candidates, 0.5% step) | Regression — KL 0.031630 vs 0.024916 baseline (worse) |
 | 005 | Post-d level perturbation (±1 around chosen l) | Regression — KL 0.025166 vs 0.024916 baseline |
-| 006 | K-means learned 16-entry codebook from weight samples | Pending |
+| 006 | K-means learned 16-entry codebook from weight samples | Regression — KL 0.027259 vs 0.024916 baseline |
 
 ---
 
@@ -145,3 +145,13 @@
 3. Replace `kvalues_iq4nl` in `ggml/src/ggml-common.h:1110-1112` with the learned sorted values
 
 **Expected outcome:** KL improvement from 0.024916 baseline. K-means codebook should reduce quantization error by aligning the quantization levels with the actual weight distribution. No change to quantize time (codebook is just a compile-time constant).
+
+**Actual outcome:** Regression — KL 0.027259 ± 0.001135 vs baseline 0.024916. PPL 6.8903 vs baseline 6.8952 (marginally better). Same top p 94.076% vs 94.17% (worse). Quantize time 719.42s (unchanged from stock ~700s, as expected). The K-means learned codebook `[-109, -81, -62, -47, -35, -24, -15, -5, 4, 13, 23, 34, 47, 62, 80, 109]` is more symmetric and concentrated near zero than the hand-tuned codebook `[-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113]`. Code discarded.
+
+**Lesson:** The hand-tuned `kvalues_iq4nl` codebook was probably designed with knowledge of downstream task performance, not just reconstruction MSE. K-means on weight samples optimizes for per-weight MSE but ignores:
+1. The codebook interacts with the superblock scale `d` and sub-block level `l` encoding scheme — values that cluster near zero may cause level underflow 
+2. The codebook is fixed across ALL weight types (attention Q, K, V, FFN up, down, gate, norm) which may have very different distributions — a unified codebook trained on diverse tensors may be worse than specialization
+3. The existing codebook's wider range (|-127| to |113| = 240 span vs learned 109-(-109) = 218) provides more dynamic range headroom
+4. K-means on BF16 weight samples targets weight-space reconstruction, not output-space KL divergence
+
+**Next directions:** Instead of changing the codebook globally, consider learning per-tensor-type codebooks, or using the importance matrix to weight K-means. Alternatively, keep the existing codebook but improve the scale/level assignment (exp-003, 004, 005 already explored this path).
