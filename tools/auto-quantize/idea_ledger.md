@@ -12,6 +12,7 @@
 | 006 | K-means learned 16-entry codebook from weight samples | Regression — KL 0.027259 vs 0.024916 baseline |
 | 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Improvement — KL 0.024811 vs 0.024916 baseline (marginal) |
 | 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
+| 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Pending |
 
 ---
 
@@ -193,3 +194,13 @@
 **Actual outcome:** Regression — KL 0.026841 ± 0.001174 vs best 0.024811. PPL 6.9243 vs 6.9131 (worse). Same top p 94.108% vs 94.018% (slightly better). Quantize time 386.14s vs 648.93s (as predicted). ntry=3 completed 2x faster but at significant KL cost.
 
 **Lesson:** The hypothesis that per-sub-block d overfits with ntry=7 was wrong. The inner loop refinement (lines 5631-5645) is critical for finding good per-sub-block d values. 15 candidates (ntry=7) is not overfitting — it's necessary for the basic quantization quality. The ~90s saved in quantize time is not worth the 8% KL regression. This also implies that INCREASING ntry might help further (e.g., ntry=15).
+
+---
+
+## exp-009: Superblock d divisor 32→28 (finer sub-block scale quantization)
+
+**Hypothesis:** The superblock d is computed as `d = -max_scale/32` (line 5656). The divisor 32 means the largest sub-block scale maps to level magnitude 32, and d = max_scale/32. With 64 quantization levels (l ∈ [-32,31]), the quantization step is d. If we use divisor 28 instead, the largest sub-block maps to level ~28 (still within [-32,31] range), and the quantization step becomes d = max_scale/28, which is 14% finer (32/28 = 1.14x). This provides finer quantization of sub-block scales, which should improve reconstruction quality. The largest sub-block scale still has headroom (level 28, ceiling at 31), so no clipping occurs. Quantize time is unchanged (divisor is a compile-time constant).
+
+**Changes:** In `quantize_row_iq4_nl_impl()` line 5656, change `-max_scale/32` to `-max_scale/28`.
+
+**Expected outcome:** Small KL improvement from current best 0.024811, targeting ~0.0246-0.0247. Same quantize time.
