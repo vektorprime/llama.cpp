@@ -12,7 +12,7 @@
 | 006 | K-means learned 16-entry codebook from weight samples | Regression — KL 0.027259 vs 0.024916 baseline |
 | 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Improvement — KL 0.024811 vs 0.024916 baseline (marginal) |
 | 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
-| 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Pending |
+| 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Regression — KL 0.025410 vs 0.024811 best |
 
 ---
 
@@ -204,3 +204,7 @@
 **Changes:** In `quantize_row_iq4_nl_impl()` line 5656, change `-max_scale/32` to `-max_scale/28`.
 
 **Expected outcome:** Small KL improvement from current best 0.024811, targeting ~0.0246-0.0247. Same quantize time.
+
+**Actual outcome:** Regression — KL 0.025410 ± 0.001052 vs best 0.024811. PPL 6.8955 vs 6.9131 (slightly better!). Same top p 94.073% vs 94.018% (marginally better). Quantize time 649.98s (unchanged). The finer scale quantization (divisor 28 vs 32) gave better PPL but worse KL — interesting tradeoff. PPL improved because sub-block scales are quantized more precisely, but KL worsened because the coarser d range (larger d) creates larger quantization steps for codebook entries.
+
+**Lesson:** The divisor 32 gives the optimal balance between sub-block scale precision and codebook entry quantization step. Decreasing the divisor makes d smaller, giving finer sub-block scales but larger `d*l` values (more dynamic range for codebook entries). This shows the tight coupling between d and the codebook values — changing d affects both sub-block scale quantization AND the effective codebook range. The current divisor=32 is optimal for this model.
