@@ -14,7 +14,7 @@
 | 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
 | 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Regression — KL 0.025410 vs 0.024811 best |
 | 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Regression — KL 0.027991 vs 0.024811 best |
-| 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Pending |
+| 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Regression — KL 0.025423 vs 0.024811 best |
 
 ---
 
@@ -234,3 +234,7 @@
 **Changes:** In `quantize_iq4_xs()` line 5742, change ntry from 7 to 10.
 
 **Expected outcome:** KL improvement from 0.024811 to ~0.0245-0.0247. Quantize time ~900s.
+
+**Actual outcome:** Regression — KL 0.025423 ± 0.001054 vs best 0.024811. PPL 6.8969 vs 6.9131 (slightly better). Same top p 94.127% vs 94.018% (slightly better). Quantize time 843.07s (as predicted).
+
+**Lesson:** There's an optimal ntry around 7. Both lower (ntry=3, KL 0.026841) and higher (ntry=10, KL 0.025423) are worse. The sweet spot at ntry=7 provides exactly the right amount of per-sub-block d refinement. Too few iterations (ntry=3) underfits the d estimate. Too many (ntry=10) may overfit the d to the specific codebook index assignment, making the sub-block d less compatible with the shared superblock d. ntry=7 appears optimal for this model/codebook combination.
