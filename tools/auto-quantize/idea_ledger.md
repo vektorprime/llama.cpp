@@ -13,6 +13,7 @@
 | 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Improvement — KL 0.024811 vs 0.024916 baseline (marginal) |
 | 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Regression — KL 0.026841 vs 0.024811 best |
 | 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Regression — KL 0.025410 vs 0.024811 best |
+| 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Pending |
 
 ---
 
@@ -208,3 +209,13 @@
 **Actual outcome:** Regression — KL 0.025410 ± 0.001052 vs best 0.024811. PPL 6.8955 vs 6.9131 (slightly better!). Same top p 94.073% vs 94.018% (marginally better). Quantize time 649.98s (unchanged). The finer scale quantization (divisor 28 vs 32) gave better PPL but worse KL — interesting tradeoff. PPL improved because sub-block scales are quantized more precisely, but KL worsened because the coarser d range (larger d) creates larger quantization steps for codebook entries.
 
 **Lesson:** The divisor 32 gives the optimal balance between sub-block scale precision and codebook entry quantization step. Decreasing the divisor makes d smaller, giving finer sub-block scales but larger `d*l` values (more dynamic range for codebook entries). This shows the tight coupling between d and the codebook values — changing d affects both sub-block scale quantization AND the effective codebook range. The current divisor=32 is optimal for this model.
+
+---
+
+## exp-010: Remove sigma2 from weight formula (qw * xb^2 only)
+
+**Hypothesis:** The importance weight formula currently uses `qw[j] * sqrtf(sigma2_ib + xb[j]^2)`. The sigma2 term acts as a floor to prevent near-zero weights for small-magnitude coefficients. But exp-003 (powf 0.30) and exp-007 (per-sub-block sqrtf) show that IQ4_XS is very sensitive to the weight formula. Removing the sigma2 term entirely — using just `qw[j] * xb[j]*xb[j]` (importance × squared magnitude) — might eliminate a source of distortion. Small weights near zero would be deprioritized, focusing the quantizer's attention on large-magnitude weights. Without the sigma2 floor and sqrt, the weight is purely importance-scaled squared magnitude, which may better align with the imatrix-based `qw` values. This also removes the per-sub-block sigma2 computation, speeding up quantize slightly.
+
+**Changes:** In `quantize_row_iq4_nl_impl()`, remove the sigma2_ib computation and sqrtf, replacing with `weight[j] = qw[j] * xb[j]*xb[j]`.
+
+**Expected outcome:** Unknown — could improve KL by removing unnecessary sigma2 distortion, or regress by removing beneficial floor. Quantize time should decrease by ~5-10s.
