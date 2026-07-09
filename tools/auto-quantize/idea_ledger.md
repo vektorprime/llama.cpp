@@ -11,6 +11,7 @@
 | 005 | Post-d level perturbation (±1 around chosen l) | Regression — KL 0.025166 vs 0.024916 baseline |
 | 006 | K-means learned 16-entry codebook from weight samples | Regression — KL 0.027259 vs 0.024916 baseline |
 | 007 | Per-sub-block sigma2 with sqrtf (isolated from exp-003's powf) | Improvement — KL 0.024811 vs 0.024916 baseline (marginal) |
+| 008 | Reduce ntry from 7 to 3 (less per-sub-block d overfitting) | Pending |
 
 ---
 
@@ -178,3 +179,13 @@
 **Actual outcome:** Marginal improvement — KL 0.024811 ± 0.000926 vs baseline 0.024916. This is within 1σ noise (baseline noise ~0.001) but technically an improvement. PPL worsened slightly (6.9131 vs 6.8952). Same top p 94.018% vs 94.17% (worse). Quantize time 648.93s (faster than stock ~700s — removal of global sigma2 loop may help slightly). The isolated per-sub-block sigma2 provides marginally more accurate importance weights at no computational cost.
 
 **Lesson:** The exp-003 regression was likely caused by the exponent change (0.50→0.30), NOT by per-sub-block sigma2. Per-sub-block sigma2 alone is neutral-to-slightly-beneficial. The 0.30 exponent introduced by powf() likely distorted the importance weight distribution in a way harmful to IQ4_XS's fixed codebook. IQ4_XS is more sensitive to weight formula changes than IQ2_XXS because its 16-entry codebook doesn't have the adaptive capacity of a learned grid.
+
+---
+
+## exp-008: Reduce ntry from 7 to 3 (less per-sub-block d overfitting)
+
+**Hypothesis:** The `ntry=7` parameter in `quantize_row_iq4_nl_impl()` causes the inner loop to try 15 different d values per sub-block (lines 5631-5645). This refines the initial d estimate to maximize weighted reconstruction quality for that specific sub-block. However, these per-sub-block d values are later quantized against a shared superblock d (`d_super = -max_scale/32`). A more aggressively optimized per-sub-block d may have values that are harder to quantize against the superblock d (they are more spread out, leading to larger level quantization error). By reducing ntry from 7 to 3 (7 candidates instead of 15), the per-sub-block d values stay closer to their initial estimate, making them more consistent across sub-blocks and easier to quantize to the shared superblock d. This also reduces quantize time by ~50% in the inner loop.
+
+**Changes:** In `quantize_iq4_xs()` at `ggml/quants.c:5742`, change `ntry` from 7 to 3.
+
+**Expected outcome:** KL improvement from the current best 0.024811. Quantize time should decrease from ~649s to ~350-400s.
