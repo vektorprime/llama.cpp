@@ -15,7 +15,7 @@
 | 009 | Superblock d divisor 32→28 (finer sub-block scale quantization) | Regression — KL 0.025410 vs 0.024811 best |
 | 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Regression — KL 0.027991 vs 0.024811 best |
 | 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Regression — KL 0.025423 vs 0.024811 best |
-| 012 | Symmetric codebook (reflect positive side to negative) | Pending |
+| 012 | Symmetric codebook (reflect positive side to negative) | Regression — KL 0.030841 vs 0.024811 best |
 
 ---
 
@@ -249,5 +249,9 @@
 **Changes:** Replace `kvalues_iq4nl` in `ggml-common.h` with symmetric version.
 
 **Expected outcome:** If the weight distribution is truly symmetric, this should slightly improve KL. If the asymmetry was intentional (e.g., to handle specific outlier patterns), this could regress.
+
+**Actual outcome:** Regression — KL 0.030841 vs best 0.024811 (24% worse). PPL 6.7766 — LOWER than reference PPL 6.7917 (PPL improved!), suggesting the symmetric codebook produces a token distribution closer to the reference in terms of perplexity but worse in KL divergence. Same top p 93.512% (among the worst). Quantize time 649.43s (unchanged).
+
+**Lesson:** The intentional asymmetry in `kvalues_iq4nl` (negative values extending to -127 while positive caps at 113) is critical for good KL divergence. Making the codebook symmetric shifts the quantization error in a way that improves PPL but significantly degrades KL. The asymmetry likely compensates for the sigmoid/ReLU activation functions which produce asymmetric activation distributions — weights that feed into these activations need asymmetric quantization to preserve downstream token probabilities.
 
 **Lesson:** There's an optimal ntry around 7. Both lower (ntry=3, KL 0.026841) and higher (ntry=10, KL 0.025423) are worse. The sweet spot at ntry=7 provides exactly the right amount of per-sub-block d refinement. Too few iterations (ntry=3) underfits the d estimate. Too many (ntry=10) may overfit the d to the specific codebook index assignment, making the sub-block d less compatible with the shared superblock d. ntry=7 appears optimal for this model/codebook combination.
