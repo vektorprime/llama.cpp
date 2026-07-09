@@ -23,19 +23,14 @@ Reduce GGUF file size below 505 MB while maintaining:
 | — | Q4_K_M baseline | 529,297,440 | 0.062947 | 86.387% | Baseline |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost (dead code) | 529,297,440 | 0.062947 | 86.387% | NULL |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN | 501,452,832 | 0.073436 | 85.483% | REGRESSION |
+| exp-003 | Symmetric sub-block quant with 8-bit scales (no dmin) | 520,165,920 | 0.114585 | 82.501% | REGRESSION |
 
-## Key Insights (as of exp-002)
+## Key Insights (as of exp-003)
 
-1. **Per-tensor mixing boosts are essential**: The Q6_K upgrades for WV and FFN_DOWN
-   tensors in stock Q4_K_M are not cosmetic — removing them degrades KLD by 16.7%
-   and drops same top p by 0.9pp. These tensors are high-importance. Size savings
-   (~27.8 MB) come at unacceptable quality cost.
+1. **Asymmetric quantization is essential at 4 bits**: exp-003 removed per-sub-block mins/dmin (going symmetric) and replaced 6-bit packed scales with 8-bit int8 per-sub-block scales. KLD increased 82% (0.063→0.115) — far beyond the threshold. The per-sub-block min offsets provide grid centering for skewed weight distributions within sub-blocks. Finer scale quantization (8-bit vs 6-bit) cannot compensate for loss of grid offset freedom.
 
-2. **Dead code traps exist**: The ATTENTION_QKV boost code path in llama-quant.cpp
-   is unreachable for Qwen models because `category_is_attn_v()` catches QKV tensors
-   first. Always verify code paths are actually executed before targeting them.
+2. **Per-tensor mixing boosts are essential**: exp-002 showed that Q6_K upgrades for WV and FFN_DOWN in stock Q4_K_M are not cosmetic — removing them degrades KLD by 16.7%. These tensors are high-importance.
 
-3. **Future direction**: Block-level struct compression (reducing scales bytes or
-   qs bytes) is the more promising path. Per-tensor demotion trades too much quality
-   for the size saved. Focus on making the quantization block itself more compact
-   while preserving the same quantization algorithm quality.
+3. **Dead code traps exist**: exp-001 found the ATTENTION_QKV boost code path is unreachable. Always verify code paths before targeting them.
+
+4. **Future direction**: Block-level compression should preserve asymmetry (dmin + per-sub-block mins). Promising angles: (a) scale-min correlation encoding — since scale and min tend to be proportional within a super-block, encode mins as deltas from scales using fewer bits, (b) reduce per-sub-block scale/min precision from 6-bit to 5-bit while keeping both, (c) mixed sub-block precision — use fewer bits for low-variance sub-blocks.

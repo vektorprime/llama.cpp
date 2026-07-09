@@ -7,6 +7,7 @@
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
+| exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
 
 ## exp-003: Symmetric Sub-block Quantization with 8-bit Scales (SSQ-8)
 
@@ -23,6 +24,14 @@
 8. `ggml/src/ggml-cpu/quants.h`: Add new declaration if needed.
 
 **Expected outcome:** GGUF size reduces by ~21 MB (4.17%). KLD may increase slightly due to loss of asymmetric min offsets, but 2x finer scale quantization (8-bit vs 6-bit) should largely compensate. Same top p should stay near baseline.
+
+**Actual outcome:** REGRESSION — size reduced from 529,297,440 to 520,165,920 bytes (~9 MB, 1.72% reduction), but quality degraded severely:
+- KLD: 0.114585 (vs baseline 0.062947) — 82% increase, far above threshold
+- Same top p: 82.501% (vs baseline 86.387%) — below threshold by 3.89pp
+- RMS Δp: 7.885% (vs baseline 5.753%)
+- PPL: 24.893 (vs baseline 22.450) — 10.9% worse
+
+**Lesson:** Removing per-sub-block min offsets (going symmetric) causes catastrophic quality loss. Asymmetry in Q4_K is essential at 4 bits — the mins provide sub-block grid centering that cannot be recovered by finer scale granularity. Scale precision (8-bit vs 6-bit) doesn't compensate for loss of grid offset freedom. Future experiments should preserve dmin + per-sub-block mins while finding other compression angles (scale-min correlation encoding, fewer bits per min scale, or mixed sub-block precision).
 
 ## NOTE
 
