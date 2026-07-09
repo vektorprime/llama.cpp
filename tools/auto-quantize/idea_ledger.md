@@ -16,6 +16,7 @@
 | 010 | Remove sigma2 from weight formula (qw * xb^2 only) | Regression — KL 0.027991 vs 0.024811 best |
 | 011 | Increase ntry from 7 to 10 (more per-sub-block d refinement) | Regression — KL 0.025423 vs 0.024811 best |
 | 012 | Symmetric codebook (reflect positive side to negative) | Regression — KL 0.030841 vs 0.024811 best |
+| 013 | Sigma2 factor 2.0→1.0 (halve floor, emphasize magnitude) | Pending |
 
 ---
 
@@ -253,5 +254,15 @@
 **Actual outcome:** Regression — KL 0.030841 vs best 0.024811 (24% worse). PPL 6.7766 — LOWER than reference PPL 6.7917 (PPL improved!), suggesting the symmetric codebook produces a token distribution closer to the reference in terms of perplexity but worse in KL divergence. Same top p 93.512% (among the worst). Quantize time 649.43s (unchanged).
 
 **Lesson:** The intentional asymmetry in `kvalues_iq4nl` (negative values extending to -127 while positive caps at 113) is critical for good KL divergence. Making the codebook symmetric shifts the quantization error in a way that improves PPL but significantly degrades KL. The asymmetry likely compensates for the sigmoid/ReLU activation functions which produce asymmetric activation distributions — weights that feed into these activations need asymmetric quantization to preserve downstream token probabilities.
+
+---
+
+## exp-013: Sigma2 factor 2.0→1.0 (halve floor, emphasize individual magnitude)
+
+**Hypothesis:** The per-sub-block sigma2 is computed as `sigma2_ib = sum(xb[j]^2) * 2.f/block_size`, giving a floor equal to twice the mean squared amplitude. The factor 2.0 makes the floor large, smoothing the weight across all elements in the sub-block (near-zero elements get equal footing with large elements). Reducing the factor to 1.0 halves the floor, making the weight formula `qw[j] * sqrtf(sigma2_ib + xb[j]^2)` more dependent on individual element magnitude. This emphasizes large elements more, focusing quantization accuracy on high-magnitude weights. Since exp-010 proved the floor is essential (full removal caused 12.3% regression), halving it should find a better balance.
+
+**Changes:** In line 5600, change `sigma2_ib *= 2.f/block_size` to `sigma2_ib *= 1.f/block_size`.
+
+**Expected outcome:** Small improvement or neutral. If the floor is too high, this should help.
 
 **Lesson:** There's an optimal ntry around 7. Both lower (ntry=3, KL 0.026841) and higher (ntry=10, KL 0.025423) are worse. The sweet spot at ntry=7 provides exactly the right amount of per-sub-block d refinement. Too few iterations (ntry=3) underfits the d estimate. Too many (ntry=10) may overfit the d to the specific codebook index assignment, making the sub-block d less compatible with the shared superblock d. ntry=7 appears optimal for this model/codebook combination.
