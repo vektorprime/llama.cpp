@@ -87,6 +87,7 @@ path reduces quality without meaningful size gains.
 - Tighter encoding: variable-length codes, adaptive bit allocation
 - Multi-level quantization: secondary codebooks, residual quantization
 - Mixed precision: different bpw per substructure within the superblock
+- These are just examples — you are expected to research and devise your own novel techniques.
 
 **Use the web search tool** to find the latest arXiv papers and research on
 LLM weight compression, novel quantization formats, and GPU-friendly encoding
