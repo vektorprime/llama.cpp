@@ -6,6 +6,7 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
+| exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | Pending |
 
 ## NOTE
 
@@ -34,8 +35,20 @@ should stay below 0.062947. Same top p should remain near baseline.
 **Actual outcome:** NULL — size unchanged (529,297,440 bytes = baseline). The ATTENTION_QKV code path at line 642 is dead code: `category_is_attn_v()` (line 162) catches `ATTENTION_QKV` first, so the explicit ATTENTION_QKV block is never reached. The actual QKV boost happens via the ATTENTION_WV path at line 543 which boosts to Q6_K for some layers.
 
 **Lesson:** The `category_is_attn_v()` function includes `ATTENTION_QKV` in its check (line 164), meaning all fused QKV tensors are handled by the V-branch boost logic, not the QKV-specific branch. To affect QKV tensor quantization, changes must target the `category_is_attn_v` path (line 520-557), NOT the ATTENTION_QKV path at line 642-647 (which is unreachable).
+---
+
+## exp-002: Remove Q6_K Boost for ATTENTION_WV and FFN_DOWN from Clone
+
+**Hypothesis:** The Q4_K_M_CLONE currently inherits the Q6_K boost for ATTENTION_WV (line 543) and FFN_DOWN (line 599) tensors from stock Q4_K_M. These boosts promote ~50% of WV and FFN_DOWN layers from Q4_K (4.5 bpw) to Q6_K (6.5625 bpw). Removing these boosts should reduce GGUF size by ~10-15 MB while maintaining quality metrics. The stock Q4_K_M boosted these tensors as a grace measure; the clone should survive at pure Q4_K on all tensors.
+
+**Changes:**
+1. `src/llama-quant.cpp` line 543: Remove `ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_CLONE` from ATTENTION_WV Q6_K boost condition
+2. `src/llama-quant.cpp` line 599: Remove `ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M_CLONE` from FFN_DOWN Q6_K boost condition
+
+**Expected outcome:** GGUF size reduces by 10-15 MB. KLD may increase slightly but should stay ≤ 0.062947. Same top p should remain ≥ 86.387%.
 
 ---
+
 ## exp-E: EXAMPLE — Format Reference
 
 **Hypothesis:** Brief description of what you think will happen and why.
