@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | Pending |
+| exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 
 ## NOTE
 
@@ -31,9 +31,9 @@ should be modest but measurable.
 **Expected outcome:** GGUF size reduces by ~2-5 MB. KLD may increase slightly but
 should stay below 0.062947. Same top p should remain near baseline.
 
-**Actual outcome:** PENDING
+**Actual outcome:** NULL — size unchanged (529,297,440 bytes = baseline). The ATTENTION_QKV code path at line 642 is dead code: `category_is_attn_v()` (line 162) catches `ATTENTION_QKV` first, so the explicit ATTENTION_QKV block is never reached. The actual QKV boost happens via the ATTENTION_WV path at line 543 which boosts to Q6_K for some layers.
 
-**Lesson:** PENDING
+**Lesson:** The `category_is_attn_v()` function includes `ATTENTION_QKV` in its check (line 164), meaning all fused QKV tensors are handled by the V-branch boost logic, not the QKV-specific branch. To affect QKV tensor quantization, changes must target the `category_is_attn_v` path (line 520-557), NOT the ATTENTION_QKV path at line 642-647 (which is unreachable).
 
 ---
 ## exp-E: EXAMPLE — Format Reference
