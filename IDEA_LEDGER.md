@@ -8,6 +8,22 @@
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 
+## exp-003: Symmetric Sub-block Quantization with 8-bit Scales (SSQ-8)
+
+**Hypothesis:** The Q4_K_M_CLONE block stores 14 bytes of scale metadata (2B d + 2B dmin + 12B 6-bit packed scales+mins) for asymmetric per-sub-block quantization. However, within small sub-blocks of 32 elements, weight distributions are approximately zero-centered, making the min offsets mostly redundant. By switching to symmetric quantization (no mins/dmin) with 8-bit int8 per-sub-block scales, we can: (1) remove dmin (save 2B), (2) replace 12B 6-bit packed scales with 8 plain int8 scales (save 4B), keeping 128B qs unchanged. Total: 144→138 bytes (4.17% reduction ≈ 21 MB for whole model). The 8-bit scales (256 levels vs 64) provide finer granularity to partially compensate for the loss of per-sub-block min offset. Research on K-quant formats shows 8-bit scales work well for Q6_K (which is symmetric), supporting this approach.
+
+**Changes:**
+1. `ggml/src/ggml-common.h`: Change `block_q4_K_M_CLONE` struct — remove `dmin`, change scales to `uint8_t scales[8]`. Total: 2+8+128=138 bytes. Update static_assert.
+2. `ggml/src/ggml-quants.c`: Write brand-new quantize/dequantize functions with symmetric int8-scale quantization (no wrapper calls to Q4_K).
+3. `ggml/src/ggml-cuda/convert.cu`: Write new CUDA dequantize kernel `dequantize_block_q4_K_M_CLONE` for 138-byte block. Register in `ggml_get_to_fp16_cuda` and `ggml_get_to_fp32_cuda`.
+4. `ggml/src/ggml-cuda/mmq.cu`: Return false from `ggml_cuda_should_use_mmq` for clone type (forces cublas fallback).
+5. `ggml/src/ggml-cuda/mmvq.cu`: Return false from `ggml_cuda_should_use_mmvq` for clone type.
+6. `ggml/src/ggml-cuda/common.cuh`: Update `ggml_cuda_type_traits` — qr and qi may change.
+7. `ggml/src/ggml-cpu/quants.c`: Update `vec_dot` to handle new scale encoding or add new function.
+8. `ggml/src/ggml-cpu/quants.h`: Add new declaration if needed.
+
+**Expected outcome:** GGUF size reduces by ~21 MB (4.17%). KLD may increase slightly due to loss of asymmetric min offsets, but 2x finer scale quantization (8-bit vs 6-bit) should largely compensate. Same top p should stay near baseline.
+
 ## NOTE
 
 The entry above is an **example** only. It is not a real experiment.
