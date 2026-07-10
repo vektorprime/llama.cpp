@@ -30,7 +30,7 @@
 | exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | SUCCESS (-0.65MB, KLD +1.5% but 12.4% headroom) |
 | exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | SUCCESS (-0.60MB, KLD +1.1% but 11.5% headroom remaining) |
 | **exp-025** | **Nibble rotation + consecutive packing — (q+8)&0xF rotation maps center levels→0x0/0xF, consecutive-weight byte pairing for byte runs in qs[], same 144B struct, qs+-dequant** | **SUCCESS (-0.68MB, no quality change)** |
-| exp-026 | Re-pack scales[] to group 8 sc values in 4 consecutive bytes + 8 m values in 8 consecutive bytes (stock packing interleaves sc/m bits across 12 bytes, breaking zstd gradient detection) — quantize+dequant side, same 144B struct, lossless on decoded values | TBD |
+| exp-026 | Re-pack scales[] to group 8 sc values in 4 consecutive bytes + 8 m values in 8 consecutive bytes (stock packing interleaves sc/m bits across 12 bytes, breaking zstd gradient detection) — quantize+dequant side, same 144B struct, lossless on decoded values | REGRESSION (+453KB) |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -864,4 +864,12 @@ This is a **lossless reorganization** — the decoded sc and m values are bit-id
 
 **Expected outcome:** GGUF zstd size reduces by 0.3-1.0 MB from exp-025 (510,848,302 bytes) due to more compressible byte patterns in scales[] (8.33% of block bytes). KLD and same_top_p should be identical to exp-025 (0.055735, 87.364%) — any change indicates a packing error.
 
-**Actual outcome:** TBD
+**Actual outcome:** REGRESSION — size increased, quality unchanged:
+- GGUF size (zstd): 511,301,540 bytes (vs exp-025: 510,848,302, **+453 KB**, **+0.09%** — INCREASED!)
+- KLD mean: 0.055735 (identical to exp-025 — confirms lossless repacking)
+- Same top p: 87.364% (identical)
+- PPL: 22.576 (identical)
+
+The grouped packing made zstd compression **worse**, not better. The stock interleaved packing scatters correlated sc bits across non-consecutive bytes but creates byte patterns with predictable zero bits (8 of 12 bytes have top 2 bits = 0 in stock vs only 8 of 12 in the new layout too, but stock's bytes 0-3 are all ≤15 and bytes 4-7 are all ≤63). The grouped layout's bytes 0-3 hold nibble-pairs like 0x32, 0x34 which have less predictable high nibbles.
+
+**Lesson:** zstd's LZ77 matching benefits from byte patterns that repeat across the entire file, not just within a single scales[] field. The stock interleaving creates bytes 0-3 with range [0,15] and bytes 4-7 with range [0,63] — these narrow ranges mean more byte-level matches at LZ77's minimum match length (3 bytes). The grouped layout creates 4-byte sc segments where each byte has two 4-bit values compressed together — each sc gradient maps to a unique 4-byte pattern that rarely repeats identically. For future experiments: manipulating zstd-friendly byte layouts requires thinking about CROSS-BLOCK pattern repetition, not just within-block correlation. Same-byte-value runs across many blocks are more valuable than adjacent-byte gradients.
