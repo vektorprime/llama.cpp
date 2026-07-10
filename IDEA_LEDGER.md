@@ -16,7 +16,8 @@
 | exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
 | exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
 | exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | SUCCESS |
-| exp-012 | Salience-Driven Mixed Precision within Superblocks: 136-byte block, 12 salient 4b + 20 non-salient 2b weights per sub-block, 2b centered on zero_q | In progress |
+| exp-012 | Salience-Driven Mixed Precision within Superblocks: 136-byte block, 12 salient 4b + 20 non-salient 2b weights per sub-block, 2b centered on zero_q | FAILED (CUDA crash) |
+| exp-013 | Iterative Joint Optimization (IJO): multi-pass refinement of superblock parameters within 144-byte block — fix nibbles, re-optimize grid, iterate | In progress |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -412,3 +413,28 @@ Block layout (136 bytes, 4.25 bpw):
 **Actual outcome:** FAILED — CUDA initialization crash during eval. Quantize succeeded (model size: 517,122,080 bytes vs baseline 529,297,440, saving ~12 MB, 2.3%). But the custom block layout (136 bytes) broke CUDA backend integration: cublas init failed during warmup decode. The CPU path produced catastrophic PPL (~248,320 = vocab_size) because the vec_dot function (ggml_vec_dot_q4_K_q8_K) reads the block with Q4_K assumptions (128-byte qs, standard nibble layout) which is incompatible with the new 120-byte SDMP-encoded qs[].
 
 **Lesson:** Custom block structs require complete CUDA backend rewiring, not just the convert/dequant kernels. The MMQ/MMVQ kernels, repack, and vec_dot all access the block struct with type-specific assumptions. Changing the block layout breaks ALL of these, and the GPU fallback to cublas (dequant + sgemm) is fragile. For the next experiment, keeping the 144-byte block struct identical and finding a way to compress the ENCODING within the existing 128-byte qs[] (without changing struct size) would avoid the entire CUDA integration problem. Alternatively, a hybrid approach that stores fewer effective bits in the same 128-byte space (using better entropy coding) could work.
+
+---
+
+## exp-013: Iterative Joint Optimization (IJO) of Superblock Parameters
+
+**Hypothesis:** The current Q4_K quantization algorithm is one-shot: it computes sub-block scales/mins, quantizes them to 6-bit (with shared fp16 d/dmin as secondary scaling), then re-quantizes nibbles once. The nibble re-quantization (step 4 of the algorithm: L[l] = round((x[l] + dmin*m_j)/(d*sc_j))) changes the optimal grid parameters, but the algorithm never goes back to update (d, dmin, sc_j, m_j) for the new nibbles. This leaves a residual mismatch: the quantized grid is optimized for the PRE-re-quantization nibbles, not the final ones.
+
+By adding 2-3 iterations of joint refinement (ALS-style alternating optimization), we can converge to a jointly optimal (nibbles, grid) assignment:
+1. Fix nibbles → compute optimal per-sub-block (a_j, b_j) via linear regression: x_l ≈ a_j * q_l - b_j
+2. Re-quantize a_j → d * sc_j, b_j → dmin * m_j (using the standard 6-bit + fp16 secondary quant framework)
+3. Fix grid → re-quantize nibbles: L[l] = round((x[l] + dmin*m_j)/(d*sc_j))
+4. Compare MSE; stop if no improvement
+
+This is fundamentally different from all prior experiments: it doesn't change the byte budget, doesn't change the encoding, doesn't reduce precision. It simply finds a BETTER LOCAL OPTIMUM within the same parameterization by breaking the greedy one-shot approach. Research on CALDERA (Saha+, 2024) and other quantization frameworks has shown that iterative joint optimization consistently outperforms greedy quantization in extreme low-bit settings.
+
+Key to success: The refinement uses the exact same block structure (144 bytes), so dequantization is unchanged — all CUDA kernels and CPU dispatch remain valid. The quantize function is the only modified code. This avoids all the CUDA struct-change crashes from exp-008/exp-012.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c`: Rewrite `quantize_q4_K_M_CLONE` to be self-contained (no delegation to stock Q4_K). The ref path (no imatrix) runs 3 iterations of IJO refinement. The imatrix path remains a thin wrapper for now.
+2. `ggml/src/ggml-quants.c`: Rewrite `quantize_row_q4_K_M_CLONE_ref` to use the same IJO algorithm (for `from_float_ref` type trait).
+3. No changes to dequantize functions, block struct, CUDA code, or any dispatch paths.
+
+**Expected outcome:** GGUF size unchanged (529,297,440 bytes — same struct). However, quality metrics should IMPROVE (lower KLD, higher same top p) because reconstruction MSE is reduced. The improvement from joint optimization over greedy quantization for 4-bit schemes is typically 1-3% in MSE, which should translate to a modest KLD reduction. If quality improves measurably, this provides a quality "margin" that can be traded for size in a future experiment (e.g., by reducing one byte from scales[] while still staying above the quality threshold). Quantize time increases by ~30-50% due to the extra iterations.
+
+**Actual outcome:** (pending)
