@@ -21,6 +21,8 @@
 | exp-014 | Transparent zstd compression of GGUF file (post-quantization) — lossless decompression on load | SUCCESS |
 | exp-015 | zstd level 19 — maximum GGUF compression, benchmarked all algorithms/params (xz, bzip2, --ultra -22, split, delta) | SUCCESS |
 | exp-016 | Walsh-Hadamard per-superblock preprocessing — FWHT before quantize, IWHT after dequantize | SUCCESS |
+| exp-017 | Trade FWHT quality headroom — 6+2-bit scale/min encoding (8 active bytes, 144-byte struct) | FAILED (CUDA dequant) |
+| exp-018 | Column-major block reordering for better zstd compression — lossless byte permutation in GGUF | FAILED (load-side) |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -599,6 +601,26 @@ The expected compression improvement comes from:
 2. `src/llama-model-loader.cpp`: After reading tensor data, check flag. If present and 2D tensor, apply inverse block transposition to restore row-major order before data is used by dequant.
 
 **Expected outcome:** GGUF size reduces by 1-5% beyond current zstd compression (from ~513 MB to ~500-510 MB). Quality metrics identical to exp-016 (KLD 0.056838, same top p 87.200%) because it's lossless. If the reordering creates better byte patterns, zstd should find more compressible structure in the column-major layout.
+
+**Actual outcome:** FAILED:
+- GGUF size (zstd): 513,878,004 bytes (vs exp-016's 513,745,093 bytes — +133 KB, 0.026% LARGER)
+- Eval: catastrophic failure — PPL ~1.8M, KLD ~11.6, same top p ~0.15% (garbage)
+
+The load-side inverse transposition failed to work correctly:
+1. The GGUF metadata flag ("gguf.tensor_data_layout" = "col_major") was correctly written and read
+2. `has_col_major_layout` was correctly set to true
+3. The inverse transpose was applied to only ONE tensor (token_embd.weight) — all other 319 tensors remained in column-major order, causing the CUDA dequant to produce garbage from misaligned blocks
+
+Root cause: The `load_all_data` function has multiple complex code paths (host buffer, GPU async upload, simple read_buf). The inverse transpose was added to the host buffer and simple read_buf paths, but the async upload path was skipped (correctly). However, the model loading failed partway through, and the retry mechanism in `common_fit_params` caused a second load that likely took a different code path or had corrupted state. The exact failure point was not definitively identified due to the complexity of the model loading infrastructure.
+
+Additionally, the SIZE benefit was NEGATIVE: 513,878,004 bytes (vs exp-016's 513,745,093). Column-major ordering produced byte patterns that zstd compressed WORSE than row-major. The inter-block correlations were not strong enough to overcome the disruption of the natural byte-order patterns that zstd was effectively exploiting in the row-major layout.
+
+**Lesson:** 
+1. GGUF file-level byte reordering (even lossless) fails because the model loading infrastructure has too many code paths. A permutation that requires ALL paths to implement the inverse is inherently fragile.
+2. The ``ggml_type_size`` for Q5_K is 176 which is not a power-of-2 — different block types in the same GGUF require size-aware permutation.
+3. Column-major ordering does NOT improve zstd compression for quantized weight data — the 4-bit/6-bit near-entropy data resists reordering-based compression just as it resists generic compression.
+4. The token_embd transpose required a 168 MB temp buffer, suggesting that any tensor-level permutation approach must handle large memory allocations gracefully.
+5. Future GGUF compression approaches should work at the file format level (e.g., transposing AFTER dequant, or using separate compression for metadata vs tensor data) rather than modifying the byte order of quantized data.
 
 ---
 
