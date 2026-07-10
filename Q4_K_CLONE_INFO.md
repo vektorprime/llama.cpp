@@ -73,6 +73,53 @@ Bytes 4-11:   scale[i] = (q[i+4] & 0xF) | ((q[i-4] >> 6) << 4)
 The 96 bits of scale data (8 pairs × 12 bits each) pack into 12 bytes.
 Each scale/min is 6 bits, so 8×2×6 = 96 bits = 12 bytes.
 
+## FWHT and Importance Matrix Incompatibility
+
+**The imatrix is NOT per-weight importance.** It is a per-input-channel vector
+`q_i = E[x_i^2]` — the variance of activations at each input channel, averaged
+over calibration data. The same channel-importance vector is reused for every
+output row of a weight matrix.
+
+**After FWHT rotates the weight columns**, the original per-channel importance
+no longer aligns with the transformed coordinates. For a 256-element FWHT group,
+every transformed coordinate receives the SAME importance of `(1/256) * sum(q)`.
+
+**Direct FWHT on the importance vector is WRONG.** Importance transforms
+bilinearly as `RCR^T` (like a covariance), not linearly as `Rx` (like an
+activation vector). FWHT would also produce negative values, which are invalid
+as squared-error weights in the quantization search.
+
+**Best solutions (in order of preference):**
+
+1. **Recollect imatrix in FWHT space.** During calibration, apply FWHT to
+   activations and collect `E[(Rx)_l^2]`. This recovers off-diagonal correlation
+   information lost in the original diagonal imatrix.
+
+2. **Flat fallback: average each 256-entry imatrix group.** Mathematically
+   consistent with the diagonal-only approximation, but the imatrix becomes
+   largely inert — similar to no imatrix at all.
+
+3. **No imatrix (accept it).** FWHT intentionally makes coordinate directions
+   more uniform. If the recollected imatrix is nearly flat, that is EXPECTED
+   behavior — the rotation has removed the anisotropy that the imatrix was
+   designed to exploit. Useful importance information may now live in off-diagonal
+   covariance terms that a diagonal imatrix cannot capture.
+
+**Validation experiment: generate these 6 variants:**
+
+| # | FWHT | Imatrix | Expected |
+|---|------|---------|----------|
+| 1 | No | None | Baseline |
+| 2 | No | Original | Better than 1 |
+| 3 | Yes | None | May beat 1 via better distribution |
+| 4 | Yes | Original (unchanged) | Expected REGRESSION vs 3 — coordinates misaligned |
+| 5 | Yes | Block-averaged | Removes regression but ~= 3 |
+| 6 | Yes | Recollected in FWHT space | Only variant with chance to beat 3 |
+
+If variant 6 adds nothing over variant 3, the remaining importance information
+is off-diagonal and would require a covariance/Hessian-aware quantizer (GPTQ/
+QuIP-style), not llama.cpp's current coordinatewise imatrix heuristic.
+
 ## Known Constraints
 
 Do NOT rediscover these:
