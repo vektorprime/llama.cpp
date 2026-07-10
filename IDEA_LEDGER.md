@@ -574,3 +574,28 @@ Key observations:
 4. The quality headroom created can be traded for size reduction in future experiments (e.g., compressing scales[] or d/dmin while staying above baseline quality)
 5. This validates the principle that OUTLIER REMOVAL is more effective than PRECISION REDUCTION for improving quantization quality
 6. Future experiments could combine Hadamard preprocessing with scale/min compression — with 9.7% quality headroom, a 1-2 byte scale reduction might stay above baseline KLD
+
+---
+
+## exp-017: Trade FWHT Quality Headroom for Size — 6+2-bit Scale/Min Encoding (8-byte scales, 140-byte block)
+
+**Hypothesis:** Exp-016 created significant quality headroom (KLD 0.056838 vs baseline 0.062947, +0.0061 margin) by applying FWHT+IWH preprocessing. The FWHT transforms heavy-tailed weight distributions to near-Gaussian, making per-sub-block min offsets consistently closer to zero. This means min precision can be reduced without major quality loss. By encoding each sub-block's (scale, min) as 6+2 bits instead of 6+6 bits, we compress scales[] from 12 to 8 bytes (140-byte block, 2.78% per clone block, ~1.67% overall ≈ 8 MB from 494 MB). The full 6-bit scale precision is preserved — only mins drop to 2 bits (4 levels of grid centering). With FWHT making distributions near-zero-centered, 4 min levels should be sufficient for adequate grid positioning. The quality cost should fit within the 0.0061 KLD headroom.
+
+Key differences from failed exp-004 (5+3 bits, +23% KLD):
+1. Scales stay at 6 bits (vs 5 bits) — the critical quality parameter preserved
+2. FWHT preprocessing makes mins smaller and more predictable — 2-bit mins on FWHT data may be similar to 6-bit mins on raw data
+3. We have 0.0061 KLD headroom to absorb quality loss
+
+**Changes:**
+1. `ggml-common.h`: `K_SCALE_SIZE_CLONE = 8`, struct with `scales[8]`, static_assert for 140 bytes
+2. `ggml-quants.c`: Self-contained quantize (FWHT + Q4_K scale computation + 6+2-bit packing + nibble quant) and dequant (6+2-bit unpack + Q4_K dequant + IWHT)
+3. `ggml.c`: type_traits type_size auto-updates via sizeof
+4. `ggml-cpu/ggml-cpu.c`: Already has vec_dot=NULL; type_size auto-updates
+5. `ggml-cpu/quants.c`: Dispatcher wrapper (no change needed, uses ref)
+6. `ggml-cuda/common.cuh`: type_traits auto-update
+7. `ggml-cuda/convert.cu`: New CUDA dequant kernel with 8-byte scale decode + IWHT
+8. `ggml-cuda/mmq.cu`: Already disabled for clone (no change)
+9. `ggml-cuda/mmvq.cu`: Already disabled for clone (no change)
+10. `ggml-cuda/ggml-cuda.cu`: No change needed
+
+**Expected outcome:** GGUF raw quant size ~486 MB (~8 MB savings, 1.67% reduction). KLD ≤ 0.062947 (target: ≤0.060). Same top p ≥ 86.387%.
