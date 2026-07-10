@@ -29,8 +29,9 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-006 | SDM predictor for mins (8-byte scales) — implementation bugs | 523,209,760 | NULL | NULL | FAILED |
 | exp-007 | Codebook VQ + per-weight nibble re-optimization (8-byte scales) | 523,209,760 | 0.101213 | 83.631% | REGRESSION |
 | exp-008 | QK_K_CLONE=512 shared d/dmin (284-byte block) | 526,253,600 | 12.848800 | 0.006% | REGRESSION |
+| exp-009 | Token_embd/output Q6_K→Q4_K_M_CLONE (no block changes) | 463,740,960 | 0.073896 | 84.605% | REGRESSION |
 
-## Key Insights (updated after exp-008)
+## Key Insights (updated after exp-009)
 
 1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
@@ -46,6 +47,8 @@ Reduce GGUF file size below 505 MB while maintaining:
 
 7. **Block compression has limited reach**: ~40% of model weights are Q6_K tensors that don't use the clone block. Per-block savings of 2.78% translate to only ~1.15% overall.
 
+8. **Output/token_embd is sensitive but efficient per-MB** (exp-009): reducing the 199 MB token_embd from Q6_K→Q4_K_M_CLONE saved 62.5 MB (12.4% total) but exceeded KLD threshold by 17.4%. However, the KLD increase per MB saved (0.000175) is half that of removing Q6_K boosts (0.000377), suggesting the output layer is relatively more robust than attention layers. A Q5_K middle ground (~32 MB savings) could potentially stay within bounds.
+
 ## What's Left to Try
 
 The pattern is clear: any compression of scales or mins degrades quality. The remaining angles:
@@ -54,3 +57,4 @@ The pattern is clear: any compression of scales or mins degrades quality. The re
 - **Tighter scale encoding without information loss**: e.g., Huffman/arithmetic coding of scale-min pairs exploiting the non-uniform distribution of values (but this is variable-length, hard to implement in fixed-size blocks).
 - **Keep QK_K fixed at 256.** exp-008 showed that changing the superblock size breaks tensor dimension math across the ggml stack. All experiments should preserve block size invariants and find compression within the 144-byte envelope.
 - **Dual-type alternating blocks**: store full 144-byte blocks interspersed with 140-byte "lite" blocks that borrow d/dmin from the previous full block, without changing QK_K. This avoids the size calculation mismatches that killed exp-008.
+- **Q5_K for token_embd**: the Q6_K→Q4_K_M_CLONE jump was too aggressive (0.0739 KLD), but Q5_K (5.5 bpw) might save ~32 MB while staying within the 0.0629 KLD threshold. Only a 1-line change in llama-quant.cpp.

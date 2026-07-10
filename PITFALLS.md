@@ -46,3 +46,10 @@ Populated by sub-agents at the end of each experiment. Read before starting.
   in the llamafile gemm fallback path at ggml-cpu.c:1278. Use a dummy vec_dot
   or ensure the CPU matmul never reaches that code path (e.g., by making
   llamafile handle the clone type).
+
+- **Output/token_embd tensor IS highly quality-sensitive.** Reducing it from
+  Q6_K to Q4_K_M_CLONE (exp-009) saved 62.5 MB but increased KLD by 0.010949
+  (17.4% above threshold). The degradation is comparable to removing all
+  attn_v/ffn_down Q6_K boosts (exp-002: +0.010489). Despite the output layer
+  being "last mile" to token prediction, its per-MB sensitivity is actually
+  lower than attention layers. Q5_K (saving ~32 MB) might be tolerable.
