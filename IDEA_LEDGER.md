@@ -5,6 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| exp-027 | Inter-block d/dmin predictor with snap: snap d/dmin to previous block if <0.5% relative diff, one-shot nibble re-quantize — zstd cross-block byte matching | PENDING |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
@@ -873,3 +874,18 @@ This is a **lossless reorganization** — the decoded sc and m values are bit-id
 The grouped packing made zstd compression **worse**, not better. The stock interleaved packing scatters correlated sc bits across non-consecutive bytes but creates byte patterns with predictable zero bits (8 of 12 bytes have top 2 bits = 0 in stock vs only 8 of 12 in the new layout too, but stock's bytes 0-3 are all ≤15 and bytes 4-7 are all ≤63). The grouped layout's bytes 0-3 hold nibble-pairs like 0x32, 0x34 which have less predictable high nibbles.
 
 **Lesson:** zstd's LZ77 matching benefits from byte patterns that repeat across the entire file, not just within a single scales[] field. The stock interleaving creates bytes 0-3 with range [0,15] and bytes 4-7 with range [0,63] — these narrow ranges mean more byte-level matches at LZ77's minimum match length (3 bytes). The grouped layout creates 4-byte sc segments where each byte has two 4-bit values compressed together — each sc gradient maps to a unique 4-byte pattern that rarely repeats identically. For future experiments: manipulating zstd-friendly byte layouts requires thinking about CROSS-BLOCK pattern repetition, not just within-block correlation. Same-byte-value runs across many blocks are more valuable than adjacent-byte gradients.
+
+## exp-027: Inter-block d/dmin predictor with snap + one-shot nibble compensation
+
+**Hypothesis:** The PITFALLS.md exp-026 lesson shows zstd exploits cross-block byte repetition at fixed 144-byte offset stride. Expanding on this: contiguous blocks in a tensor row have correlated d/dmin values (both track local weight magnitude, which varies smoothly). By snapping each block's post-optimization d/dmin to match the previous block's d/dmin whenever they differ by <0.5% relative, we create byte-identical 2-byte (or 4-byte for d+dmin) runs spanning consecutive blocks. zstd's LZ77 finds these as matches at stride 144. The nibbles (Step 8) are re-quantized with the possibly-snapped d/dmin in a one-shot pass (not iterative), absorbing the small grid deformation. The snapping is applied AFTER all optimization (steps 4-7), so the optimized ls/lm values provide an already-good sub-block grid. The 11.5% KLD headroom (0.055735 vs 0.062947 threshold = 0.007212 margin) provides a safety buffer for the snapping quality cost.
+
+Unlike all prior experiments that modify within-block byte patterns, this approach explicitly targets the CROSS-BLOCK byte-level repetition that zstd exploits. It's quantize-side only (same 144B struct, dequant unchanged). The threshold is deliberately conservative (0.5%) to stay well within headroom.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` — `quantize_fwht_superblock()`: Add `const block_q4_K_M_CLONE *prev` parameter; after step 7, if prev != NULL, compare d/dmin to prev's d/dmin and snap if within 0.5% relative difference
+2. `ggml/src/ggml-quants.c` — `quantize_row_q4_K_M_CLONE_ref()`: Pass previous block pointer
+3. `ggml/src/ggml-quants.c` — `quantize_q4_K_M_CLONE()`: Pass previous block pointer
+
+**Expected outcome:** GGUF zstd size reduces by 0.3-1.5 MB from exp-025 (510,848,302 bytes) because snapped d/dmin runs create long LZ77 matches. KLD increases modestly from nibble grid deformation but stays well within the 11.5% headroom (target: KLD ≤ 0.060, same_top_p ≥ 87.0%).
+
+**Actual outcome:** PENDING
