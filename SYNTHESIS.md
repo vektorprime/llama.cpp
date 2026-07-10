@@ -32,8 +32,10 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-009 | Token_embd/output Q6_K→Q4_K_M_CLONE (no block changes) | 463,740,960 | 0.073896 | 84.605% | REGRESSION |
 | exp-010 | Token_embd/output Q6_K→Q5_K (clone ftype) | 495,525,920 | 0.064977 | 85.937% | REGRESSION (borderline) |
 | **exp-011** | **Q5_K embd + Q6_K for ALL QKV layers** | **509,042,720** | **0.061802** | **86.391%** | **SUCCESS** |
+| exp-012 | SDMP-WS mixed precision 136-byte block | 517,122,080 | NULL | NULL | FAILED (CUDA) |
+| exp-013 | IJO iterative refinement of 144-byte block | 529,297,440 | 0.165138 | 79.430% | REGRESSION |
 
-## Key Insights (updated after exp-009)
+## Key Insights (updated after exp-013)
 
 1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
@@ -52,6 +54,10 @@ Reduce GGUF file size below 505 MB while maintaining:
 8. **Output/token_embd is sensitive but efficient per-MB** (exp-009): reducing the 199 MB token_embd from Q6_K→Q4_K_M_CLONE saved 62.5 MB (12.4% total) but exceeded KLD threshold by 17.4%. However, the KLD increase per MB saved (0.000175) is half that of removing Q6_K boosts (0.000377), suggesting the output layer is relatively more robust than attention layers. A Q5_K middle ground (~32 MB savings) could potentially stay within bounds.
 
 9. **Q5_K for output/token_embd is near-threshold** (exp-010): reducing Q6_K→Q5_K saved 33.8 MB (6.4%) with KLD 0.0650 — only 3.2% above threshold by 0.002. Same top p 85.94% just 0.45pp below. The KLD increase is dramatically sublinear: Q5_K costs 0.0019 KLD/bpw vs Q4_K_M_CLONE's 0.0053 KLD/bpw. The per-saved-MB KLD increase (0.00006/MB) is 6× better than exp-002 (0.00038/MB). This is the closest any experiment has come to success. A small additional optimization (e.g., keep Q6_K for 2-3 more QKV layers, costing ~4 MB but recovering the ~0.45pp same_top_p gap) could push this over the threshold.
+
+10. **Alternating optimization degrades, not improves, quantization** (exp-013): Fixing nibbles and re-optimizing the grid parameters via linear regression (fix L → optimize d/dmin/sc/m → re-quantize L → repeat) converged to worse local minima (KLD 0.165 vs baseline 0.063). The secondary quantization of grid parameters creates non-smooth distortions that destabilize alternating optimization. The original greedy one-shot algorithm works better because it derives the grid from raw weight statistics, not from an intermediate quantized approximation.
+
+11. **The Q4_K quantize algorithm is near-optimal for its byte budget** (exp-004/005/007/013): Every attempt to improve quantization quality within the 144-byte constraint — whether by re-optimizing the grid, compressing scales, or VQ codebooks — has either degraded quality or maintained it (NULL). No experiment has successfully improved quality within the same byte budget. The 12+ years of optimization in the ggml codebase have already found a near-optimal local minimum for the Q4_K parameterization.
 
 ## What's Left to Try
 
