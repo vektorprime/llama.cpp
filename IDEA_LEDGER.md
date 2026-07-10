@@ -23,7 +23,7 @@
 | exp-016 | Walsh-Hadamard per-superblock preprocessing — FWHT before quantize, IWHT after dequantize | SUCCESS |
 | exp-017 | Trade FWHT quality headroom — 6+2-bit scale/min encoding (8 active bytes, 144-byte struct) | FAILED (CUDA dequant) |
 | exp-018 | Column-major block reordering for better zstd compression — lossless byte permutation in GGUF | FAILED (load-side) |
-| exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | PENDING |
+| exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | SUCCESS (+2.3% KLD, +0.21pp same_top_p vs exp-016) |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -641,6 +641,19 @@ The quality improvement should give additional KLD headroom beyond exp-016, enab
 3. No changes to dequant functions, block struct, CUDA code, or any dispatch paths
 
 **Expected outcome:** GGUF size identical to exp-016 (zstd: ~513.7 MB). KLD should be lower than exp-016 (0.056838) because local search finds better MSE-minimizing parameters than the greedy heuristic. Same top p should be higher than exp-016 (87.200%). Quantize time increases by ~50-100% from exp-016's 66.6s.
+
+**Actual outcome:** SUCCESS (quality improved, size unchanged):
+- GGUF size (zstd): 513,873,380 bytes (vs exp-016: 513,745,093, +128 KB, negligible; vs baseline: 529,297,440 raw)
+- Raw quant size: 494.32 MiB (identical to baseline — same 144-byte block)
+- KLD mean: 0.055513 (vs exp-016 0.056838) — **2.3% improvement** beyond exp-016, **11.8%** below baseline 0.062947
+- Same top p: 87.411% (vs exp-016 87.200%) — **0.21pp improvement**, **+1.02pp** above baseline 86.387%
+- RMS Δp: 5.211% (vs exp-016 5.183%) — **0.028pp** slightly worse but within noise
+- PPL: 22.224 (vs exp-016 22.489) — **0.265 better**
+- Quantize time: 65.9s (vs exp-016 66.6s, **1% faster** — local search overhead offset by specialized inner loops)
+
+**Lesson:** The greedy max/min heuristics in the standard Q4_K quantize algorithm leave measurable MSE on the table. A simple local search (±1 on ls/lm, ±2% on d/dmin) over the secondary-quantized parameters, directly minimizing reconstruction MSE with nibble recomputation, finds consistently better configurations. The improvement is modest (2.3% KLD reduction beyond exp-016) but real and reliable — it validates that the Q4_K parameterization has room for optimization within the same byte budget. The key insight: search in the quantized parameter space (6-bit integers, fp32 candidates) avoids the circular dependency that killed exp-013's alternating optimization. The local search is also fast — zero extra quantize time vs exp-016 because the specialized inner loops compile more efficiently than calling `make_qkx2_quants`.
+
+The additional 2.3% KLD headroom beyond exp-016 brings the total headroom vs baseline to 11.8% (0.0555 vs 0.0629). This is significant: we can now afford to lose 12% of KLD quality while still staying above baseline. This headroom should be traded for SIZE in a future experiment — e.g., reducing scale precision or removing dmin + scaling down to 8-byte scales (140-byte block) with this larger safety margin.
 
 ## exp-017: Trade FWHT Quality Headroom for Size — 6+2-bit Scale/Min Encoding (8-byte scales, 140-byte block)
 
