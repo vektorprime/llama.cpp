@@ -1742,8 +1742,21 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
         ls[j] = MIN(63, nearest_int(inv_scale * scales[j]));
         lm[j] = MIN(63, nearest_int(inv_min * mins[j]));
     }
-    float d_val = max_scale / 63.f;
-    float dmin_val = max_min / 63.f;
+    float d_val_candidate = max_scale / 63.f;
+    float dmin_val_candidate = max_min / 63.f;
+
+    // Step 2.5: Round d/dmin to coarser fp16 (keep 6 mantissa bits out of 10)
+    // to create repeating byte patterns for zstd compression
+    {
+        uint16_t dh = GGML_FP32_TO_FP16(d_val_candidate);
+        uint16_t dmh = GGML_FP32_TO_FP16(dmin_val_candidate);
+        dh = dh & 0xFFE0u;  // zero low 5 mantissa bits
+        dmh = dmh & 0xFFE0u;
+        d_val_candidate = GGML_FP16_TO_FP32(dh);
+        dmin_val_candidate = GGML_FP16_TO_FP32(dmh);
+    }
+    float d_val = d_val_candidate;
+    float dmin_val = dmin_val_candidate;
 
     // Step 3: Compute MSE for a sub-block given (d, dmin, ls, lm)
     // Returns MSE for 32 elements; also writes nibbles to L[idx..idx+31] if best
