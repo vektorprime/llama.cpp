@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — better precision on the critical scale parameter, coarser min as regularization** | **PENDING** |
+| **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — min coarsening hurt more than scale improvement helped** | **REGRESSION — 506.1MB, KLD 0.05981, top_p 87.11%** |
 | exp-032 | CAQ: Compact Asymmetric Quantization — 140-byte block, 4+4 packed sc/m, independent d/dmin, rewritten CPU+CUDA dequant | SUCCESS — 505.9MB, KLD 0.0562, top_p 87.37% |
 | exp-030 | **5-bit m quantization (m 6→5)** — single variable, quantize-side only, coarsening as regularization improves KLD | **SUCCESS** — 510.32MB (-0.53MB vs exp-025), KLD 0.054105 (-2.9%), PPL 22.263 |
 | exp-029 | Coupled Min-Scale formula (m=sc) — force m_j=sc_j, eliminate per-sub-block m, formula x=d*sc*q-dmin*sc | REGRESSION — catastrophic PPL 150K, KLD 8.86, m∝sc insufficient |
@@ -947,3 +947,16 @@ The zstd compression of scales[] bytes changes: 5+3 packed bytes (sc<<3|m) have 
 3. `ggml-cuda/convert.cu` CUDA dequant: same extraction changes
 
 **Expected outcome:** Quality: KLD ≤ 0.0562 (CAQ baseline), potentially improved 2-5%. Same top p ≥ 87.4%. Size: marginal change from zstd (within ±0.1 MB of CAQ's 505.9 MB). The primary value is validating that 5+3 is a net improvement over 4+4 for future experiments that may stack this with additional techniques.
+
+**Actual outcome:** REGRESSION — quality degraded vs CAQ baseline:
+- GGUF size (zstd): 506,064,297 bytes (vs CAQ 505,901,055, +0.03%)
+- KLD mean: 0.059810 (vs CAQ 0.056214, +6.4%; vs threshold 0.062947, 5.0% headroom remaining)
+- Same top p: 87.109% (vs CAQ 87.367%, -0.26pp; vs threshold 86.387%, +0.72pp)
+- PPL: 22.855 (vs CAQ 23.016, -0.161 — slight improvement)
+- RMS Δp: 5.482% (vs CAQ 5.296%)
+
+The hypothesis was wrong: better scale precision (5-bit, 32 levels vs 4-bit, 16 levels) did NOT offset the quality cost of coarser mins (3-bit, 8 levels vs 4-bit, 16 levels). The min precision loss dominated. This confirms that at the already-coarse 4-bit level, further reducing min precision has outsized impact — each bit lost below 4 bits for mins costs more quality than each bit gained for scales. The scale gain (+100% precision: 16→32 levels) was insufficient to compensate for the min loss (-50% precision: 16→8 levels).
+
+The slight PPL improvement (22.855 vs 23.016) is likely a statistical artifact of the local search exploring a slightly different region of the parameter space with the new bounds, not a genuine improvement.
+
+**Lesson:** At the 4-bit level, min precision is already at its quality floor. The apparent symmetry between scale and min (both 4-bit in CAQ) is misleading — they serve different roles and have different sensitivity profiles. Scale precision directly controls quantization grid granularity (affecting every weight linearly), while min precision controls sub-block centering (shifting all weights by a common offset). Below 4 bits, the coarse min centering creates systematic per-sub-block bias that even optimal scale can't recover from. For future experiments: never reduce min below 4 bits within a 140-byte block. If squeezing further, target other fields (d/dmin, qs encoding) or structural changes.
