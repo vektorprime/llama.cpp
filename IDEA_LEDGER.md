@@ -228,3 +228,15 @@ with rationale. Include expected quantize time impact.
 
 **Lesson:** What was learned. Why did it work or fail? What should be tried
 next? What does this reveal about the problem?
+
+---
+
+## exp-008: Extended superblock with shared d/dmin (QK_K_CLONE=512 — 16 sub-blocks, 1 d/dmin pair)
+
+**Hypothesis:** Adjacent 256-element superblocks in LLM weight matrices have highly correlated weight magnitude distributions. The d and dmin secondary quantization parameters (which quantize sub-block scales/mins to 6-bit) vary slowly across consecutive blocks. By expanding the superblock from 256 to 512 weights (16 sub-blocks of 32) and sharing a single (d, dmin) pair across all 16, we save 4 bytes per 512 weights: block goes from 2×144=288 bytes to 284 bytes (1.39% per clone block, ~0.8% overall = ~4 MB from 505 MB).
+
+Key: This preserves asymmetric quantization (dmin + sub-block mins intact), full 6-bit scale/min precision per sub-block, full 4-bit weight precision. Only d and dmin are shared. Sub-block scales are re-optimized with the shared d/dmin during quantization, so the compromise is absorbed by the 6-bit per-sub-block adjustment.
+
+This is fundamentally different from all prior experiments (which compressed scales/mins). d and dmin capture coarse magnitude envelope, which should vary very gradually across adjacent blocks. The per-sub-block scales provide 6-bit fine-grained adjustment per 32 weights, easily absorbing small d/dmin mismatches.
+
+Block layout: 2+2+24+256 = 284 bytes for 512 weights (4.4375 bpw vs 4.5 bpw). 16 sub-blocks × 12 bits each = 192 bits = 24 bytes for scales[]. 512/2 = 256 bytes for qs[].
