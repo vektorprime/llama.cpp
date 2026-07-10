@@ -28,6 +28,7 @@
 | **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
 | **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **SUCCESS (-0.11MB vs exp-020, KLD +2.7% but 13.7% headroom)** |
 | exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | SUCCESS (-0.65MB, KLD +1.5% but 12.4% headroom) |
+| exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | PENDING |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -71,6 +72,22 @@ The marginal size reduction (-0.11 MB) is smaller than exp-020's jump (-0.92 MB)
 - Quantize time: 71.57s
 
 The 5-bit sc created enough byte-level repetition to save 0.65 MB — notably MORE than exp-022's d/dmin rounding step (-0.11 MB), confirming that scales[] (8.33% of block) is a more productive target than d/dmin (2.78% of block). KLD increased modestly (+1.50%) and remains well within the 12.4% headroom. The approach validates the "lossy preprocessing for lossless compression" strategy applied to the scales field.
+
+## exp-024: 4-bit sc quantization — continue coarsening scales[] for zstd compression
+
+**Hypothesis:** exp-023 showed that 5-bit sc quantization (sc 6→5, halving distinct sc patterns) saved 0.65 MB with only +1.50% KLD increase, leaving 12.4% headroom (0.055148 vs 0.062947). The next conservative step: go from 5-bit to 4-bit sc (values 0-15 instead of 0-31). This is ONE variable change — sc precision only. m stays 6-bit, d/dmin stay at 4-bit mantissa.
+
+Reducing sc from 32 to 16 levels means sc patterns halve again (2× more byte-level repetition in the packed 12-byte scales[] field). The 12.4% KLD headroom provides margin for the quality cost. All changes are quantize-side only — no dequant, struct, or CUDA modifications needed.
+
+The pattern from exp-020 through exp-022 was that d/dmin coarsening hit diminishing returns (5→4 mantissa bits saved only 0.11 MB). scales[] (8.33% of block) is a larger target with more zstd compressions potential. If KLD scales linearly with sc precision loss, 5→4 bits might cost ~2-4% KLD, well within 12.4% headroom.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` line 1739: inv_scale: 31.f → 15.f
+2. `ggml/src/ggml-quants.c` line 1742: ls[j] MIN(31, ...) → MIN(15, ...)
+3. `ggml/src/ggml-quants.c` line 1745: d_val_candidate: max_scale/31 → max_scale/15
+4. `ggml/src/ggml-quants.c` line 1827: local search boundary try_ls > 31 → > 15
+
+**Expected outcome:** zstd compression of scales[] bytes should improve from 4-bit sc (16 distinct values) creating more byte-level repetition than 5-bit (32 values). Size reduction modest but measurable. KLD should increase but stay within 12.4% headroom.
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 
