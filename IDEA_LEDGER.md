@@ -30,6 +30,7 @@
 | exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | SUCCESS (-0.65MB, KLD +1.5% but 12.4% headroom) |
 | exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | SUCCESS (-0.60MB, KLD +1.1% but 11.5% headroom remaining) |
 | **exp-025** | **Nibble rotation + consecutive packing — (q+8)&0xF rotation maps center levels→0x0/0xF, consecutive-weight byte pairing for byte runs in qs[], same 144B struct, qs+-dequant** | **SUCCESS (-0.68MB, no quality change)** |
+| exp-026 | Re-pack scales[] to group 8 sc values in 4 consecutive bytes + 8 m values in 8 consecutive bytes (stock packing interleaves sc/m bits across 12 bytes, breaking zstd gradient detection) — quantize+dequant side, same 144B struct, lossless on decoded values | TBD |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -837,3 +838,30 @@ Key differences from failed exp-004 (5+3 bits, +23% KLD):
 10. `ggml-cuda/ggml-cuda.cu`: No change needed
 
 **Expected outcome:** GGUF raw quant size ~486 MB (~8 MB savings, 1.67% reduction). KLD ≤ 0.062947 (target: ≤0.060). Same top p ≥ 86.387%.
+
+---
+
+## exp-026: Re-pack scales[] for zstd-friendly byte layout
+
+**Hypothesis:** The 12-byte scales[] field packs 8 pairs of (4-bit sc, 6-bit m) using a complex interleaved bit layout inherited from stock Q4_K. This scatters correlated values across non-consecutive bytes: sc[0]'s low bits go in byte 0, sc[0]'s high bits in byte 4, sc[1]'s low bits in byte 1, etc. This interleaving breaks zstd's ability to detect the natural gradient in sc and m values across adjacent sub-blocks.
+
+Within a superblock, adjacent sub-blocks have correlated scale and min values because the FWHT-transformed weight distribution changes gradually. The sc values (4-bit, range 0-15) typically follow smooth gradients (e.g., 2,3,4,3,2,1,0,1). When packed with stock interleaving, these adjacent values end up in different bytes — zstd's LZ77 sees high-entropy random-looking bytes. Similarly, m values (6-bit, range 0-63) vary gradually but get scattered.
+
+By re-packing scales[] to:
+- Bytes 0-3: 8 sc values as 4-bit nibbles (2 per byte, in order sc[0..1], sc[2..3], etc.)
+- Bytes 4-11: 8 m values as 8 separate bytes (top 2 bits = 0 since m ∈ [0,63])
+
+This creates consecutive byte sequences with correlated values:
+- Bytes 0-3: if sc = [2,3,4,3,2,1,0,1] → bytes 0x32, 0x34, 0x12, 0x10 — zstd finds partial byte matches
+- Bytes 4-11: m values as gradient → consecutive bytes form a smooth sequence, top 2 bits always 0 → high-level byte similarity
+
+This is a **lossless reorganization** — the decoded sc and m values are bit-identical to the current packing. Only the byte layout within the 12-byte field changes. Both CPU and CUDA dequant must unpack from the new layout. The struct size remains 144 bytes. No quality impact — metrics should be identical to exp-025 if implemented correctly.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` line ~1868-1879: Replace stock scale packing with grouped layout
+2. `ggml/src/ggml-quants.c` line ~1922-1925: Replace `get_scale_min_k4()` with direct unpacking
+3. `ggml/src/ggml-cuda/convert.cu` line ~250-255: Replace CUDA scale unpacking with matching code
+
+**Expected outcome:** GGUF zstd size reduces by 0.3-1.0 MB from exp-025 (510,848,302 bytes) due to more compressible byte patterns in scales[] (8.33% of block bytes). KLD and same_top_p should be identical to exp-025 (0.055735, 87.364%) — any change indicates a packing error.
+
+**Actual outcome:** TBD
