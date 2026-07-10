@@ -19,7 +19,7 @@
 | exp-012 | Salience-Driven Mixed Precision within Superblocks: 136-byte block, 12 salient 4b + 20 non-salient 2b weights per sub-block, 2b centered on zero_q | FAILED (CUDA crash) |
 | exp-013 | Iterative Joint Optimization (IJO): multi-pass refinement of superblock parameters within 144-byte block — fix nibbles, re-optimize grid, iterate | REGRESSION |
 | exp-014 | Transparent zstd compression of GGUF file (post-quantization) — lossless decompression on load | SUCCESS |
-| exp-015 | zstd level 19 for maximum GGUF compression — comprehensive benchmark of all algorithms and parameters | PENDING |
+| exp-015 | zstd level 19 — maximum GGUF compression, benchmarked all algorithms/params (xz, bzip2, --ultra -22, split, delta) | SUCCESS |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -510,4 +510,22 @@ Additional findings:
 
 **Expected outcome:** GGUF size ~513.1 MB (vs exp-014's 515.3 MB). KLD and same top p identical to baseline (lossless compression).
 
-**Actual outcome:** PENDING Post-quantization zstd compression is a free lunch: it reduces file size with zero quality cost by exploiting the compressibility of the GGUF metadata (tokenizer strings, architecture params) and the residual structure in the quantized data. The compression ratio is modest (2.65%) but comes at zero quality penalty. This approach can be combined with any quantization algorithm and any future quality improvements. The root cause: the grid parameters (d, dmin, sc_j, m_j) undergo secondary quantization (fp16 for d/dmin, 6-bit for sc/m) which introduces non-smooth distortions. When we compute "optimal" a_j, b_j from the current nibbles and then re-quantize them, the distortion from secondary quantization changes the effective grid. The re-quantized nibbles then have a different optimal grid, creating an oscillating cycle that converges to a WORSE local minimum than the original greedy one-shot approach. The original Q4_K algorithm works well precisely BECAUSE it derives grid parameters directly from the weight distribution statistics (not from a quantized approximation), and the one-shot nature avoids the circular dependency problem. Future approaches should focus on improving the INITIAL grid estimation (e.g., better min/max detection, outlier handling) rather than attempting post-hoc refinement of an already-quantized block.
+**Actual outcome:** SUCCESS:
+- GGUF size: 513,124,023 bytes (vs exp-014's 515,293,111) — 2,169,088 bytes (2.2 MB) MORE saved
+- GGUF size vs baseline: 529,297,440 → 513,124,023 (3.056% reduction, 16.2 MB total savings)
+- KLD mean: 0.062947 (identical to baseline — lossless compression)
+- Same top p: 86.387% (identical to baseline)
+- RMS Δp: 5.753% (identical to baseline)
+- All quality metrics exactly match baseline
+- Quantize time: 67.4s (vs 14.7s for exp-014's zstd -3, due to higher compression level)
+
+**Lesson:** The compression landscape for GGUF files has been exhaustively mapped:
+- zstd is the best compressor for GGUF data (xz/bzip2 produce larger files)
+- zstd -19 is the practical maximum — --ultra -22 saves only 15 KB more but takes 5x longer
+- Split metadata/tensor compression yields negligible benefit (96 KB)
+- Delta encoding of byte-level patterns makes compression WORSE
+- The tensor data (518 MB of near-entropy 4-bit/6-bit weights) resists all generic compressors
+- The metadata (11 MB of tokenizer strings) compresses ~78% regardless of compressor
+- Total achievable post-quantization compression is ~3.06% of GGUF file size
+- Post-quantization compression plateaus hard because 97.93% of the file is near-entropy quantized weights
+- This approach has ZERO quality cost and adds minimal code (one line change) Post-quantization zstd compression is a free lunch: it reduces file size with zero quality cost by exploiting the compressibility of the GGUF metadata (tokenizer strings, architecture params) and the residual structure in the quantized data. The compression ratio is modest (2.65%) but comes at zero quality penalty. This approach can be combined with any quantization algorithm and any future quality improvements. The root cause: the grid parameters (d, dmin, sc_j, m_j) undergo secondary quantization (fp16 for d/dmin, 6-bit for sc/m) which introduces non-smooth distortions. When we compute "optimal" a_j, b_j from the current nibbles and then re-quantize them, the distortion from secondary quantization changes the effective grid. The re-quantized nibbles then have a different optimal grid, creating an oscillating cycle that converges to a WORSE local minimum than the original greedy one-shot approach. The original Q4_K algorithm works well precisely BECAUSE it derives grid parameters directly from the weight distribution statistics (not from a quantized approximation), and the one-shot nature avoids the circular dependency problem. Future approaches should focus on improving the INITIAL grid estimation (e.g., better min/max detection, outlier handling) rather than attempting post-hoc refinement of an already-quantized block.

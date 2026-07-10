@@ -35,8 +35,9 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-012 | SDMP-WS mixed precision 136-byte block | 517,122,080 | NULL | NULL | FAILED (CUDA) |
 | exp-013 | IJO iterative refinement of 144-byte block | 529,297,440 | 0.165138 | 79.430% | REGRESSION |
 | **exp-014** | **Transparent zstd compression of GGUF file** | **515,293,111** | **0.062947** | **86.387%** | **SUCCESS** |
+| **exp-015** | **zstd level 19 — maximum GGUF compression** | **513,124,023** | **0.062947** | **86.387%** | **SUCCESS** |
 
-## Key Insights (updated after exp-013)
+## Key Insights (updated after exp-015)
 
 1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
@@ -62,9 +63,22 @@ Reduce GGUF file size below 505 MB while maintaining:
 
 12. **Post-quantization file compression works** (exp-014): Since the Q4_K block structure can't be improved without quality loss, the breakthrough came from attacking the problem at a different level: the GGUF file format itself. Zstd compression of the entire GGUF file (including metadata like tokenizer strings) achieves 2.65% size reduction with zero quality penalty because the decompression is lossless. The on-disk file is compressed but the in-memory representation is identical to baseline. This approach adds only ~40 lines of code and can be combined with ANY future quantization improvements. The compression ratio is modest but comes at zero cost to quality, making it a genuine free lunch.
 
+13. **Post-quantization compression plateaus hard at ~3.06%** (exp-015): Comprehensive benchmarking of all compression algorithms and parameters on GGUF data yielded a clear upper bound. The GGUF file consists of: (a) an 11 MB metadata section (2.07% of file) with tokenizer strings that compresses ~78%, and (b) a 518 MB tensor data section (97.93%) of near-entropy 4-bit/6-bit quantized weights that compresses only ~1.5%. Key findings:
+   - zstd -19 is the practical maximum (3.06% reduction, 16.2 MB saved) — --ultra -22 saves only 15 KB more for 5x slower compression
+   - xz/lzma and bzip2 produce LARGER files than zstd (xz -9e: 2.77%, bzip2 -9: 1.86%)
+   - Split metadata/tensor compression saves only ~96 KB over whole-file zstd -19 — not worth the complexity
+   - Byte-level delta encoding (XOR with stride 144/210) makes compression WORSE (517 MB vs 510 MB raw)
+   - The near-entropy tensor data fundamentally resists all generic compression
+   - The total achievable post-quantization compression ceiling is approximately 3.06%
+
 ## What's Left to Try
 
-- **Combine zstd compression with exp-011's trade-off**: The token_embd Q6_K→Q5_K trade-off (exp-011) saved 20 MB with quality IMPROVEMENT. Combined with zstd compression, this could save ~34 MB total (20 + 14). AGENTS.md rules restrict per-tensor mixing though.
+- **Combine zstd compression with exp-011's trade-off**: The token_embd Q6_K→Q5_K trade-off (exp-011) saved 20 MB with quality IMPROVEMENT. Combined with zstd -19 compression, this could save ~36 MB total (20 + 16). AGENTS.md rules restrict per-tensor mixing though.
 
-- **Better compression**: zstd level 1 was used for speed. Higher levels (9-19) could yield 3-5% compression, saving another 10-20 MB at the cost of slower quantize time.
-- **Further directions from exp-011:** The output layer's Q6_K→Q5_K sensitivity is extremely low (~0.00006 KLD/MB). Could push further to Q4_K on the output layer combined with Q6_K on even more tensors. Or try Q5_K on other large-but-tolerant tensors (ffn_gate, ffn_up) while keeping precision on attention-critical tensors.
+- **Lossy compression of GGUF**: Accept minor quality loss in exchange for better compression. For example, quantize super-block scales (d, dmin) to fewer bits (e.g., FP8 instead of FP16), reducing metadata overhead per block while accepting a known KLD increase. Some compression schemes like JPEG-style quantization of the metadata section could save additional MB.
+
+- **GGUF format optimization**: Strip redundant metadata (multiple base model repo URLs, redundant name fields). Store tokenizer strings more efficiently (e.g., shared prefix dictionary). Use variable-length encoding for tensor names.
+
+- **Custom compression codec**: A domain-specific compression scheme that understands the Q4_K/6_K block structure could achieve better ratios than general-purpose compressors. For example, delta-encoding d/dmin across adjacent blocks (not bytes), or run-length encoding of similar scale patterns.
+
+- **Post-quantization compression is largely exhausted.** The 3.06% ceiling is a hard limit imposed by the near-entropy nature of 4-bit quantized data. Future size reductions must come from changes to the quantization itself or the GGUF format.
