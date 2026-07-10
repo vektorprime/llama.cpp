@@ -25,7 +25,7 @@
 | exp-018 | Column-major block reordering for better zstd compression — lossless byte permutation in GGUF | FAILED (load-side) |
 | exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | SUCCESS (+2.3% KLD, +0.21pp same_top_p vs exp-016) |
 | **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
-| **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **TBD** |
+| **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 
@@ -50,6 +50,17 @@ All changes are quantize-side only — no dequant, struct, or CUDA modifications
    - Apply final fp16 rounding on y->d and y->dmin just before returning
 
 **Expected outcome:** GGUF zstd size reduces by 1-3 MB compared to exp-020 due to more repetitive d/dmin and scales[] byte patterns. KLD may increase from 0.0529 but should stay well within the 0.0629 threshold given the 16% headroom. Same top p should remain ≥ 86.387%.
+
+**Actual outcome:** REGRESSION — size reduced but quality collapsed:
+- GGUF size (zstd): 510,660,086 bytes (vs exp-020: 512,956,650, -2.30 MB, -0.45%; vs baseline: 529,297,440, -18.64 MB, -3.52%)
+- KLD mean: 0.108419 (vs threshold 0.062947 → +72.4% ABOVE; vs exp-020 0.052883 → +105% increase)
+- Same top p: 82.970% (vs threshold 86.387% → -3.42pp below; vs exp-020 87.789% → -4.82pp)
+- RMS Δp: 7.513% (vs exp-020 5.171%)
+- PPL: 23.476 (vs exp-020 22.375) — 4.9% worse
+
+The aggressive rounding consumed 5.5× more KLD than available headroom. The 16% buffer (0.010 KLD) was swamped by a 0.0555 KLD increase.
+
+**Lesson:** The "lossy preprocessing for lossless compression" cliff is steep and non-linear. Dropping from 5→3 d/dmin mantissa bits + adding 4-bit ls/lm produced multiplicative error: coarse d/dmin degrades ALL 8 sub-blocks' quantization grids by amplifying d*sc and dmin*m errors, while coarse ls/lm removes each sub-block's ability to compensate. The errors compound multiplicatively, not additively. For future: (a) change only ONE variable at a time, (b) use incremental steps (4 mantissa-bit first, stay on 6-bit ls/lm), (c) the 16% headroom is real but fragile — each bit cleared cost ~2-3% of the baseline KLD budget.
 
 ## exp-020: Coarse fp16 rounding of d/dmin for better zstd byte-level compression
 
