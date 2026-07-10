@@ -23,6 +23,7 @@
 | exp-016 | Walsh-Hadamard per-superblock preprocessing — FWHT before quantize, IWHT after dequantize | SUCCESS |
 | exp-017 | Trade FWHT quality headroom — 6+2-bit scale/min encoding (8 active bytes, 144-byte struct) | FAILED (CUDA dequant) |
 | exp-018 | Column-major block reordering for better zstd compression — lossless byte permutation in GGUF | FAILED (load-side) |
+| exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | PENDING |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -623,6 +624,23 @@ Additionally, the SIZE benefit was NEGATIVE: 513,878,004 bytes (vs exp-016's 513
 5. Future GGUF compression approaches should work at the file format level (e.g., transposing AFTER dequant, or using separate compression for metadata vs tensor data) rather than modifying the byte order of quantized data.
 
 ---
+
+## exp-019: FWHT + MSE-Optimized Secondary Quantization via Local Search (quantize-side only, same 144-byte struct)
+
+**Hypothesis:** The standard Q4_K quantize algorithm uses max/min-based heuristics for secondary quantization (d, dmin via max over sub-blocks; ls/lm via rounding). These are fast but suboptimal for MSE. After FWHT preprocessing (Gaussian data), the min/max heuristic is particularly unreliable because Gaussian distributions lack well-defined extremes. By adding a local search over the secondary-quantized parameters (d, dmin tuned by ±2% scaling; ls, lm per sub-block perturbed by ±1) that directly minimizes reconstruction MSE, we find lower-MSE parameters than the greedy heuristic. This is a quantize-side-only change: dequant formula (`d*sc*q - dmin*m`), block struct (144 bytes), scale encoding (12 bytes, 6+6 bits), CUDA kernel, and dequant functions are all UNCHANGED.
+
+Key difference from exp-013 (failed IJO): exp-013 used alternating optimization (linear regression on raw parameters → re-quantize → repeat) which destabilized via secondary quantization distortion. This experiment searches directly in the QUANTIZED parameter space (ls, lm as integers, d/dmin as fp32) and evaluates MSE with actual nibble recomputation — no decompose/re-quantize step, no circular dependency.
+
+Key difference from exp-017 (failed 6+2-bit): No scale encoding change. The scales[] field uses the standard 6+6 bit packing, read identically by CPU and CUDA dequant.
+
+The quality improvement should give additional KLD headroom beyond exp-016, enabling future size-reduction experiments (e.g., per-tensor mixing or scale precision reduction) with a larger safety margin.
+
+**Changes:**
+1. `ggml-quants.c`: Rewrite `quantize_row_q4_K_M_CLONE_ref` — self-contained function that: FWHT → run standard Q4_K heuristic → local search on ls/lm per sub-block (±1 perturbation, 9 combos) → fine-tune d (5 scalings) → fine-tune dmin (5 scalings) → finalize nibbles → write block
+2. `ggml-quants.c`: Rewrite `quantize_q4_K_M_CLONE` — same algorithm, row-level loop
+3. No changes to dequant functions, block struct, CUDA code, or any dispatch paths
+
+**Expected outcome:** GGUF size identical to exp-016 (zstd: ~513.7 MB). KLD should be lower than exp-016 (0.056838) because local search finds better MSE-minimizing parameters than the greedy heuristic. Same top p should be higher than exp-016 (87.200%). Quantize time increases by ~50-100% from exp-016's 66.6s.
 
 ## exp-017: Trade FWHT Quality Headroom for Size — 6+2-bit Scale/Min Encoding (8-byte scales, 140-byte block)
 
