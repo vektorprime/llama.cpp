@@ -36,8 +36,9 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-013 | IJO iterative refinement of 144-byte block | 529,297,440 | 0.165138 | 79.430% | REGRESSION |
 | **exp-014** | **Transparent zstd compression of GGUF file** | **515,293,111** | **0.062947** | **86.387%** | **SUCCESS** |
 | **exp-015** | **zstd level 19 — maximum GGUF compression** | **513,124,023** | **0.062947** | **86.387%** | **SUCCESS** |
+| **exp-016** | **Walsh-Hadamard FWHT preprocessing — same 144B block** | **513,745,093** | **0.056838** | **87.200%** | **SUCCESS** |
 
-## Key Insights (updated after exp-015)
+## Key Insights (updated after exp-016)
 
 1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
@@ -82,3 +83,5 @@ Reduce GGUF file size below 505 MB while maintaining:
 - **Custom compression codec**: A domain-specific compression scheme that understands the Q4_K/6_K block structure could achieve better ratios than general-purpose compressors. For example, delta-encoding d/dmin across adjacent blocks (not bytes), or run-length encoding of similar scale patterns.
 
 - **Post-quantization compression is largely exhausted.** The 3.06% ceiling is a hard limit imposed by the near-entropy nature of 4-bit quantized data. Future size reductions must come from changes to the quantization itself or the GGUF format.
+
+14. **Walsh-Hadamard preprocessing improves Q4_K quality at same file size** (exp-016): Applying FWHT to each 256-element superblock before quantization, then IWHT after dequantization, transforms the heavy-tailed weight distribution to approximately Gaussian (QuIP/PolarQuant technique). This eliminates outlier-dominated sub-blocks. Results: KLD 0.056838 vs baseline 0.062947 (−9.7%), same top p 87.200% vs 86.387% (+0.81pp), RMS Δp 5.183% vs 5.753% (−9.9%). The FWHT costs 2048 ops per 256 elements. However, the rotated weights produce slightly different byte patterns that zstd compresses marginally less well (513.7 MB vs 513.1 MB for exp-015). The quality headroom created by Hadamard preprocessing can be traded for size reduction in future experiments (e.g., reducing scale precision while staying above quality thresholds).
