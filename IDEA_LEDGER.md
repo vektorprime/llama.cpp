@@ -14,6 +14,7 @@
 | exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | REGRESSION |
 | exp-008 | Extended superblock QK_K_CLONE=512 with shared d/dmin (284-byte block, 1.39% per-block savings) | REGRESSION |
 | exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
+| exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -326,3 +327,23 @@ Expected KLD may be sublinear with bitrate reduction, potentially staying under 
 **Change:** 1 line in `src/llama-quant.cpp` line 466-467: add a condition that for the clone ftype, assign Q5_K instead of Q6_K to the output/token_embd tensor.
 
 **Expected outcome:** GGUF size reduces by ~32 MB (6.3%). KLD expected in the 0.065-0.070 range. Same top p should remain ≥ 84%.
+
+**Actual outcome:** REGRESSION — borderline:
+- GGUF size: 495,525,920 bytes (vs baseline 529,297,440) — 33.8 MB savings (6.38% reduction)
+- KLD mean: 0.064977 (vs baseline 0.062947) — only 3.2% increase, just barely above threshold by 0.002030
+- Same top p: 85.937% (vs baseline 86.387%) — below threshold by only 0.45pp
+- RMS Δp: 5.875% (vs baseline 5.753%)
+- PPL: 22.647 (vs baseline 22.450) — 0.9% worse
+
+This is the closest any experiment has come to success. The KLD increase is dramatically sublinear with precision reduction:
+- Q6_K→Q4_K_M_CLONE (exp-009): KLD +0.0109 at -2.06 bpw → 0.0053 KLD/bpw
+- Q6_K→Q5_K (exp-010): KLD +0.0020 at -1.06 bpw → 0.0019 KLD/bpw
+- Q5_K is only 0.002 above threshold — a very narrow miss
+
+**Lesson:** Q5_K is extremely close to the acceptable quality threshold for the output/token_embd tensor. The per-saved-MB KLD increase (0.00006/MB) is 3× better than exp-009 (0.00018/MB) and 6× better than exp-002 (0.00038/MB). The sublinear sensitivity means that precision reduction on the output layer is more efficient than any block-level compression attempted so far. 
+
+A future experiment combining Q5_K for token_embd with a small additional optimization (e.g., Q5_K for one less critical tensor, or a light block compression) might cross the threshold.
+
+Alternatively, Q5_K for token_embd could be combined with KEEPING the Q6_K boost for a few extra QKV layers to push same_top_p back above 86.387%. This would only cost ~3-4 MB in size increase but might recover the ~0.45pp gap in same top p while still netting ~28-29 MB of savings.
+
+The important calibration: the output/token_embd layer's Q6_K→Q5_K sensitivity is 0.002 KLD / 33.8 MB = ~0.00006/MB. For comparison, removing WV/FFN_DOWN Q6_K boosts (exp-002) cost 0.00038/MB — 6.3× more sensitive. This confirms the output layer is the most compressible major tensor.
