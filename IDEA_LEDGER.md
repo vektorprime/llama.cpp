@@ -15,6 +15,7 @@
 | exp-008 | Extended superblock QK_K_CLONE=512 with shared d/dmin (284-byte block, 1.39% per-block savings) | REGRESSION |
 | exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
 | exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
+| exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | PENDING |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -347,3 +348,15 @@ A future experiment combining Q5_K for token_embd with a small additional optimi
 Alternatively, Q5_K for token_embd could be combined with KEEPING the Q6_K boost for a few extra QKV layers to push same_top_p back above 86.387%. This would only cost ~3-4 MB in size increase but might recover the ~0.45pp gap in same top p while still netting ~28-29 MB of savings.
 
 The important calibration: the output/token_embd layer's Q6_K→Q5_K sensitivity is 0.002 KLD / 33.8 MB = ~0.00006/MB. For comparison, removing WV/FFN_DOWN Q6_K boosts (exp-002) cost 0.00038/MB — 6.3× more sensitive. This confirms the output layer is the most compressible major tensor.
+
+---
+
+## exp-011: Q5_K for token_embd/output + Q6_K for ALL QKV attention layers
+
+**Hypothesis:** exp-010 (Q5_K for token_embd/output) was just 0.002 KLD and 0.45pp same_top_p away from passing thresholds, saving 33.8 MB. The model has 6 Gated Attention layers (out of 24 total, the rest are Gated DeltaNet with no attention). Currently with `use_more_bits` on `i_attention_wv` counter (n=6 attention layers), only layers at indices 2 and 5 (i.e., attention layers 2/6 and 5/6 = model layers ~11 and ~23) get Q6_K — the other 4 attention layers use Q4_K_M_CLONE. The rationale is that the small number of attention layers makes them disproportionately important: each feed-forward module in the non-attention layers depends on the attention mechanism working correctly in the shared hidden state. By upgrading all 6 QKV attention layers to Q6_K (instead of just 2), we increase quality at a modest byte cost (~4 extra QKV tensors × ~0.8 MB each = ~3.2 MB) while keeping the 33.8 MB savings from Q5_K embd. Net savings should be ~30 MB.
+
+**Changes:**
+1. `src/llama-quant.cpp` line 466-467: Add clone ftype check before the Q6_K fallback, assigning Q5_K instead for clone output/token_embd
+2. `src/llama-quant.cpp` line 543-544: Add clone-specific condition giving Q6_K to ALL QKV layers (remove clone from the `use_more_bits` condition)
+
+**Expected outcome:** GGUF size ~498 MB (~31 MB savings). KLD ≤ 0.062947. Same top p ≥ 86.387%. The extra Q6_K attention layers should push the borderline metrics from exp-010 across the threshold.
