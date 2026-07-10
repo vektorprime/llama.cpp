@@ -1718,158 +1718,6 @@ static void ifwht_256(float * x) {
     }
 }
 
-// Quantize one FWHT-transformed superblock into a block_q4_K_M_CLONE with local search
-// CAQ format: 140-byte block, formula x = d * sc_j * q_i - dmin * m_j
-// Independent d and dmin for scale and min ranges, 4+4 packed sc/m
-static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
-    uint8_t L[QK_K], Laux[32], ls[QK_K/32], lm[QK_K/32];
-    float weights[32], mins[QK_K/32], scales[QK_K/32];
-
-    // Step 1: Standard Q4_K heuristic — compute raw scales, mins, and initial nibbles
-    float max_scale = 0, max_min = 0;
-    for (int j = 0; j < QK_K/32; j++) {
-        float sum_x2 = 0;
-        for (int l = 0; l < 32; l++) sum_x2 += x[32*j + l] * x[32*j + l];
-        float av_x = sqrtf(sum_x2/32);
-        for (int l = 0; l < 32; l++) weights[l] = av_x + fabsf(x[32*j + l]);
-        scales[j] = make_qkx2_quants(32, 15, x + 32*j, weights, L + 32*j, &mins[j], Laux, -1.f, 0.1f, 20, false);
-        if (scales[j] > max_scale) max_scale = scales[j];
-        if (mins[j] > max_min) max_min = mins[j];
-    }
-
-    // Step 2: Secondary quantization to 4-bit scale / 4-bit min
-    float inv_scale = max_scale > 0 ? 15.f/max_scale : 0.f;
-    float inv_min   = max_min   > 0 ? 15.f/max_min   : 0.f;
-    for (int j = 0; j < QK_K/32; j++) {
-        ls[j] = MIN(15, nearest_int(inv_scale * scales[j]));
-        lm[j] = MIN(15, nearest_int(inv_min * mins[j]));
-    }
-    float d_val_candidate = max_scale / 15.f;
-    float dmin_val_candidate = max_min / 15.f;
-
-    // Step 2.5: Round d/dmin to coarser fp16 for zstd compression
-    {
-        uint16_t dh = GGML_FP32_TO_FP16(d_val_candidate);
-        uint16_t dmh = GGML_FP32_TO_FP16(dmin_val_candidate);
-        dh = dh & 0xFFC0u;
-        dmh = dmh & 0xFFC0u;
-        d_val_candidate = GGML_FP16_TO_FP32(dh);
-        dmin_val_candidate = GGML_FP16_TO_FP32(dmh);
-    }
-    float d_val = d_val_candidate;
-    float dmin_val = dmin_val_candidate;
-
-    // Step 3: Helper to evaluate sub-block MSE with formula x = d*sc*q - dmin*m
-    #define EVAL_SUB_MSE(idx, dsc, dm) ({ \
-        float mse = 0; \
-        for (int l = 0; l < 32; l++) { \
-            int q = nearest_int((x[(idx) + l] + (dm)) / (dsc)); \
-            q = MAX(0, MIN(15, q)); \
-            float diff = (dsc) * q - (dm) - x[(idx) + l]; \
-            mse += diff * diff; \
-        } \
-        mse; \
-    })
-
-    #define EVAL_FULL_MSE(dv, dmv) ({ \
-        float mse = 0; \
-        for (int jj = 0; jj < QK_K/32; jj++) { \
-            float dsc = (dv) * ls[jj]; \
-            if (dsc == 0) continue; \
-            float dm = (dmv) * lm[jj]; \
-            mse += EVAL_SUB_MSE(32*jj, dsc, dm); \
-        } \
-        mse; \
-    })
-
-    // Step 4: Refine d with 5 candidate values
-    {
-        const float d_candidates[5] = { d_val*0.98f, d_val*0.99f, d_val, d_val*1.01f, d_val*1.02f };
-        float best_mse = EVAL_FULL_MSE(d_val, dmin_val);
-        for (int s = 0; s < 5; s++) {
-            float mse = EVAL_FULL_MSE(d_candidates[s], dmin_val);
-            if (mse < best_mse) { best_mse = mse; d_val = d_candidates[s]; }
-        }
-    }
-
-    // Step 5: Refine dmin with 5 candidate values
-    {
-        const float dm_candidates[5] = { dmin_val*0.98f, dmin_val*0.99f, dmin_val, dmin_val*1.01f, dmin_val*1.02f };
-        float best_mse = EVAL_FULL_MSE(d_val, dmin_val);
-        for (int s = 0; s < 5; s++) {
-            float mse = EVAL_FULL_MSE(d_val, dm_candidates[s]);
-            if (mse < best_mse) { best_mse = mse; dmin_val = dm_candidates[s]; }
-        }
-    }
-
-    // Step 6: Local search on ls/lm per sub-block (9 combos: ±1 on each)
-    for (int j = 0; j < QK_K/32; j++) {
-        int best_ls = ls[j], best_lm = lm[j];
-        float dsc = d_val * best_ls;
-        float dm = dmin_val * best_lm;
-        float best_mse = EVAL_SUB_MSE(32*j, dsc, dm);
-        for (int dls = -1; dls <= 1; dls++) {
-            int try_ls = ls[j] + dls;
-            if (try_ls < 0 || try_ls > 15) continue;
-            for (int dlm = -1; dlm <= 1; dlm++) {
-                int try_lm = lm[j] + dlm;
-                if (try_lm < 0 || try_lm > 15) continue;
-                if (try_ls == ls[j] && try_lm == lm[j]) continue;
-                dsc = d_val * try_ls;
-                dm = dmin_val * try_lm;
-                float mse = EVAL_SUB_MSE(32*j, dsc, dm);
-                if (mse < best_mse) { best_mse = mse; best_ls = try_ls; best_lm = try_lm; }
-            }
-        }
-        ls[j] = best_ls; lm[j] = best_lm;
-    }
-
-    // Step 7: Second pass — refine d again with optimized ls/lm
-    {
-        const float d_candidates[3] = { d_val * 0.99f, d_val, d_val * 1.01f };
-        float best_mse = EVAL_FULL_MSE(d_val, dmin_val);
-        for (int s = 0; s < 3; s++) {
-            float mse = EVAL_FULL_MSE(d_candidates[s], dmin_val);
-            if (mse < best_mse) { best_mse = mse; d_val = d_candidates[s]; }
-        }
-    }
-
-    // Step 8: Final nibble quantization with best parameters + rotation
-    for (int j = 0; j < QK_K/32; j++) {
-        float dsc = d_val * ls[j];
-        if (dsc == 0) {
-            for (int l = 0; l < 32; l++) L[32*j + l] = 0;
-            continue;
-        }
-        float dm = dmin_val * lm[j];
-        for (int l = 0; l < 32; l++) {
-            int q = nearest_int((x[32*j + l] + dm) / dsc);
-            q = MAX(0, MIN(15, q));
-            L[32*j + l] = (q + 8) & 0xF;
-        }
-    }
-
-    // Step 9: Pack scales into 8-byte format (4+4 per sub-block, one byte each)
-    for (int j = 0; j < QK_K/32; j++) {
-        y->scales[j] = (ls[j] << 4) | lm[j];
-    }
-    y->d = GGML_FP32_TO_FP16(d_val);
-    y->dmin = GGML_FP32_TO_FP16(dmin_val);
-
-    // Step 10: Pack nibbles into qs[] — consecutive pairs for zstd byte runs
-    uint8_t * q = y->qs;
-    for (int j = 0; j < QK_K/32; j++) {
-        int qs_base = 16*j;
-        int w_base   = 32*j;
-        for (int l = 0; l < 16; l++) {
-            q[qs_base + l] = L[w_base + 2*l] | (L[w_base + 2*l + 1] << 4);
-        }
-    }
-
-    #undef EVAL_SUB_MSE
-    #undef EVAL_FULL_MSE
-}
-
 void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_CLONE * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
@@ -1878,7 +1726,7 @@ void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_C
         float rotated[QK_K];
         memcpy(rotated, x + b * QK_K, QK_K * sizeof(float));
         fwht_256(rotated);
-        quantize_fwht_superblock(rotated, y + b);
+        quantize_row_q4_K_ref(rotated, (block_q4_K *)(y + b), QK_K);
     }
 }
 
@@ -1887,37 +1735,15 @@ void dequantize_row_q4_K_M_CLONE(const block_q4_K_M_CLONE * GGML_RESTRICT x, flo
     const int64_t nb = k / QK_K;
 
     for (int64_t b = 0; b < nb; b++) {
-        const uint8_t * q = x[b].qs;
-
-        const float d   = GGML_FP16_TO_FP32(x[b].d);
-        const float min = GGML_FP16_TO_FP32(x[b].dmin);
-
-        for (int j = 0; j < QK_K/32; j++) {
-            uint8_t sm = x[b].scales[j];
-            uint8_t sc = sm >> 4;
-            uint8_t m  = sm & 0xF;
-            const float d1 = d * sc;
-            const float m1 = min * m;
-            for (int l = 0; l < 16; l++) {
-                uint8_t byte_val = q[16*j + l];
-                uint8_t n0 = (byte_val & 0xF) + 8;  // undo rotation
-                uint8_t n1 = (byte_val >> 4) + 8;
-                n0 &= 0xF;
-                n1 &= 0xF;
-                *y++ = d1 * n0 - m1;
-                *y++ = d1 * n1 - m1;
-            }
-        }
-
-        ifwht_256(y - QK_K);
+        dequantize_row_q4_K((const block_q4_K *)(x + b), y + b * QK_K, QK_K);
+        ifwht_256(y + b * QK_K);
     }
 }
 
 size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    (void)quant_weights; // not used in ref path
     assert(n_per_row % QK_K == 0);
     const int64_t nb = n_per_row / QK_K;
-    const size_t row_size = nb * sizeof(block_q4_K_M_CLONE);
+    const size_t row_size = nb * sizeof(block_q4_K);
 
     float * rotated = (float *) malloc(n_per_row * sizeof(float));
     if (!rotated) return 0;
@@ -1930,9 +1756,7 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
             fwht_256(rotated + b * QK_K);
         }
 
-        for (int64_t b = 0; b < nb; b++) {
-            quantize_fwht_superblock(rotated + b * QK_K, (block_q4_K_M_CLONE *)((char *)dst + row * row_size) + b);
-        }
+        quantize_row_q4_K_ref(rotated, (block_q4_K *)((char *)dst + row * row_size), n_per_row);
     }
 
     free(rotated);

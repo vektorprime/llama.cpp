@@ -285,9 +285,6 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
 }
 
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
-    if (type == GGML_TYPE_Q4_K_M_CLONE) {
-        return false;  // CAQ format uses different struct layout — MMVQ assumes block_q4_K
-    }
     if (GGML_CUDA_CC_IS_CDNA(cc)) {
         if (GGML_CUDA_CC_IS_CDNA1(cc)) {
             switch (type) {
