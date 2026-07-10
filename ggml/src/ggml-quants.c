@@ -1735,15 +1735,15 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
         if (mins[j] > max_min) max_min = mins[j];
     }
 
-    // Step 2: Secondary quantization to 4-bit scale / 5-bit min
+    // Step 2: Secondary quantization to 4-bit scale / 4-bit min
     float inv_scale = max_scale > 0 ? 15.f/max_scale : 0.f;
-    float inv_min   = max_min   > 0 ? 31.f/max_min   : 0.f;
+    float inv_min   = max_min   > 0 ? 15.f/max_min   : 0.f;
     for (int j = 0; j < QK_K/32; j++) {
         ls[j] = MIN(15, nearest_int(inv_scale * scales[j]));
-        lm[j] = MIN(31, nearest_int(inv_min * mins[j]));
+        lm[j] = MIN(15, nearest_int(inv_min * mins[j]));
     }
     float d_val_candidate = max_scale / 15.f;
-    float dmin_val_candidate = max_min / 31.f;
+    float dmin_val_candidate = max_min / 15.f;
 
     // Step 2.5: Round d/dmin to coarser fp16 (keep 6 mantissa bits out of 10)
     // to create repeating byte patterns for zstd compression
@@ -1827,7 +1827,7 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
             if (try_ls < 0 || try_ls > 15) continue;
             for (int dlm = -1; dlm <= 1; dlm++) {
                 int try_lm = lm[j] + dlm;
-                if (try_lm < 0 || try_lm > 31) continue;
+                if (try_lm < 0 || try_lm > 15) continue;
                 if (try_ls == ls[j] && try_lm == lm[j]) continue;
                 dsc = d_val * try_ls;
                 dm = dmin_val * try_lm;
