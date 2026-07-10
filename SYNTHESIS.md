@@ -30,6 +30,7 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-007 | Codebook VQ + per-weight nibble re-optimization (8-byte scales) | 523,209,760 | 0.101213 | 83.631% | REGRESSION |
 | exp-008 | QK_K_CLONE=512 shared d/dmin (284-byte block) | 526,253,600 | 12.848800 | 0.006% | REGRESSION |
 | exp-009 | Token_embd/output Q6_K→Q4_K_M_CLONE (no block changes) | 463,740,960 | 0.073896 | 84.605% | REGRESSION |
+| exp-010 | Token_embd/output Q6_K→Q5_K (clone ftype) | 495,525,920 | 0.064977 | 85.937% | REGRESSION (borderline) |
 
 ## Key Insights (updated after exp-009)
 
@@ -49,12 +50,16 @@ Reduce GGUF file size below 505 MB while maintaining:
 
 8. **Output/token_embd is sensitive but efficient per-MB** (exp-009): reducing the 199 MB token_embd from Q6_K→Q4_K_M_CLONE saved 62.5 MB (12.4% total) but exceeded KLD threshold by 17.4%. However, the KLD increase per MB saved (0.000175) is half that of removing Q6_K boosts (0.000377), suggesting the output layer is relatively more robust than attention layers. A Q5_K middle ground (~32 MB savings) could potentially stay within bounds.
 
+9. **Q5_K for output/token_embd is near-threshold** (exp-010): reducing Q6_K→Q5_K saved 33.8 MB (6.4%) with KLD 0.0650 — only 3.2% above threshold by 0.002. Same top p 85.94% just 0.45pp below. The KLD increase is dramatically sublinear: Q5_K costs 0.0019 KLD/bpw vs Q4_K_M_CLONE's 0.0053 KLD/bpw. The per-saved-MB KLD increase (0.00006/MB) is 6× better than exp-002 (0.00038/MB). This is the closest any experiment has come to success. A small additional optimization (e.g., keep Q6_K for 2-3 more QKV layers, costing ~4 MB but recovering the ~0.45pp same_top_p gap) could push this over the threshold.
+
 ## What's Left to Try
 
-The pattern is clear: any compression of scales or mins degrades quality. The remaining angles:
-- **Compress qs[] (128-byte weight data)** instead of scales. The 4-bit weights may have spatial redundancy (similarity across adjacent weights or sub-blocks) that could be exploited — e.g., delta encoding across columns, or pattern-based compression.
-- **Secondary quantization with importance weighting**: apply coarser quantization to less important sub-blocks while keeping full precision for important ones.
-- **Tighter scale encoding without information loss**: e.g., Huffman/arithmetic coding of scale-min pairs exploiting the non-uniform distribution of values (but this is variable-length, hard to implement in fixed-size blocks).
-- **Keep QK_K fixed at 256.** exp-008 showed that changing the superblock size breaks tensor dimension math across the ggml stack. All experiments should preserve block size invariants and find compression within the 144-byte envelope.
+The clearest remaining paths:
+
+- **Q5_K for token_embd + keep extra Q6_K QKV layers**: exp-010 showed Q5_K alone is 0.002 KLD and 0.45pp same_top_p away from passing. Keeping Q6_K for 2-3 more QKV layers (~4 MB) could recover the gap while still netting ~28 MB savings. This is a combination approach: per-tensor precision reduction + strategic selectivity.
+
+- **Compress qs[] (128-byte weight data)** instead of scales. The 4-bit weights may have intra-superblock redundancy that scales lack. For example, many sub-blocks may have similar weight patterns that could share a compressed representation.
+
 - **Dual-type alternating blocks**: store full 144-byte blocks interspersed with 140-byte "lite" blocks that borrow d/dmin from the previous full block, without changing QK_K. This avoids the size calculation mismatches that killed exp-008.
-- **Q5_K for token_embd**: the Q6_K→Q4_K_M_CLONE jump was too aggressive (0.0739 KLD), but Q5_K (5.5 bpw) might save ~32 MB while staying within the 0.0629 KLD threshold. Only a 1-line change in llama-quant.cpp.
+
+- **Column-level compression for the output/token_embd matrix**: the [1024, 248320] output.weight is fundamentally different from attention weights. K-means clustering of columns (vocabulary tokens) with codebook-based reconstruction could achieve dramatic compression. A codebook of 4096 1024-dim centroids would compress each column from 1024*4.5/8 = 576 bytes to 12 bits = 1.5 bytes — ~384× compression of the output layer alone. Requires custom ggml tensor format support.

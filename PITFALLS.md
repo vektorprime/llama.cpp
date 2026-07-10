@@ -53,3 +53,5 @@ Populated by sub-agents at the end of each experiment. Read before starting.
   attn_v/ffn_down Q6_K boosts (exp-002: +0.010489). Despite the output layer
   being "last mile" to token prediction, its per-MB sensitivity is actually
   lower than attention layers. Q5_K (saving ~32 MB) might be tolerable.
+
+- **Q5_K for output/token_embd is borderline** (exp-010): KLD 0.0650 (+3.2% above threshold, 0.002 KLD). Same top p 85.94% (0.45pp below). This saves 33.8 MB (6.4% of model). Combining Q5_K with keeping Q6_K for 2-3 extra attention QKV layers (~4 MB) could push it across the threshold to success.
