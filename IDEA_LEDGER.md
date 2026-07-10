@@ -5,6 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| exp-028 | Soft ls=0 biasing: 2% bias in local search favoring ls=0 for zstd 0x00 byte runs in qs[] — "boring sub-block" exploitation | PENDING |
 | exp-027 | Inter-block d/dmin predictor with snap: snap d/dmin to previous block if <0.5% relative diff, one-shot nibble re-quantize — zstd cross-block byte matching | NULL — redundant with fp16 rounding |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
@@ -897,3 +898,20 @@ Unlike all prior experiments that modify within-block byte patterns, this approa
 The 0.5% relative threshold was too conservative. After existing 4-bit mantissa fp16 rounding (mask 0xFFC0), only ~16 distinct fp16 values exist per exponent, so consecutive blocks already show significant byte-level repetition. The snapping failed to create additional byte-identical runs beyond what fp16 rounding already provides. The d/dmin fields (2.78% of block) are already at near-maximum zstd compressibility from existing techniques.
 
 **Lesson:** d/dmin snapping is redundant with existing fp16 mantissa rounding — both target the same compressibility mechanism. Any future cross-block pattern approach must target fields OTHER than d/dmin (e.g., qs[] or scales[]), or use a much larger threshold that forces byte-identity even when quality cost is significant. The 2.78% d/dmin space has been fully exploited by exp-020/022/025.
+
+## exp-028: Soft ls=0 biasing — exploit "boring sub-block" zero-byte runs for zstd
+
+**Hypothesis:** After FWHT, the weight distribution is approximately Gaussian centered at 0. Some sub-blocks (32 elements) have very small magnitude, resulting in ls=1 (the smallest non-zero scale, after 4-bit sc quantization). When ls=0, the quantize code sets all nibbles to 0 and the corresponding qs[] bytes become 0x00 — trivially compressible by zstd across blocks at the same offset.
+
+The local search in step 6 compares MSE for all (ls±1, lm±1) candidates. By applying a small bias (2%) favoring ls=0 over ls=1, we steer marginally-low-magnitude sub-blocks toward ls=0. Each ls=0 sub-block produces 16 zero bytes in qs[] (2 consecutive 0x00 byte-pairs after packing). If the same sub-block position within many superblocks goes ls=0, zstd finds byte-identical patterns at the same 144-byte stride.
+
+This is the "boring block" concept applied at the sub-block level, without changing the block struct or dequant path. The 2% bias is conservative — it means ls=0 is chosen over ls=1 if the MSE difference is ≤2% of the ls=1 MSE. The 11.5% KLD headroom (0.055735 vs 0.062947) provides margin.
+
+Key insight: unlike exp-027 which targeted d/dmin (2.78%), this targets qs[] (88.9% of block) through the ls channel. A single ls=0 sub-block zeros 16/128 = 12.5% of qs[] bytes. Even a modest fraction of sub-blocks going ls=0 creates substantial byte-level 0x00 redundancy.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` line 1834: In local search step 6, when evaluating try_ls==0 against best_ls>0, apply 2% MSE bias: `float mse = EVAL_SUB_MSE(32*j, dsc, dm) * (try_ls == 0 ? 0.98f : 1.0f)` — making ls=0 appear artificially better
+
+**Expected outcome:** GGUF zstd size reduces by 0.2-1.0 MB due to increased zero-byte density in qs[]. KLD increases modestly from sub-blocks zeroed at 2% bias but stays within 11.5% headroom.
+
+**Actual outcome:** PENDING
