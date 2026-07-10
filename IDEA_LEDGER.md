@@ -25,6 +25,31 @@
 | exp-018 | Column-major block reordering for better zstd compression — lossless byte permutation in GGUF | FAILED (load-side) |
 | exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | SUCCESS (+2.3% KLD, +0.21pp same_top_p vs exp-016) |
 | **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
+| **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **TBD** |
+
+## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
+
+**Hypothesis:** exp-020 proved that coarse fp16 rounding on d/dmin (5 mantissa bits kept) creates byte-level repetition that zstd compresses, saving 0.92 MB with IMPROVED KLD. With 16% KLD headroom (0.0529 vs 0.0630 threshold), we push harder on two fronts simultaneously:
+
+1. **More aggressive fp16 rounding**: Keep only 3 mantissa bits (`& 0xFF80` vs exp-020's `& 0xFFE0`) — reduces distinct d/dmin byte patterns per exponent from 32→8 (4× more repetition). The local ls/lm search absorbs the ~1.5-3% additional d/dmin error.
+
+2. **Clear ls/lm low bits**: Round 6-bit scale values to 4 effective bits (`& 0xFC`) — reduces distinct values per sub-block from 64→16 (4× more repetition). This creates more byte-level matches in the 12-byte packed scales[] field (8.33% of block).
+
+3. **Re-apply rounding after refinements**: exp-020's d/dmin ±1-2% refinements partially escaped the coarse fp16 grid. We re-round d/dmin after each refinement step and at final write to maximize zstd benefit.
+
+Combined, these reduce the entropy of both the d/dmin fields (2.78% of block) and scales[] field (8.33% of block), creating substantially more byte-level repetition for zstd to exploit. The MSE local search absorbs the quantization error from both changes.
+
+All changes are quantize-side only — no dequant, struct, or CUDA modifications needed.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` in `quantize_fwht_superblock`:
+   - Change fp16 mask from `& 0xFFE0` (5 bits kept) to `& 0xFF80` (3 bits kept)
+   - After initial ls/lm assignment, clear 2 low bits: `ls[j] &= 0xFC; lm[j] &= 0xFC;`
+   - Re-apply fp16 rounding after each d/dmin refinement step (Steps 4, 5, 7)
+   - Re-apply ls/lm rounding after local search (Step 6)
+   - Apply final fp16 rounding on y->d and y->dmin just before returning
+
+**Expected outcome:** GGUF zstd size reduces by 1-3 MB compared to exp-020 due to more repetitive d/dmin and scales[] byte patterns. KLD may increase from 0.0529 but should stay well within the 0.0629 threshold given the 16% headroom. Same top p should remain ≥ 86.387%.
 
 ## exp-020: Coarse fp16 rounding of d/dmin for better zstd byte-level compression
 
