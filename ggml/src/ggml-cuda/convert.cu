@@ -241,25 +241,38 @@ static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ v
     __shared__ float tmp[QK_K];
 
     const int64_t tid = threadIdx.x;
-    const int64_t il  = tid/8;
-    const int64_t ir  = tid%8;
-    const int64_t is  = 2*il;
-    const int64_t n   = 4;
 
     const float dall = __low2half(x[i].dm);
     const float dmin = __high2half(x[i].dm);
 
-    const uint8_t * q = x[i].qs + 32*il + n*ir;
+    // Pre-compute d*sc and dmin*m for all 8 sub-blocks in shared memory
+    __shared__ float dsc[8], msc[8];
+    if (tid < 8) {
+        uint8_t sc, m;
+        get_scale_min_k4(tid, x[i].scales, sc, m);
+        dsc[tid] = dall * sc;
+        msc[tid] = dmin * m;
+    }
+    __syncthreads();
 
-    uint8_t sc, m;
-    get_scale_min_k4(is + 0, x[i].scales, sc, m);
-    const float d1 = dall * sc; const float m1 = dmin * m;
-    get_scale_min_k4(is + 1, x[i].scales, sc, m);
-    const float d2 = dall * sc; const float m2 = dmin * m;
+    // Consecutive packing: each sub-block occupies 16 bytes (16 * 2 = 32 elements)
+    // Each byte stores two consecutive weights: (low nibble, high nibble)
+    // Nibble rotation: stored = (raw + 8) & 0xF, undo via (nibble + 8) & 0xF
+    // 32 threads, 4 bytes each = 128 bytes = 256 elements
+    for (int b = 0; b < 4; b++) {
+        int byte_idx    = tid + b * 32;           // 0..127
+        int sub_block   = byte_idx / 16;          // 0..7
+        int byte_in_sb  = byte_idx % 16;          // 0..15
 
-    for (int l = 0; l < n; ++l) {
-        tmp[64*il + n*ir + l     ] = d1 * (q[l] & 0xF) - m1;
-        tmp[64*il + n*ir + l + 32] = d2 * (q[l] >>  4) - m2;
+        uint8_t byte_val = x[i].qs[byte_idx];
+        uint8_t n0 = (byte_val & 0xF) + 8;
+        uint8_t n1 = (byte_val >>  4) + 8;
+        n0 &= 0xF;
+        n1 &= 0xF;
+
+        int base_w = sub_block * 32 + byte_in_sb * 2;
+        tmp[base_w]     = dsc[sub_block] * n0 - msc[sub_block];
+        tmp[base_w + 1] = dsc[sub_block] * n1 - msc[sub_block];
     }
 
     __syncthreads();

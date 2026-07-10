@@ -1849,6 +1849,8 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
     }
 
     // Step 8: Final nibble quantization with best parameters
+    // Apply nibble rotation: map center levels (most common in FWHT space) to
+    // nibbles 0x0/0xF to create many 0x00/0xFF bytes in qs[] for zstd compression
     for (int j = 0; j < QK_K/32; j++) {
         float dsc = d_val * ls[j];
         if (dsc == 0) {
@@ -1858,7 +1860,8 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
         float dm = dmin_val * lm[j];
         for (int l = 0; l < 32; l++) {
             int q = nearest_int((x[32*j + l] + dm) / dsc);
-            L[32*j + l] = MAX(0, MIN(15, q));
+            q = MAX(0, MIN(15, q));
+            L[32*j + l] = (q + 8) & 0xF;
         }
     }
 
@@ -1877,11 +1880,16 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
     y->d = GGML_FP32_TO_FP16(d_val);
     y->dmin = GGML_FP32_TO_FP16(dmin_val);
 
-    // Step 10: Pack nibbles into qs[]
+    // Step 10: Pack nibbles into qs[] — consecutive pairs for zstd byte runs
+    // Stock packing: pairs weights 32 apart (interleaved sub-blocks)
+    // New packing: consecutive weights as byte pairs (more correlation → byte runs)
     uint8_t * q = y->qs;
-    for (int j = 0; j < QK_K; j += 64) {
-        for (int l = 0; l < 32; l++) q[l] = L[j + l] | (L[j + l + 32] << 4);
-        q += 32;
+    for (int j = 0; j < QK_K/32; j++) {
+        int qs_base = 16*j;
+        int w_base   = 32*j;
+        for (int l = 0; l < 16; l++) {
+            q[qs_base + l] = L[w_base + 2*l] | (L[w_base + 2*l + 1] << 4);
+        }
     }
 
     #undef MSE32
@@ -1906,8 +1914,28 @@ void dequantize_row_q4_K_M_CLONE(const block_q4_K_M_CLONE * GGML_RESTRICT x, flo
     const int64_t nb = k / QK_K;
 
     for (int64_t b = 0; b < nb; b++) {
-        dequantize_row_q4_K((const block_q4_K *)(x + b), y + b * QK_K, QK_K);
-        ifwht_256(y + b * QK_K);
+        const uint8_t * q = x[b].qs;
+
+        const float d   = GGML_FP16_TO_FP32(x[b].d);
+        const float min = GGML_FP16_TO_FP32(x[b].dmin);
+
+        for (int j = 0; j < QK_K/32; j++) {
+            uint8_t sc, m;
+            get_scale_min_k4(j, x[b].scales, &sc, &m);
+            const float d1 = d * sc;
+            const float m1 = min * m;
+            for (int l = 0; l < 16; l++) {
+                uint8_t byte_val = q[16*j + l];
+                uint8_t n0 = (byte_val & 0xF) + 8;  // undo rotation: (n+8)&0xF
+                uint8_t n1 = (byte_val >> 4) + 8;
+                n0 &= 0xF;
+                n1 &= 0xF;
+                *y++ = d1 * n0 - m1;
+                *y++ = d1 * n1 - m1;
+            }
+        }
+
+        ifwht_256(y - QK_K);
     }
 }
 
