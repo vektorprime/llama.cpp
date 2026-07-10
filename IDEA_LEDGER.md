@@ -12,6 +12,7 @@
 | exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (10-byte scales, 142B block) | REGRESSION |
 | exp-006 | Scale-Dependent Min Prediction (SDM/SPD): predictor m≈(d/dmin)×sc with 4b grouped deltas then 5b sc+3b deltas (8-byte scales) | FAILED (implementation) |
 | exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | REGRESSION |
+| exp-008 | Extended superblock QK_K_CLONE=512 with shared d/dmin (284-byte block, 1.39% per-block savings) | REGRESSION |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -228,6 +229,42 @@ with rationale. Include expected quantize time impact.
 
 **Lesson:** What was learned. Why did it work or fail? What should be tried
 next? What does this reveal about the problem?
+
+---
+
+## exp-008: Extended superblock with shared d/dmin (QK_K_CLONE=512)
+
+**Hypothesis:** Adjacent 256-element superblocks in LLM weight matrices have highly correlated weight magnitude distributions. The d and dmin secondary quantization parameters vary slowly across consecutive blocks. By expanding the superblock from 256 to 512 weights (16 sub-blocks of 32) and sharing a single (d, dmin) pair across all 16, we save 4 bytes per 512 weights: block goes from 2×144=288 bytes to 284 bytes (1.39% per clone block, ~0.6% overall = ~3 MB from 505 MB).
+
+Key: This preserves asymmetric quantization (dmin + sub-block mins intact), full 6-bit scale/min precision per sub-block, full 4-bit weight precision. Only d and dmin are shared across twice as many weights.
+
+Block layout: 2+2+24+256 = 284 bytes for 512 weights (4.4375 bpw vs 4.5 bpw).
+
+**Changes:**
+1. `ggml-common.h`: Define QK_K_CLONE=512, K_SCALE_SIZE_CLONE=24, update block struct (284 bytes)
+2. `ggml-quants.c`: New self-contained quantize/dequantize with 16 sub-blocks, shared d/dmin, scale packing for 24-byte scales
+3. `ggml.c`: blck_size = QK_K_CLONE
+4. `ggml-cpu/ggml-cpu.c`: vec_dot = NULL, vec_dot_type = GGML_TYPE_COUNT, nrows = 1
+5. `ggml-cpu/quants.c`: Update assertion to QK_K_CLONE
+6. `ggml-cpu/repack.cpp`: Remove clone from all 3 repack locations
+7. `ggml-cuda/common.cuh`: QK_K_CLONE=512, qi=64 in type traits
+8. `ggml-cuda/convert.cu`: New 64-thread CUDA dequant kernel, host function, dispatch update
+9. `ggml-cuda/mmq.cu/mmq.cuh`: Remove clone from MMQ (all locations + eligibility)
+10. `ggml-cuda/mmvq.cu`: Early return false from eligibility for clone
+
+**ACTUAL OUTCOME:** REGRESSION — catastrophic failure:
+- GGUF size: 526,253,600 bytes (vs baseline 529,297,440) — 3.0 MB savings (0.57%), much less than expected 1.39%
+- PPL: 5,896,337 (vs baseline 22.450) — essentially random
+- KLD mean: 12.849 (vs baseline 0.063) — 204x worse
+- Same top p: 0.006% (vs baseline 86.387%)
+- RMS Δp: 47.078% (vs baseline 5.753%)
+
+CPU path: segfaults (NULL vec_dot causes out-of-bounds type_traits access in llamafile fallback path).
+CUDA path: produces output but it's pure noise (PPL ~6M).
+
+**Root cause:** Not definitively identified. The quantization output looks reasonable (valid d/dmin fp16, Ls/Lm in [0,63]). The CUDA kernel compiles and runs without crashing. Suspect either (a) the dequant kernel is not actually being called (dispatch templating issue), or (b) the type_traits blck_size change (256→512) breaks internal size calculations in the CUDA tensor management code that aren't visible at compile time.
+
+**Lesson:** Changing QK_K for the clone is extremely invasive — it affects not just the block struct but also tensor dimension math across the entire ggml stack (ggml_row_size, ggml_nbytes, CUDA tensor allocation, etc.). The 50% reduction in block count per row (due to doubled QK_K) may cause size mismatches between quantized data and runtime expectations. Future experiments should keep QK_K=256 and find ways to compress within that constraint, or use dual-type alternating blocks (full block + lite block sharing d/dmin from previous) to avoid changing QK_K.
 
 ---
 

@@ -33,3 +33,16 @@ Populated by sub-agents at the end of each experiment. Read before starting.
   from Q6_K tensors (token_embd, QKV, ffn_down in some layers) which don't use
   the clone block. The effective size reduction from block compression is much
   smaller than theoretical: a 2.78% per-block saving yields ~1.15% overall.
+
+- **QK_K must not change from 256.** Changing QK_K_CLONE to 512 (exp-008) breaks
+  tensor size calculations across the entire ggml stack. The doubled block size
+  halves the number of blocks per row, which ripples through ggml_row_size,
+  ggml_nbytes, CUDA tensor allocation, and internal dispatch assumptions.
+  The model quantizes correctly but dequantizes into garbage on GPU and
+  segfaults on CPU. All future experiments MUST keep QK_K=256.
+
+- **vec_dot = NULL can cause CPU segfaults.** Setting vec_dot to NULL with
+  vec_dot_type = GGML_TYPE_COUNT causes out-of-bounds access to type_traits_cpu
+  in the llamafile gemm fallback path at ggml-cpu.c:1278. Use a dummy vec_dot
+  or ensure the CPU matmul never reaches that code path (e.g., by making
+  llamafile handle the clone type).

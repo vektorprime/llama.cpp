@@ -28,8 +28,9 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-005 | Dual-anchor DPCM delta encoding (10-byte scales, 142B block) | 526,253,600 | 0.180095 | 78.472% | REGRESSION |
 | exp-006 | SDM predictor for mins (8-byte scales) — implementation bugs | 523,209,760 | NULL | NULL | FAILED |
 | exp-007 | Codebook VQ + per-weight nibble re-optimization (8-byte scales) | 523,209,760 | 0.101213 | 83.631% | REGRESSION |
+| exp-008 | QK_K_CLONE=512 shared d/dmin (284-byte block) | 526,253,600 | 12.848800 | 0.006% | REGRESSION |
 
-## Key Insights (updated after exp-007)
+## Key Insights (updated after exp-008)
 
 1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
@@ -51,3 +52,5 @@ The pattern is clear: any compression of scales or mins degrades quality. The re
 - **Compress qs[] (128-byte weight data)** instead of scales. The 4-bit weights may have spatial redundancy (similarity across adjacent weights or sub-blocks) that could be exploited — e.g., delta encoding across columns, or pattern-based compression.
 - **Secondary quantization with importance weighting**: apply coarser quantization to less important sub-blocks while keeping full precision for important ones.
 - **Tighter scale encoding without information loss**: e.g., Huffman/arithmetic coding of scale-min pairs exploiting the non-uniform distribution of values (but this is variable-length, hard to implement in fixed-size blocks).
+- **Keep QK_K fixed at 256.** exp-008 showed that changing the superblock size breaks tensor dimension math across the ggml stack. All experiments should preserve block size invariants and find compression within the 144-byte envelope.
+- **Dual-type alternating blocks**: store full 144-byte blocks interspersed with 140-byte "lite" blocks that borrow d/dmin from the previous full block, without changing QK_K. This avoids the size calculation mismatches that killed exp-008.
