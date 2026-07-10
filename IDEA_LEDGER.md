@@ -5,6 +5,8 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — better precision on the critical scale parameter, coarser min as regularization** | **PENDING** |
+| exp-032 | CAQ: Compact Asymmetric Quantization — 140-byte block, 4+4 packed sc/m, independent d/dmin, rewritten CPU+CUDA dequant | SUCCESS — 505.9MB, KLD 0.0562, top_p 87.37% |
 | exp-030 | **5-bit m quantization (m 6→5)** — single variable, quantize-side only, coarsening as regularization improves KLD | **SUCCESS** — 510.32MB (-0.53MB vs exp-025), KLD 0.054105 (-2.9%), PPL 22.263 |
 | exp-029 | Coupled Min-Scale formula (m=sc) — force m_j=sc_j, eliminate per-sub-block m, formula x=d*sc*q-dmin*sc | REGRESSION — catastrophic PPL 150K, KLD 8.86, m∝sc insufficient |
 | exp-028 | Soft ls=0 biasing: 2% bias in local search favoring ls=0 for zstd 0x00 byte runs in qs[] — "boring sub-block" exploitation | NULL — 2% bias too small, ls=0 vs ls=1 MSE gap >2% even for low-mag sub-blocks |
@@ -922,3 +924,26 @@ Key insight: unlike exp-027 which targeted d/dmin (2.78%), this targets qs[] (88
 The 2% bias had zero effect. The MSE gap between ls=0 and ls=1 is >2% even for low-magnitude sub-blocks in FWHT space. ls=0 forces all 32 weights to zero, creating a discrete MSE jump that's larger than 2% of the ls=1 MSE for any sub-block with non-trivial weights. No sub-blocks transitioned to ls=0 due to the bias.
 
 **Lesson:** The "boring sub-block" concept doesn't work at the 2% bias level. The MSE step-function at ls=0 (32 weights going from small non-zero to exactly zero) is larger than the bias can overcome. For this approach to work, either: (a) a much larger bias (10-50%) is needed — which would consume significant KLD headroom, (b) a different mechanism beyond simple MSE comparison is needed, or (c) the FWHT preprocessing makes the weight distribution too spread out for this to work.
+
+## exp-033: CAQ 5+3-bit scales — better scale precision within 140-byte block
+
+**Hypothesis:** CAQ (exp-032) uses 4+4-bit scale/min encoding (16 levels each). Scale precision is the primary quality driver — it directly controls the grid spacing `d * sc_j` which determines quantization step size for all 32 weights in a sub-block. Min precision is secondary — it controls the sub-block offset. By reallocating 1 bit from min to scale (5+3 instead of 4+4), we double scale precision (32 levels vs 16) while halving min precision (8 levels vs 16). This should be net-positive because:
+
+1. Scale precision dominates sub-block quantization quality (grid spacing affects every weight)
+2. Min coarsening acts as regularization — exp-030 showed m 6→5 bits improved KLD by -2.9%
+3. FWHT preprocessing centers weights near zero, reducing the need for fine-grained min values
+
+The 3-bit coarsening of mins (5→4→3) is an additional step beyond exp-031 (m 5→4, which degraded KLD +3.9%). But the simultaneous scale improvement (+1 bit) should offset this:
+- Scale gains 1 bit (15→31 levels, +100% precision): expected KLD improvement ~2-5%
+- Min loses 1 bit (15→7 levels, -50% precision from already-coarse 4-bit): expected KLD degradation ~2-4%
+
+Net effect: likely KLD-neutral to slightly improved, with PPL potentially same or slightly better.
+
+The zstd compression of scales[] bytes changes: 5+3 packed bytes (sc<<3|m) have different byte distribution than 4+4 (sc<<4|m). The qs[] nibble patterns may become slightly more structured due to better quantization accuracy.
+
+**Changes (same 140-byte block, no struct change):**
+1. `ggml-quants.c` quantize_fwht_superblock: inv_scale 15→31, inv_min 15→7, ls bound 15→31, lm bound 15→7, scales packing <<4→<<3
+2. `ggml-quants.c` dequantize_row_q4_K_M_CLONE: sc extraction >>4→>>3, m extraction &0xF→&0x7
+3. `ggml-cuda/convert.cu` CUDA dequant: same extraction changes
+
+**Expected outcome:** Quality: KLD ≤ 0.0562 (CAQ baseline), potentially improved 2-5%. Same top p ≥ 87.4%. Size: marginal change from zstd (within ±0.1 MB of CAQ's 505.9 MB). The primary value is validating that 5+3 is a net improvement over 4+4 for future experiments that may stack this with additional techniques.
