@@ -17,7 +17,7 @@
 | exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
 | exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | SUCCESS |
 | exp-012 | Salience-Driven Mixed Precision within Superblocks: 136-byte block, 12 salient 4b + 20 non-salient 2b weights per sub-block, 2b centered on zero_q | FAILED (CUDA crash) |
-| exp-013 | Iterative Joint Optimization (IJO): multi-pass refinement of superblock parameters within 144-byte block — fix nibbles, re-optimize grid, iterate | In progress |
+| exp-013 | Iterative Joint Optimization (IJO): multi-pass refinement of superblock parameters within 144-byte block — fix nibbles, re-optimize grid, iterate | REGRESSION |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -437,4 +437,11 @@ Key to success: The refinement uses the exact same block structure (144 bytes), 
 
 **Expected outcome:** GGUF size unchanged (529,297,440 bytes — same struct). However, quality metrics should IMPROVE (lower KLD, higher same top p) because reconstruction MSE is reduced. The improvement from joint optimization over greedy quantization for 4-bit schemes is typically 1-3% in MSE, which should translate to a modest KLD reduction. If quality improves measurably, this provides a quality "margin" that can be traded for size in a future experiment (e.g., by reducing one byte from scales[] while still staying above the quality threshold). Quantize time increases by ~30-50% due to the extra iterations.
 
-**Actual outcome:** (pending)
+**Actual outcome:** REGRESSION — size unchanged (529,297,440 bytes, same struct), but quality degraded severely:
+- GGUF size: 529,297,440 bytes (baseline: same)
+- KLD mean: 0.165138 (vs baseline 0.062947) — 162% increase, far above threshold
+- Same top p: 79.430% (vs baseline 86.387%) — below threshold by 6.96pp
+- RMS Δp: 9.389% (vs baseline 5.753%)
+- PPL: 25.296 (vs baseline 22.450) — 12.7% worse
+
+**Lesson:** Alternating optimization (fix nibbles → optimize grid → re-quantize nibbles → repeat) degrades quality instead of improving it. The root cause: the grid parameters (d, dmin, sc_j, m_j) undergo secondary quantization (fp16 for d/dmin, 6-bit for sc/m) which introduces non-smooth distortions. When we compute "optimal" a_j, b_j from the current nibbles and then re-quantize them, the distortion from secondary quantization changes the effective grid. The re-quantized nibbles then have a different optimal grid, creating an oscillating cycle that converges to a WORSE local minimum than the original greedy one-shot approach. The original Q4_K algorithm works well precisely BECAUSE it derives grid parameters directly from the weight distribution statistics (not from a quantized approximation), and the one-shot nature avoids the circular dependency problem. Future approaches should focus on improving the INITIAL grid estimation (e.g., better min/max detection, outlier handling) rather than attempting post-hoc refinement of an already-quantized block.
