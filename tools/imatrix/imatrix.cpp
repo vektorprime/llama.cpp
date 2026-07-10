@@ -5,6 +5,9 @@
 #include "llama.h"
 #include "gguf.h"
 
+// fwht_256 is in libggml (ggml-quants.c); resolved at link time
+extern "C" void fwht_256(float * x);
+
 #include <algorithm>
 #include <chrono>
 #include <clocale>
@@ -17,6 +20,7 @@
 #include <vector>
 #include <fstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <regex>
 #include <numeric>
@@ -55,6 +59,39 @@ struct tensor_statistics {
     float cossim       = 0.0f;
 };
 
+// Accumulate activation importance into dst[0..n-1].
+// When use_fwht is true, apply FWHT to src first (matching the quantizer
+// transform) before accumulating squared values.
+// src is 256-alignable and dst offset is 256-aligned when use_fwht=true.
+static void accumulate_importance(
+        float *       dst,
+        const float * src,
+        int64_t       n,
+        bool          use_fwht) {
+    if (!use_fwht) {
+        for (int64_t j = 0; j < n; ++j) {
+            dst[j] += src[j] * src[j];
+        }
+        return;
+    }
+
+    std::vector<float> tmp(256);
+
+    for (int64_t block = 0; block < n; block += 256) {
+        memcpy(tmp.data(), src + block, 256 * sizeof(float));
+        fwht_256(tmp.data());
+        for (int j = 0; j < 256; ++j) {
+            const float value = tmp[j];
+            if (!std::isfinite(value)) {
+                fprintf(stderr, "non-finite FWHT activation at block %lld offset %d\n",
+                        (long long)block, j);
+                exit(1);
+            }
+            dst[block + j] += value * value;
+        }
+    }
+}
+
 class IMatrixCollector {
 public:
     IMatrixCollector() = default;
@@ -63,11 +100,14 @@ public:
     void save_imatrix_legacy(int32_t ncall = -1) const;
     void save_imatrix(int32_t n_chunk = -1) const;
     bool load_imatrix(const char * file_name);
+    void load_fwht_tensor_file(const std::string & file_path);
+    bool tensor_uses_fwht(const std::string & tensor_name) const;
     const std::unordered_map<std::string, Stats> & get_mstats() const { return m_stats; }
 private:
     std::unordered_map<std::string, Stats> m_stats;
     common_params                          m_params;
     std::mutex                             m_mutex;
+    std::unordered_set<std::string>        m_fwht_tensor_names;
     std::vector<std::string>               m_datasets;
     int32_t                                m_last_chunk = 0;
     std::vector<char>                      m_src1_data;
@@ -299,6 +339,9 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
             exit(1); //GGML_ABORT("fatal error");
         }
         LOG_DBGV(2, "%s[%d]: %32s, %s, %5d x %5d, %d\n", __func__, m_last_chunk, wname.c_str(), ggml_op_name(t->op), (int)src1->ne[0], (int)src1->ne[2], (int)src1->type);
+
+        const bool use_fwht_moe = tensor_uses_fwht(wname);
+
         // loop over all possible experts, regardless if they are used or not in the batch
         for (int64_t ex = 0; ex < n_as; ++ex) {
             size_t e_start = ex*src1->ne[0];
@@ -317,11 +360,15 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
 
                     e.counts[ex]++;
 
-                    for (int64_t j = 0; j < src1->ne[0]; ++j) {
-                        e.values[e_start + j] += x[j] * x[j];
-                        if (!std::isfinite((float)e.values[e_start + j])) {
-                            LOG_ERR("%f detected in %s\n", (float)e.values[e_start + j], wname.c_str());
-                            exit(1);
+                    if (use_fwht_moe) {
+                        accumulate_importance(e.values.data() + e_start, x, src1->ne[0], true);
+                    } else {
+                        for (int64_t j = 0; j < src1->ne[0]; ++j) {
+                            e.values[e_start + j] += x[j] * x[j];
+                            if (!std::isfinite((float)e.values[e_start + j])) {
+                                LOG_ERR("%f detected in %s\n", (float)e.values[e_start + j], wname.c_str());
+                                exit(1);
+                            }
                         }
                     }
                 }
@@ -366,6 +413,8 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
         }
         LOG_DBGV(2, "%s[%d]: %32s, %s, %5d x %5d x %5d, %d\n", __func__, m_last_chunk, wname.c_str(), ggml_op_name(t->op), (int)src1->ne[0], (int)src1->ne[1], (int)src1->ne[2], (int)src1->type);
 
+        const bool use_fwht = tensor_uses_fwht(wname);
+
         for (int64_t i3 = 0; i3 < src1->ne[3]; ++i3) {
             for (int64_t i2 = 0; i2 < src1->ne[2]; ++i2) {
                 // handle 3D+ tensors, but flatten 3D+ activations when model tensor is 2D
@@ -374,11 +423,16 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
 
                 for (int64_t row = 0; row < src1->ne[1]; ++row) {
                     const float * x = (const float *) (data + row * src1->nb[1] + i2 * src1->nb[2] + i3 * src1->nb[3]);
-                    for (int64_t j = 0; j < src1->ne[0]; ++j) {
-                        e.values[mat_start + j] += x[j] * x[j];
-                        if (!std::isfinite((float)e.values[j])) {
-                            LOG_ERR("%f detected in %s\n", (float)e.values[j], wname.c_str());
-                            exit(1);
+
+                    if (use_fwht) {
+                        accumulate_importance(e.values.data() + mat_start, x, src1->ne[0], true);
+                    } else {
+                        for (int64_t j = 0; j < src1->ne[0]; ++j) {
+                            e.values[mat_start + j] += x[j] * x[j];
+                            if (!std::isfinite((float)e.values[j])) {
+                                LOG_ERR("%f detected in %s\n", (float)e.values[j], wname.c_str());
+                                exit(1);
+                            }
                         }
                     }
                 }
@@ -689,6 +743,30 @@ bool IMatrixCollector::load_imatrix(const char * file_name) {
     m_last_chunk = max_count / chunk_size;
 
     return true;
+}
+
+void IMatrixCollector::load_fwht_tensor_file(const std::string & file_path) {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        LOG_WRN("could not open FWHT tensor file: %s\n", file_path.c_str());
+        return;
+    }
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string name = line.substr(0, eq);
+        const std::string type = line.substr(eq + 1);
+        if (type == "q4_k_m_clone" || type == "Q4_K_M_CLONE") {
+            m_fwht_tensor_names.insert(name);
+        }
+    }
+    LOG_INF("loaded %zu FWHT tensor names from %s\n", m_fwht_tensor_names.size(), file_path.c_str());
+}
+
+bool IMatrixCollector::tensor_uses_fwht(const std::string & tensor_name) const {
+    return m_fwht_tensor_names.count(tensor_name) > 0;
 }
 
 static IMatrixCollector g_collector;
@@ -1066,6 +1144,19 @@ int main(int argc, char ** argv) {
     params.escape = false;
 
     common_init();
+
+    // Extract --fwht-tensor-file before common_params_parse rejects it
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--fwht-tensor-file") == 0 && i + 1 < argc) {
+            g_collector.load_fwht_tensor_file(argv[i + 1]);
+            // Remove these two args by shifting remaining args down
+            for (int j = i; j + 2 < argc; j++) {
+                argv[j] = argv[j + 2];
+            }
+            argc -= 2;
+            break;
+        }
+    }
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_IMATRIX, print_usage)) {
         return 1;

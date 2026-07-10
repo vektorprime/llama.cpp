@@ -1697,7 +1697,7 @@ size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
 // Fast Walsh-Hadamard Transform of size 256, in-place.
 // H[i][j] = (-1)^popcount(i & j), H @ H = 256 * I
 // O(N log N) = 2048 operations for N=256
-static void fwht_256(float * x) {
+void fwht_256(float * x) {
     for (int step = 1; step < 256; step <<= 1) {
         for (int i = 0; i < 256; i += 2*step) {
             for (int j = i; j < i + step; j++) {
@@ -1722,59 +1722,13 @@ void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_C
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
 
-    static int debug_block = 0;
-
     for (int64_t b = 0; b < nb; b++) {
         float rotated[QK_K];
         memcpy(rotated, x + b * QK_K, QK_K * sizeof(float));
 
-        if (b == 0 && debug_block < 3) {
-            float min_o = rotated[0], max_o = rotated[0], sum_o = 0, sum2_o = 0;
-            for (int i = 0; i < QK_K; i++) {
-                if (rotated[i] < min_o) min_o = rotated[i];
-                if (rotated[i] > max_o) max_o = rotated[i];
-                sum_o += rotated[i]; sum2_o += rotated[i]*rotated[i];
-            }
-            float mean_o = sum_o/QK_K, std_o = sqrtf(sum2_o/QK_K - mean_o*mean_o);
-            fprintf(stderr, "[DEBUG#%d] ORIG superblock: mean=%.6f std=%.6f min=%.6f max=%.6f\n",
-                    debug_block, mean_o, std_o, min_o, max_o);
-        }
-
         fwht_256(rotated);
 
-        if (b == 0 && debug_block < 3) {
-            float min_f = rotated[0], max_f = rotated[0], sum_f = 0, sum2_f = 0;
-            for (int i = 0; i < QK_K; i++) {
-                if (rotated[i] < min_f) min_f = rotated[i];
-                if (rotated[i] > max_f) max_f = rotated[i];
-                sum_f += rotated[i]; sum2_f += rotated[i]*rotated[i];
-            }
-            float mean_f = sum_f/QK_K, std_f = sqrtf(sum2_f/QK_K - mean_f*mean_f);
-            fprintf(stderr, "[DEBUG#%d] FWHT superblock: mean=%.6f std=%.6f min=%.6f max=%.6f\n",
-                    debug_block, mean_f, std_f, min_f, max_f);
-        }
-
         quantize_row_q4_K_ref(rotated, (block_q4_K *)(y + b), QK_K);
-
-        if (b == 0 && debug_block < 3) {
-            float deq[QK_K];
-            dequantize_row_q4_K((const block_q4_K *)(y + b), deq, QK_K);
-            float max_err = 0, mse = 0;
-            for (int i = 0; i < QK_K; i++) {
-                float e = fabsf(deq[i] - rotated[i]);
-                if (e > max_err) max_err = e;
-                mse += e*e;
-            }
-            mse /= QK_K;
-            fprintf(stderr, "[DEBUG#%d] Q4_K quant error: max_abs=%.6f mse=%.6f\n",
-                    debug_block, max_err, mse);
-            fprintf(stderr, "[DEBUG#%d] block params: d=%.6f dmin=%.6f\n",
-                    debug_block,
-                    GGML_FP16_TO_FP32(((block_q4_K *)(y + b))->d),
-                    GGML_FP16_TO_FP32(((block_q4_K *)(y + b))->dmin));
-        }
-
-        debug_block++;
     }
 }
 
@@ -1782,34 +1736,10 @@ void dequantize_row_q4_K_M_CLONE(const block_q4_K_M_CLONE * GGML_RESTRICT x, flo
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
 
-    static int rtd_count = 0;
-
     for (int64_t b = 0; b < nb; b++) {
         dequantize_row_q4_K((const block_q4_K *)(x + b), y + b * QK_K, QK_K);
 
-        if (b == 0 && rtd_count < 5) {
-            float min_d = y[0], max_d = y[0];
-            for (int i = 0; i < QK_K; i++) {
-                if (y[i] < min_d) min_d = y[i];
-                if (y[i] > max_d) max_d = y[i];
-            }
-            fprintf(stderr, "[DEQ#%d] After dequant (pre-IFWHT): min=%.6f max=%.6f\n",
-                    rtd_count, min_d, max_d);
-        }
-
         ifwht_256(y + b * QK_K);
-
-        if (b == 0 && rtd_count < 5) {
-            float min_f = y[0], max_f = y[0];
-            for (int i = 0; i < QK_K; i++) {
-                if (y[i] < min_f) min_f = y[i];
-                if (y[i] > max_f) max_f = y[i];
-            }
-            fprintf(stderr, "[DEQ#%d] After IFWHT (final):      min=%.6f max=%.6f\n",
-                    rtd_count, min_f, max_f);
-        }
-
-        rtd_count++;
     }
 }
 
@@ -1829,6 +1759,7 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
             fwht_256(rotated + b * QK_K);
         }
 
+        // quant_weights should already be in FWHT space from the collector
         if (quant_weights) {
             quantize_row_q4_K_impl(rotated, (block_q4_K *)((char *)dst + row * row_size), n_per_row, quant_weights);
         } else {
