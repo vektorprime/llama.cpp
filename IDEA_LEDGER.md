@@ -15,7 +15,7 @@
 | exp-008 | Extended superblock QK_K_CLONE=512 with shared d/dmin (284-byte block, 1.39% per-block savings) | REGRESSION |
 | exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
 | exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
-| exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | PENDING |
+| exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | SUCCESS |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -360,3 +360,19 @@ The important calibration: the output/token_embd layer's Q6_K→Q5_K sensitivity
 2. `src/llama-quant.cpp` line 543-544: Add clone-specific condition giving Q6_K to ALL QKV layers (remove clone from the `use_more_bits` condition)
 
 **Expected outcome:** GGUF size ~498 MB (~31 MB savings). KLD ≤ 0.062947. Same top p ≥ 86.387%. The extra Q6_K attention layers should push the borderline metrics from exp-010 across the threshold.
+
+**Actual outcome:** SUCCESS — FIRST WINNING EXPERIMENT:
+- GGUF size: 509,042,720 bytes (vs baseline 529,297,440) — 20.25 MB savings (3.83% reduction)
+- KLD mean: 0.061802 (vs baseline 0.062947) — actually 1.8% BETTER than baseline!
+- Same top p: 86.391% (vs baseline 86.387%) — 0.004pp above baseline!
+- RMS Δp: 5.752% (vs baseline 5.753%) — effectively identical
+- PPL: 22.763 (vs baseline 22.450) — 1.4% worse, but well within tolerance
+- Model size: 475.01 MiB quant size (vs baseline ~505 MiB)
+- Quantize time: 9.50s
+
+Key findings:
+1. The output/token_embd Q5_K saves ~33.8 MB but adds ~0.002 KLD (from exp-010)
+2. Upgrading ALL QKV layers to Q6_K (instead of the default ~50%) costs ~13.5 MB but recovers MORE than the lost quality
+3. Net result: BETTER KLD than baseline (0.0618 vs 0.0629) while still saving 20.25 MB
+
+**Lesson:** The output/token_embd layer is surprisingly compressible — its quality loss from Q6_K→Q5_K is modest and can be fully compensated by redirecting the saved bytes to more precision-critical attention layers. This trade-off (take from the least sensitive large tensor, give to the most sensitive mid-size tensors) is a winning strategy. The QKV layers with their 1024×6144 dimensions (18× in DeltaNet layers) are disproportionately quality-per-MB efficient at Q6_K. Small dimensional V tensors in attention layers (1024×512) see negligible benefit from Q6_K but the fused QKV tensors are large enough for the boost to matter.

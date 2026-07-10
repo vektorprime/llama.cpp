@@ -31,6 +31,7 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-008 | QK_K_CLONE=512 shared d/dmin (284-byte block) | 526,253,600 | 12.848800 | 0.006% | REGRESSION |
 | exp-009 | Token_embd/output Q6_K→Q4_K_M_CLONE (no block changes) | 463,740,960 | 0.073896 | 84.605% | REGRESSION |
 | exp-010 | Token_embd/output Q6_K→Q5_K (clone ftype) | 495,525,920 | 0.064977 | 85.937% | REGRESSION (borderline) |
+| **exp-011** | **Q5_K embd + Q6_K for ALL QKV layers** | **509,042,720** | **0.061802** | **86.391%** | **SUCCESS** |
 
 ## Key Insights (updated after exp-009)
 
@@ -57,6 +58,10 @@ Reduce GGUF file size below 505 MB while maintaining:
 The clearest remaining paths:
 
 - **Q5_K for token_embd + keep extra Q6_K QKV layers**: exp-010 showed Q5_K alone is 0.002 KLD and 0.45pp same_top_p away from passing. Keeping Q6_K for 2-3 more QKV layers (~4 MB) could recover the gap while still netting ~28 MB savings. This is a combination approach: per-tensor precision reduction + strategic selectivity.
+
+**WINNER — exp-011:** Q5_K for output/token_embd + Q6_K for ALL QKV attention layers produced KLD 0.061802 (better than baseline 0.062947!) and same top p 86.391% (> 86.387%) while saving 20.25 MB (3.83%). The strategy of taking precision from the least-sensitive large tensor (token_embd, 199 MB → Q5_K saves 33.8 MB) and reinvesting ~40% of the savings into the most precision-critical mid-size tensors (QKV, ~13.5 MB cost for all-24 Q6_K vs default ~50%) proved that calibrated trade-offs can beat the baseline on both size AND quality. This is the first successful experiment.
+
+- **Further directions from exp-011:** The output layer's Q6_K→Q5_K sensitivity is extremely low (~0.00006 KLD/MB). Could push further to Q4_K on the output layer combined with Q6_K on even more tensors. Or try Q5_K on other large-but-tolerant tensors (ffn_gate, ffn_up) while keeping precision on attention-critical tensors.
 
 - **Compress qs[] (128-byte weight data)** instead of scales. The 4-bit weights may have intra-superblock redundancy that scales lack. For example, many sub-blocks may have similar weight patterns that could share a compressed representation.
 
