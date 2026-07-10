@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-028 | Soft ls=0 biasing: 2% bias in local search favoring ls=0 for zstd 0x00 byte runs in qs[] — "boring sub-block" exploitation | PENDING |
+| exp-028 | Soft ls=0 biasing: 2% bias in local search favoring ls=0 for zstd 0x00 byte runs in qs[] — "boring sub-block" exploitation | NULL — 2% bias too small, ls=0 vs ls=1 MSE gap >2% even for low-mag sub-blocks |
 | exp-027 | Inter-block d/dmin predictor with snap: snap d/dmin to previous block if <0.5% relative diff, one-shot nibble re-quantize — zstd cross-block byte matching | NULL — redundant with fp16 rounding |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
@@ -914,4 +914,9 @@ Key insight: unlike exp-027 which targeted d/dmin (2.78%), this targets qs[] (88
 
 **Expected outcome:** GGUF zstd size reduces by 0.2-1.0 MB due to increased zero-byte density in qs[]. KLD increases modestly from sub-blocks zeroed at 2% bias but stays within 11.5% headroom.
 
-**Actual outcome:** PENDING
+**Actual outcome:** NULL — size and quality BOTH identical to exp-025 (510,848,302 bytes, KLD 0.055735, same_top_p 87.364%):
+- GGUF size (zstd): 510,848,302 bytes (identical to exp-025)
+
+The 2% bias had zero effect. The MSE gap between ls=0 and ls=1 is >2% even for low-magnitude sub-blocks in FWHT space. ls=0 forces all 32 weights to zero, creating a discrete MSE jump that's larger than 2% of the ls=1 MSE for any sub-block with non-trivial weights. No sub-blocks transitioned to ls=0 due to the bias.
+
+**Lesson:** The "boring sub-block" concept doesn't work at the 2% bias level. The MSE step-function at ls=0 (32 weights going from small non-zero to exactly zero) is larger than the bias can overcome. For this approach to work, either: (a) a much larger bias (10-50%) is needed — which would consume significant KLD headroom, (b) a different mechanism beyond simple MSE comparison is needed, or (c) the FWHT preprocessing makes the weight distribution too spread out for this to work.
