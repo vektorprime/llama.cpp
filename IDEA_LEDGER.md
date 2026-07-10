@@ -303,3 +303,26 @@ Key: This preserves asymmetric quantization (dmin + sub-block mins intact), full
 This is fundamentally different from all prior experiments (which compressed scales/mins). d and dmin capture coarse magnitude envelope, which should vary very gradually across adjacent blocks. The per-sub-block scales provide 6-bit fine-grained adjustment per 32 weights, easily absorbing small d/dmin mismatches.
 
 Block layout: 2+2+24+256 = 284 bytes for 512 weights (4.4375 bpw vs 4.5 bpw). 16 sub-blocks × 12 bits each = 192 bits = 24 bytes for scales[]. 512/2 = 256 bytes for qs[].
+
+---
+
+## exp-010: Q5_K for token_embd/output tensor
+
+**Hypothesis:** The token_embd/output tensor (1024 × 248320 = 254M elements, tied embeddings) is the single largest tensor at ~199 MB (Q6_K at 6.5625 bpw). Exp-009 showed that reducing it from Q6_K→Q4_K_M_CLONE (4.5 bpw, -2.0625 bpw reduction) saved 62.5 MB but increased KLD to 0.0739 (17.4% above the 0.0629 threshold). The KLD increase per MB saved was 0.000175 — lower than per-tensor mixing changes like exp-002 (0.000377/MB), suggesting the output layer is relatively more robust.
+
+Q5_K (5.5 bpw, -1.0625 bpw reduction) is exactly halfway between Q6_K and Q4_K_M_CLONE in bitrate terms. Key differences:
+- Q5_K uses 5-bit weights (vs 6-bit in Q6_K, 4-bit in Q4_K)
+- Q5_K uses 4-bit scale quantization with shared exponent per group of 4 sub-blocks
+- Q5_K preserves asymmetric quantization (d + dmin intact, like Q6_K)
+- Both Q5_K and Q6_K have per-sub-block mins (unlike Q4_K which has per-superblock mins)
+
+If the KLD increase is linear with bitrate reduction, Q5_K would give ~0.0685 KLD (halfway between 0.0629 and 0.0739). But Q5_K's structure is substantially more similar to Q6_K than to Q4_K:
+- Q5_K has 5-bit weights (32 levels) vs Q4_K's 4-bit (16 levels) — 2× more levels
+- Q5_K preserves the same scale quantization approach as Q6_K (shared exponents)
+- The output layer's 248K vocabulary provides massive statistical averaging
+
+Expected KLD may be sublinear with bitrate reduction, potentially staying under 0.063. If it stays within bounds, this would be the first successful size reduction at ~32 MB savings (6.3% of total model). Even if it slightly exceeds the threshold, the result would calibrate the Q6_K→Q5_K sensitivity of the output layer, valuable for future upper-bound estimation.
+
+**Change:** 1 line in `src/llama-quant.cpp` line 466-467: add a condition that for the clone ftype, assign Q5_K instead of Q6_K to the output/token_embd tensor.
+
+**Expected outcome:** GGUF size reduces by ~32 MB (6.3%). KLD expected in the 0.065-0.070 range. Same top p should remain ≥ 84%.
