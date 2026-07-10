@@ -29,6 +29,7 @@
 | **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **SUCCESS (-0.11MB vs exp-020, KLD +2.7% but 13.7% headroom)** |
 | exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | SUCCESS (-0.65MB, KLD +1.5% but 12.4% headroom) |
 | exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | SUCCESS (-0.60MB, KLD +1.1% but 11.5% headroom remaining) |
+| **exp-025** | **Nibble rotation + consecutive packing — (q+8)&0xF rotation maps center levels→0x0/0xF, consecutive-weight byte pairing for byte runs in qs[], same 144B struct, qs+-dequant** | **SUCCESS (-0.68MB, no quality change)** |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -100,6 +101,35 @@ The pattern from exp-020 through exp-022 was that d/dmin coarsening hit diminish
 The 4-bit sc (16 levels vs 5-bit's 32) saved an additional 0.60 MB — similar magnitude to exp-023's 5-bit step (-0.65 MB from exp-022). This confirms that sc precision reduction on scales[] (8.33% of block) is a productive target. The KLD increase (+1.06%) is smaller than exp-023's step (+1.50%), suggesting the quality cost may be sublinear as sc precision drops. Interestingly, PPL actually IMPROVED slightly vs exp-023 (22.576 vs 22.658), though same top p edged down slightly.
 
 **Lesson:** The scales[] field continues to respond to coarsening with diminishing but non-zero returns. Going from 6→5→4-bit sc has yielded: 6→5 saved 0.65 MB (+1.5% KLD), 5→4 saved 0.60 MB (+1.1% KLD). The KLD cost per saved MB is 0.00098 for the 5→4 step vs 0.00127 for the 6→5 step — more efficient. There is still 11.5% headroom remaining. Further potential: 3-bit sc (8 levels) would be the next step, though exp-021's lesson about the "cliff" effect suggests caution — quality degradation may accelerate non-linearly past 4 bits.
+
+## exp-025: Nibble rotation + consecutive packing for zstd-compressible qs[]
+
+**Hypothesis:** The 128-byte qs[] field (88.9% of block) is the biggest untapped target. The nibble values are near-entropy and resist zstd. Two changes make qs[] bytes more zstd-compressible without changing the decoded weight values:
+
+1. **Nibble rotation**: Before storage, rotate nibbles by 8 positions: `q_stored = (q_raw + 8) & 0xF`. In FWHT space, center levels (~7-8) are most common. Rotation maps these to nibbles 0x0 and 0xF, creating many 0x00 and 0xFF bytes in qs[] — trivially compressible by zstd.
+
+2. **Consecutive-weight packing**: Pack consecutive weights as byte pairs: `qs[l] = L[2*l] | L[2*l+1] << 4` (stock: pairs weights 32 apart). Consecutive weights in FWHT space are more correlated than weights 32 apart, creating byte-level runs.
+
+Both changes are bijections (mathematically lossless on the 4-bit values). The dequant correctly reverses both, so decoded weights are identical to exp-024. Only the byte-level layout of qs[] changes, affecting zstd compression.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` — `quantize_fwht_superblock()`: Apply rotation to nibbles; change packing from interleaved to consecutive
+2. `ggml/src/ggml-quants.c` — `dequantize_row_q4_K_M_CLONE()`: Self-contained dequant with inverse rotation + consecutive unpacking + IWHT (replaces thin wrapper)
+3. `ggml/src/ggml-cuda/convert.cu` — `dequantize_block_q4_K_M_CLONE` kernel: New unpacking pattern + inverse rotation
+
+**Expected outcome:** GGUF zstd size reduces due to better byte-level zstd matching in qs[]. Quality metrics unchanged from exp-024 (mathematically identical weights).
+
+**Actual outcome:** SUCCESS — size reduced, quality unchanged:
+- GGUF size (zstd): 510,848,302 bytes (vs exp-024: 511,565,412, -0.68 MB, -0.14%)
+- KLD mean: 0.055735 (identical to exp-024; 11.5% headroom vs threshold 0.062947)
+- Same top p: 87.364% (identical to exp-024; +0.98pp vs threshold 86.387%)
+- RMS Δp: 5.239% (identical)
+- PPL: 22.576 (identical)
+- Quantize time: 69.10s
+
+The 0.68 MB saving from qs[] (88.9% of block) is comparable to individual sc coarsening steps (0.60-0.65 MB from 8.33% of block). The nibble rotation + consecutive packing makes qs[] bytes 0.14% more zstd-compressible with ZERO quality cost — a genuine free compression signal from the byte layout.
+
+**Lesson:** The qs[] field's byte-level compressibility can be improved by re-encoding the nibbles into more compressible byte patterns. The nibble rotation exploits the center-heavy distribution in FWHT space to bias bytes toward 0x00/0xFF. The consecutive packing exploits within-sub-block correlation. Both are lossless on the quantization values — they only change which byte patterns the compressor sees. The 0.68 MB saving is a floor estimate; different rotation offsets or packing strategies might yield more. The approach demonstrates that zstd compression of quantized tensor data is susceptible to the byte-level layout, not just the underlying entropy.
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 
