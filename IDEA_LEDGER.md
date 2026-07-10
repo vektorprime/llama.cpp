@@ -20,7 +20,7 @@
 | exp-013 | Iterative Joint Optimization (IJO): multi-pass refinement of superblock parameters within 144-byte block — fix nibbles, re-optimize grid, iterate | REGRESSION |
 | exp-014 | Transparent zstd compression of GGUF file (post-quantization) — lossless decompression on load | SUCCESS |
 | exp-015 | zstd level 19 — maximum GGUF compression, benchmarked all algorithms/params (xz, bzip2, --ultra -22, split, delta) | SUCCESS |
-| exp-016 | Walsh-Hadamard per-superblock preprocessing — FWHT before quantize, IWHT after dequantize | PENDING |
+| exp-016 | Walsh-Hadamard per-superblock preprocessing — FWHT before quantize, IWHT after dequantize | SUCCESS |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -555,3 +555,22 @@ Key implementation details:
 7. `ggml/src/ggml-cpu/repack.cpp`: Remove clone from repack support (3 locations)
 
 **Expected outcome:** GGUF size unchanged (529,297,440 bytes — same block format). Quality should IMPROVE (KLD < baseline 0.062947, same top p > baseline 86.387%) because Hadamard rotation reduces per-element quantization error by eliminating outlier-dominated sub-blocks. The FWHT makes all 256 weights within a superblock have similar magnitude, improving the efficiency of the per-sub-block scale/min adaptation. If quality improves, this validates the approach and opens the door to future experiments that trade the quality headroom for size reduction (e.g., compressing scales).
+
+**Actual outcome:** SUCCESS — quality improved at same file size:
+- GGUF size (zstd): 513,745,093 bytes (vs baseline 529,297,440 raw, vs exp-015 513,124,023 zstd)
+- Raw quant size: 494.32 MiB (identical to baseline — same 144-byte block format)
+- KLD mean: 0.056838 (vs baseline 0.062947) — **9.7% improvement**
+- Same top p: 87.200% (vs baseline 86.387%) — **0.81pp improvement**
+- RMS Δp: 5.183% (vs baseline 5.753%) — **9.9% improvement**
+- PPL: 22.489 (vs baseline 22.450) — 0.17% worse (slight PPL increase despite better KLD)
+- Quantize time: 66.6s (vs baseline 9.4s — 7× slower due to FWHT per superblock)
+
+**Lesson:** The Walsh-Hadamard transform is a validated pre-processing technique for Q4_K quantization. It transforms the heavy-tailed weight distribution to approximately Gaussian, eliminating outlier-dominated sub-blocks and making quantization error more uniform. The CUDA FWHT+IWH kernel (32 threads, 1KB shared memory, 8 butterfly stages) fits within existing Q4_K launch parameters. 
+
+Key observations:
+1. Quality improvement is significant (9.7% KLD reduction) at ZERO additional byte cost — the same 144-byte block stores rotated weights
+2. FWHT is cheap: 2048 ops per 256 elements (8 stages, 128 pair ops per stage), negligible vs Q4_K dequant cost
+3. Rotated weight byte patterns compress marginally worse with zstd (513.7 MB vs 513.1 MB), but raw size is identical
+4. The quality headroom created can be traded for size reduction in future experiments (e.g., compressing scales[] or d/dmin while staying above baseline quality)
+5. This validates the principle that OUTLIER REMOVAL is more effective than PRECISION REDUCTION for improving quantization quality
+6. Future experiments could combine Hadamard preprocessing with scale/min compression — with 9.7% quality headroom, a 1-2 byte scale reduction might stay above baseline KLD
