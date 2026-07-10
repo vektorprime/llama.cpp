@@ -26,17 +26,28 @@ Reduce GGUF file size below 505 MB while maintaining:
 | exp-003 | Symmetric sub-block quant with 8-bit scales (no dmin) | 520,165,920 | 0.114585 | 82.501% | REGRESSION |
 | exp-004 | 5+3b scale/min per sub-block (8-byte scales, 140B block) | 523,209,760 | 0.077500 | 85.427% | REGRESSION |
 | exp-005 | Dual-anchor DPCM delta encoding (10-byte scales, 142B block) | 526,253,600 | 0.180095 | 78.472% | REGRESSION |
+| exp-006 | SDM predictor for mins (8-byte scales) — implementation bugs | 523,209,760 | NULL | NULL | FAILED |
+| exp-007 | Codebook VQ + per-weight nibble re-optimization (8-byte scales) | 523,209,760 | 0.101213 | 83.631% | REGRESSION |
 
-## Key Insights (as of exp-004)
+## Key Insights (updated after exp-007)
 
-1. **Asymmetric quantization is essential at 4 bits**: exp-003 removed per-sub-block mins/dmin (going symmetric). KLD increased 82%. Per-sub-block min offsets provide grid centering for skewed weight distributions within sub-blocks.
+1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
-2. **Per-tensor mixing boosts are essential**: exp-002 showed Q6_K upgrades for WV and FFN_DOWN in stock Q4_K_M are not cosmetic — removing them degrades KLD by 16.7%.
+2. **Per-tensor mixing boosts are essential** (exp-002): Q6_K upgrades for WV and FFN_DOWN are not cosmetic. Removing them degrades KLD by 16.7%.
 
-3. **Scale and min precision are both critical**: exp-004 reduced scale precision 6→5 bits and min precision 6→3 bits while keeping the asymmetric framework intact. Even this caused KLD increase of 23.1%. Mins especially need more than 3 bits — 8 levels is too coarse for proper sub-block grid centering. Scales at 5 bits also degrade.
+3. **Scale and min precision are both critical** (exp-004): reducing scale 6→5 bits and min 6→3 bits caused KLD increase of 23.1%. Both need ≥5-6 bits.
 
-4. **Size-quality tradeoff is steep**: All 4 experiments have either been null (dead code), or achieved size reduction at unacceptable quality cost. The KLD threshold (0.062947) is narrow — even 1.15% size reduction can push KLD beyond it.
+4. **DPCM/correlation chains fail** (exp-005): inter-sub-block correlation is too weak for delta encoding — errors accumulate and cascade.
 
-5. **Future direction**: Focus on lossless-within-margin compression. DPCM/delta encoding of scale-min pairs (keeping same 6+6 bit precision but exploiting inter-sub-block correlation to reduce total bits) is the most promising approach. Mixed precision using importance-weighted sub-blocks is another. Simple precision reduction won't work — need encoding schemes that preserve effective precision.
+5. **Per-weight recovery cannot fix systematic grid bias** (exp-007): codebook VQ introduces sub-block-level scale errors that affect all 32 weights systematically. Nibble re-optimization only provides local adjustment; it cannot reposition the quantization grid.
 
-6. **DPCM delta encoding fails due to error accumulation (exp-005)**: Encoding scale-min differences across sub-blocks using 4-bit signed deltas (±8) compounds errors. With dual anchors (max 3-step chain), error still accumulates to significant levels. Inter-sub-block scale deltas sometimes exceed the delta range, and clamped values cascade. The correlation between adjacent sub-blocks is insufficient to justify DPCM's precision trade-off. Codebook-based vector quantization or intra-sub-block correlation (delta-encoding m from sc rather than from previous m) may be more promising.
+6. **The KLD threshold is narrow** (all experiments): every approach that achieved any size reduction also increased KLD by ≥23%. The 0.062947 threshold is very tight — even 1.15% size reduction pushes KLD far beyond it.
+
+7. **Block compression has limited reach**: ~40% of model weights are Q6_K tensors that don't use the clone block. Per-block savings of 2.78% translate to only ~1.15% overall.
+
+## What's Left to Try
+
+The pattern is clear: any compression of scales or mins degrades quality. The remaining angles:
+- **Compress qs[] (128-byte weight data)** instead of scales. The 4-bit weights may have spatial redundancy (similarity across adjacent weights or sub-blocks) that could be exploited — e.g., delta encoding across columns, or pattern-based compression.
+- **Secondary quantization with importance weighting**: apply coarser quantization to less important sub-blocks while keeping full precision for important ones.
+- **Tighter scale encoding without information loss**: e.g., Huffman/arithmetic coding of scale-min pairs exploiting the non-uniform distribution of values (but this is variable-length, hard to implement in fixed-size blocks).
