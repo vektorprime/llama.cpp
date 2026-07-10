@@ -13,7 +13,7 @@
 | exp-006 | Scale-Dependent Min Prediction (SDM/SPD): predictor m≈(d/dmin)×sc with 4b grouped deltas then 5b sc+3b deltas (8-byte scales) | FAILED (implementation) |
 | exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | REGRESSION |
 | exp-008 | Extended superblock QK_K_CLONE=512 with shared d/dmin (284-byte block, 1.39% per-block savings) | REGRESSION |
-| exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | PENDING |
+| exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -28,6 +28,17 @@ Rationale:
 Changes: **1 line** in `src/llama-quant.cpp` — modify the OUTPUT/TOKEN_EMBD handler to not override the clone type to Q6_K
 
 **Expected outcome:** GGUF size reduces by ~65 MB (from ~505 MB to ~440 MB). KLD may increase moderately but could stay within the 0.062947 threshold if the output projection is tolerant. Same top p might degrade slightly.
+
+**Actual outcome:** REGRESSION:
+- GGUF size: 463,740,960 bytes (vs baseline 529,297,440) — 65.6 MB savings (12.4% reduction)
+- KLD mean: 0.073896 (vs baseline 0.062947) — 17.4% increase, above threshold
+- Same top p: 84.605% (vs baseline 86.387%) — below threshold by 1.78pp
+- RMS Δp: 6.350% (vs baseline 5.753%)
+- PPL: 22.909 (vs baseline 22.450) — 2.0% worse
+
+Interestingly, the KLD increase (0.010949) is nearly identical to exp-002 (0.010489) despite saving 2.2× more space (62.5 MB vs 27.8 MB). The output tensor appears slightly less quality-sensitive per MB than attention_V/FFN_DOWN, which is counterintuitive given the output layer's direct role in token prediction. However, the KLD is still too far above threshold.
+
+**Lesson:** The token embedding/output layer's Q6_K → Q4_K_M_CLONE downgrade is too aggressive for a single-step change. A gradual approach (Q6_K → Q5_K first, saving ~32 MB) could be tested. Also, the model may tolerate lower output precision if compensated by keeping the attention_V and FFN_DOWN boosts intact — the combined effect may be worse than either alone. For a future experiment, Q5_K for token_embd plus keeping all other Q6_K boosts could test the middle ground.
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
