@@ -37,8 +37,12 @@ Reduce GGUF file size below 505 MB while maintaining:
 | **exp-014** | **Transparent zstd compression of GGUF file** | **515,293,111** | **0.062947** | **86.387%** | **SUCCESS** |
 | **exp-015** | **zstd level 19 — maximum GGUF compression** | **513,124,023** | **0.062947** | **86.387%** | **SUCCESS** |
 | **exp-016** | **Walsh-Hadamard FWHT preprocessing — same 144B block** | **513,745,093** | **0.056838** | **87.200%** | **SUCCESS** |
+| exp-017 | Trade FWHT headroom — 6+2-bit scales (CUDA dequant mismatch) | — | — | — | FAILED |
+| exp-018 | Column-major block reordering (load-side breakage) | — | — | — | FAILED |
+| **exp-019** | **FWHT + MSE local search on ls/lm/d/dmin** | **513,873,380** | **0.055513** | **87.411%** | **SUCCESS (+2.3% KLD vs exp-016)** |
+| **exp-020** | **Coarse fp16 d/dmin rounding (5 mantissa bits) for zstd** | **512,956,650** | **0.052883** | **87.789%** | **SUCCESS (-0.9MB, -4.7% KLD)** |
 
-## Key Insights (updated after exp-016)
+## Key Insights (updated after exp-020)
 
 1. **Asymmetric quantization is essential at 4 bits** (exp-003): removing per-sub-block mins/dmin caused KLD increase of 82%.
 
@@ -76,12 +80,14 @@ Reduce GGUF file size below 505 MB while maintaining:
 
 - **Combine zstd compression with exp-011's trade-off**: The token_embd Q6_K→Q5_K trade-off (exp-011) saved 20 MB with quality IMPROVEMENT. Combined with zstd -19 compression, this could save ~36 MB total (20 + 16). AGENTS.md rules restrict per-tensor mixing though.
 
-- **Lossy compression of GGUF**: Accept minor quality loss in exchange for better compression. For example, quantize super-block scales (d, dmin) to fewer bits (e.g., FP8 instead of FP16), reducing metadata overhead per block while accepting a known KLD increase. Some compression schemes like JPEG-style quantization of the metadata section could save additional MB.
+- **Further d/dmin coarsening**: Clear 7-8 mantissa bits (keep 2-3 instead of 5), creating even more repetition. The quality impact may increase, but with the existing headroom (KLD 0.0529 vs threshold 0.0629 — 15.9% margin), more aggressive d/dmin compression can be absorbed.
 
-- **GGUF format optimization**: Strip redundant metadata (multiple base model repo URLs, redundant name fields). Store tokenizer strings more efficiently (e.g., shared prefix dictionary). Use variable-length encoding for tensor names.
+- **Scale[] byte coarsening**: Apply similar rounding to the 12-byte scales[] field. Since scales encode 6-bit values packed into 12 bytes with complex bit interleaving, simple byte-level zeroing is not straightforward. But constraining ls/lm to fewer distinct patterns could create more byte-level repetition. This requires no dequant changes since the existing scaling formula is unchanged.
 
-- **Custom compression codec**: A domain-specific compression scheme that understands the Q4_K/6_K block structure could achieve better ratios than general-purpose compressors. For example, delta-encoding d/dmin across adjacent blocks (not bytes), or run-length encoding of similar scale patterns.
-
-- **Post-quantization compression is largely exhausted.** The 3.06% ceiling is a hard limit imposed by the near-entropy nature of 4-bit quantized data. Future size reductions must come from changes to the quantization itself or the GGUF format.
+- **GGUF metadata stripping**: Remove redundant metadata fields (multiple base model repo URLs, redundant name fields) from the GGUF file during quantize output.
 
 14. **Walsh-Hadamard preprocessing improves Q4_K quality at same file size** (exp-016): Applying FWHT to each 256-element superblock before quantization, then IWHT after dequantization, transforms the heavy-tailed weight distribution to approximately Gaussian (QuIP/PolarQuant technique). This eliminates outlier-dominated sub-blocks. Results: KLD 0.056838 vs baseline 0.062947 (−9.7%), same top p 87.200% vs 86.387% (+0.81pp), RMS Δp 5.183% vs 5.753% (−9.9%). The FWHT costs 2048 ops per 256 elements. However, the rotated weights produce slightly different byte patterns that zstd compresses marginally less well (513.7 MB vs 513.1 MB for exp-015). The quality headroom created by Hadamard preprocessing can be traded for size reduction in future experiments (e.g., reducing scale precision while staying above quality thresholds).
+
+15. **MSE local search on secondary quantization finds better parameters** (exp-019): The standard Q4_K max/min heuristic for d/dmin/ls/lm leaves measurable MSE on the table. A local search (±1 on ls/lm, ±2% on d/dmin) directly in the quantized parameter space finds 2.3% better KLD than the heuristic alone (0.0555 vs 0.0568). The key: search in already-quantized space avoids the circular re-quantization destabilization that killed exp-013.
+
+16. **Coarse fp16 rounding improves zstd compression AND quality** (exp-020): Clearing 5 low mantissa bits from d and dmin (reducing fp16 precision from 10 to 5 mantissa bits) creates repeating byte patterns that zstd compresses, saving 0.92 MB. Quality unexpectedly IMPROVED (KLD 0.0529 vs 0.0555) — the rounding acts as implicit regularization by preventing the MSE search from overfitting to fine d/dmin values. This demonstrates the "lossy preprocessing for lossless compression" strategy: controllable quality loss in metadata creates byte-level pattern matches that the compressor exploits, with net quality neutral or improved.

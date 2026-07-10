@@ -24,8 +24,28 @@
 | exp-017 | Trade FWHT quality headroom — 6+2-bit scale/min encoding (8 active bytes, 144-byte struct) | FAILED (CUDA dequant) |
 | exp-018 | Column-major block reordering for better zstd compression — lossless byte permutation in GGUF | FAILED (load-side) |
 | exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | SUCCESS (+2.3% KLD, +0.21pp same_top_p vs exp-016) |
+| **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
 
-## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
+## exp-020: Coarse fp16 rounding of d/dmin for better zstd byte-level compression
+
+**Hypothesis:** The zstd compression of GGUF files plateaus at ~3.06% of raw quant size because 98% of data is near-entropy 4-bit/6-bit quantized weights. However, the 4 bytes of d+dmin per 144-byte block (2.78% of block) use fp16 with 10-bit mantissa, producing thousands of distinct 2-byte patterns that zstd cannot effectively match. By rounding d and dmin to a coarser fp16 representation (clearing 5 low mantissa bits, keeping 5), we reduce the number of distinct d/dmin byte patterns by ~32×. This creates byte-level repetition across adjacent blocks that zstd's LZ77 algorithm finds and compresses. The key safety property: the MSE local search (from exp-019) on ls/lm values adapts to absorb the ~3% d/dmin rounding error, keeping quality within the existing headroom. This is quantize-side ONLY — no struct, dequant, or CUDA changes.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c`: In `quantize_fwht_superblock`, after the standard secondary quantization heuristic (step 2), add fp16 mantissa rounding: zero the low 5 bits of the fp16 representation of d and dmin before proceeding with the local MSE search. The local search on ls/lm (±1 perturbation) compensates for any rounding error.
+
+**Expected outcome:** GGUF zstd size reduces by 0.5-2 MB due to more repetitive d/dmin byte patterns. Quality should stay within threshold (KLD ≤ 0.062947) because the existing 11.8% headroom absorbs the ~3% d/dmin rounding error.
+
+**Actual outcome:** SUCCESS — BOTH size reduced AND quality improved:
+- GGUF size (zstd): 512,956,650 bytes (vs exp-019: 513,873,380, -0.92 MB, -0.18%; vs baseline: 529,297,440, -16.34 MB, -3.09%)
+- KLD mean: 0.052883 (vs exp-019 0.055513, -4.7% improvement; vs baseline 0.062947, -16.0%)
+- Same top p: 87.789% (vs exp-019 87.411%, +0.38pp; vs baseline 86.387%, +1.40pp)
+- RMS Δp: 5.171% (vs exp-019 5.211%, comparable)
+- PPL: 22.375 (vs exp-019 22.224, +0.15, slight increase)
+- Quantize time: 66.6s (identical to exp-019)
+
+Unexpected result: the coarse fp16 rounding IMPROVED KLD by 4.7% beyond exp-019. Hypothesis: the rounding acts as implicit regularization, preventing the MSE local search from overfitting to per-block d/dmin values that are too precisely tuned. Alternatively, the re-optimization of ls/lm on the rounded d/dmin grid happens to find different (slightly better) local minima.
+
+**Lesson:** Post-quantization zstd compression can be improved by reducing the entropy of block metadata (d, dmin) through controlled quantization. The 5 mantissa bits cleared reduce the distinct fp16 patterns per exponent from 1024 to 32, creating byte-level matches that zstd exploits. Crucially, the ls/lm ±1 local search absorbs the d/dmin error, making the quality impact not only acceptable but slightly beneficial. This demonstrates that "lossy preprocessing for lossless compression" is a viable strategy: make the data more compressible (through controlled quality loss) and let the compressor's efficiency gains outweigh the quality cost. Future experiments could explore further d/dmin coarsening or applying similar rounding to the scales[] field (though that requires dequant path changes).
 
 **Hypothesis:** The token_embd tensor (1024 × 248320 = 254M elements), tied to the output projection in Qwen3.5-0.8B, is the single largest tensor at ~199 MB (Q6_K, 6.5625 bpw) — 40.2% of the total 494 MB model. The CODE (not the block struct) in `llama-quant.cpp` line 448-467 unconditionally overrides this tensor from the default_type (Q4_K_M_CLONE) to Q6_K, even for the clone ftype. By reserving only the clone ftype from this override, we let the tied embeddings use Q4_K_M_CLONE (4.5 bpw), saving approximately 65.6 MB (12.4% of total). **This is purely a per-tensor mixing change — no block struct modifications at all.**
 
