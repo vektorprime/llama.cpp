@@ -27,6 +27,7 @@
 | **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
 | **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
 | **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **SUCCESS (-0.11MB vs exp-020, KLD +2.7% but 13.7% headroom)** |
+| exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | PENDING |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -48,6 +49,18 @@
 The marginal size reduction (-0.11 MB) is smaller than exp-020's jump (-0.92 MB), suggesting diminishing returns from d/dmin coarsening. The KLD increase (+2.7%) is modest and well within headroom, confirming that a single variable change is safe when headroom exists. However, the diminishing size returns and increasing quality cost suggest the d/dmin coarsening strategy is nearing its limit.
 
 **Lesson:** Clearing mantissa bits from d/dmin follows a classic diminishing-returns curve for zstd compression. Going from full fp16→5-bit saved 0.92 MB with KLD IMPROVEMENT. Going 5→4-bit saved only 0.11 MB with KLD DEGRADATION (+2.7%). The d/dmin fields represent only 2.78% of block bytes, and reducing their distinct patterns from 1024→32→16 hits the point where patterns are already sufficiently repetitive for zstd's LZ77 matching (~3-byte minimum match). Further coarsening to 3-bit (exp-021's d/dmin part) was catastrophic. Future experiments should shift focus from d/dmin to the much larger scales[] (8.33% of block) or qs[] (88.9% of block) fields, or try soft quantization/dithering.
+
+## exp-023: 5-bit sc quantization — target scales[] for zstd compression
+
+**Hypothesis:** d/dmin coarsening is at limits (2.78% of block, diminishing returns after exp-022). The 12-byte scales[] field (8.33% of block) stores 8 pairs of (6-bit sc, 6-bit m) packed densely — all 256 byte values used, resisting zstd. By quantizing sc to 5-bit (0-31, from 6-bit 0-63), we reduce distinct sc patterns by 2×, creating more byte-level repetition in the packed scales[] bytes. The dequant reads the same bytes unchanged (get_scale_min_k4 unpacks 6-bit values, sees only 0-31 for sc). d_val adjusts proportionally (max_scale/31 vs max_scale/63). This is a ONE variable change: sc 6→5 bits, m stays 6-bit. The local MSE search on ls/lm/d/dmin absorbs the coarser sc quantization. KLD headroom: 13.7% (0.0543 vs 0.0629).
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` line 1739: inv_scale: 63.f → 31.f
+2. `ggml/src/ggml-quants.c` line 1742: ls[j] MIN(63, ...) → MIN(31, ...)
+3. `ggml/src/ggml-quants.c` line 1745: d_val_candidate: max_scale/63 → max_scale/31
+4. `ggml/src/ggml-quants.c` line 1827: local search boundary try_ls > 63 → > 31
+
+**Expected outcome:** zstd compression of scales[] bytes improves from reduced entropy (5-bit sc values create more byte-level repetition). Size reduction modest (scales[] is 8.33% of block, ~2.8× larger than d/dmin). KLD may increase but should stay within 13.7% headroom.
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 
