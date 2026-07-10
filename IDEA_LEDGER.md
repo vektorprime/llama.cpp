@@ -26,7 +26,7 @@
 | exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | SUCCESS (+2.3% KLD, +0.21pp same_top_p vs exp-016) |
 | **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
 | **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
-| **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **TBD** |
+| **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **SUCCESS (-0.11MB vs exp-020, KLD +2.7% but 13.7% headroom)** |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -37,7 +37,17 @@
 
 **Expected outcome:** GGUF zstd size reduces by 0.5-1.5 MB compared to exp-020 due to more repetitive d/dmin byte patterns. KLD may increase modestly from 0.0529 but should stay well within the 0.0629 threshold given 16% headroom. Same top p should remain ≥ 86.387%.
 
-**Actual outcome:** TBD
+**Actual outcome:** SUCCESS — size reduced, quality maintained:
+- GGUF size (zstd): 512,839,250 bytes (vs exp-020: 512,956,650, -0.11 MB, -0.023%)
+- KLD mean: 0.054332 (vs exp-020 0.052883, +2.7%; vs threshold 0.062947, 13.7% headroom)
+- Same top p: 87.654% (vs exp-020 87.789%, -0.14pp; vs threshold 86.387%, +1.27pp)
+- RMS Δp: 5.199% (vs exp-020 5.171%)
+- PPL: 22.455 (vs exp-020 22.375, +0.080)
+- Quantize time: 70.46s
+
+The marginal size reduction (-0.11 MB) is smaller than exp-020's jump (-0.92 MB), suggesting diminishing returns from d/dmin coarsening. The KLD increase (+2.7%) is modest and well within headroom, confirming that a single variable change is safe when headroom exists. However, the diminishing size returns and increasing quality cost suggest the d/dmin coarsening strategy is nearing its limit.
+
+**Lesson:** Clearing mantissa bits from d/dmin follows a classic diminishing-returns curve for zstd compression. Going from full fp16→5-bit saved 0.92 MB with KLD IMPROVEMENT. Going 5→4-bit saved only 0.11 MB with KLD DEGRADATION (+2.7%). The d/dmin fields represent only 2.78% of block bytes, and reducing their distinct patterns from 1024→32→16 hits the point where patterns are already sufficiently repetitive for zstd's LZ77 matching (~3-byte minimum match). Further coarsening to 3-bit (exp-021's d/dmin part) was catastrophic. Future experiments should shift focus from d/dmin to the much larger scales[] (8.33% of block) or qs[] (88.9% of block) fields, or try soft quantization/dithering.
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 

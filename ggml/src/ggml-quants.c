@@ -1750,8 +1750,8 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
     {
         uint16_t dh = GGML_FP32_TO_FP16(d_val_candidate);
         uint16_t dmh = GGML_FP32_TO_FP16(dmin_val_candidate);
-        dh = dh & 0xFFE0u;  // zero low 5 mantissa bits
-        dmh = dmh & 0xFFE0u;
+        dh = dh & 0xFFC0u;  // zero low 6 mantissa bits
+        dmh = dmh & 0xFFC0u;
         d_val_candidate = GGML_FP16_TO_FP32(dh);
         dmin_val_candidate = GGML_FP16_TO_FP32(dmh);
     }
