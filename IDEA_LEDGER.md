@@ -5,6 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 mask at final write to ensure all d/dmin on 4-bit mantissa grid after refinement steps — slight zstd improvement with bounded quality cost** | **TBD** |
 | **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — min coarsening hurt more than scale improvement helped** | **REGRESSION — 506.1MB, KLD 0.05981, top_p 87.11%** |
 | exp-032 | CAQ: Compact Asymmetric Quantization — 140-byte block, 4+4 packed sc/m, independent d/dmin, rewritten CPU+CUDA dequant | SUCCESS — 505.9MB, KLD 0.0562, top_p 87.37% |
 | exp-030 | **5-bit m quantization (m 6→5)** — single variable, quantize-side only, coarsening as regularization improves KLD | **SUCCESS** — 510.32MB (-0.53MB vs exp-025), KLD 0.054105 (-2.9%), PPL 22.263 |
@@ -960,3 +961,16 @@ The hypothesis was wrong: better scale precision (5-bit, 32 levels vs 4-bit, 16 
 The slight PPL improvement (22.855 vs 23.016) is likely a statistical artifact of the local search exploring a slightly different region of the parameter space with the new bounds, not a genuine improvement.
 
 **Lesson:** At the 4-bit level, min precision is already at its quality floor. The apparent symmetry between scale and min (both 4-bit in CAQ) is misleading — they serve different roles and have different sensitivity profiles. Scale precision directly controls quantization grid granularity (affecting every weight linearly), while min precision controls sub-block centering (shifting all weights by a common offset). Below 4 bits, the coarse min centering creates systematic per-sub-block bias that even optimal scale can't recover from. For future experiments: never reduce min below 4 bits within a 140-byte block. If squeezing further, target other fields (d/dmin, qs encoding) or structural changes.
+
+---
+
+## exp-034: CAQ d/dmin write-time re-rounding — ensure 4-bit mantissa grid consistency
+
+**Hypothesis:** The CAQ format already includes 4-bit fp16 d/dmin rounding (Step 2.5, mask 0xFFC0) and nibble rotation + consecutive packing (Steps 8, 10). However, d and dmin refinement (Steps 4, 5, 7) adjusts values by ±1-2%, potentially shifting them off the 4-bit mantissa grid before the final write at Step 9. The `GGML_FP32_TO_FP16(d_val)` conversion at write time uses full 10-bit mantissa precision, meaning refined values may have low mantissa bits set — creating unique byte patterns per block that zstd cannot match.
+
+By re-applying the 0xFFC0 mask at write time, we ensure ALL blocks' d and dmin values are strictly on the same 4-bit mantissa grid. This creates more byte-level repetition (only ~16 possible values per exponent) for zstd's LZ77 engine, potentially saving a small amount of additional compression. The quality cost is bounded: the ±1-2% refinement adjustment maps to ≤2% error on d/dmin scale factors, which is well within the 10.7% KLD headroom (KLD 0.056214, threshold 0.062947, headroom 0.006733).
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` lines 1856-1857: Apply 0xFFC0 mask to fp16 values before writing y->d and y->dmin
+
+**Expected outcome:** GGUF zstd size reduces by 0.05-0.5 MB. KLD should stay within threshold. Same top p should stay ≥ 86.387%.
