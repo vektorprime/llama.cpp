@@ -16,6 +16,7 @@
 | exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
 | exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
 | exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | SUCCESS |
+| exp-012 | Q5_K embd + Q6_K for first 16/24 QKV + Q5_K for last 8/24 QKV layers | In progress |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 

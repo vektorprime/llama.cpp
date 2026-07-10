@@ -78,16 +78,20 @@ and dequantization logic as Q4_K_M.
 
 ## Research Direction
 
-**DO NOT modify per-tensor mixing** (which tensors get Q6_K vs Q4_K etc.). That
-path reduces quality without meaningful size gains.
+**ABSOLUTELY FORBIDDEN: Switching between pre-built quantization types.**
+- Do NOT change a tensor from Q6_K to Q5_K, or Q4_K to Q8_0, etc.
+- Do NOT selectively quantize attention layers differently from FFN layers.
+- Do NOT tweak `use_more_bits()` or `llama-quant.cpp` per-tensor conditions.
+- Using a stock quant type without modifying its implementation is NOT novel research.
+- The ONLY allowed changes are to the Q4_K_M_CLONE quant/dequant code itself.
 
-**DO focus on novel compression of the block itself:**
-- Shrink `qs[]` (128 → 112 bytes): 3.5 bpw by packing fewer 4-bit values
-- Shrink `scales[]` (12 → 8 bytes): fewer scale bits per superblock
-- Tighter encoding: variable-length codes, adaptive bit allocation
-- Multi-level quantization: secondary codebooks, residual quantization
-- Mixed precision: different bpw per substructure within the superblock
-- These are just examples — you are expected to research and devise your own novel techniques.
+**What TO do: modify the clone's quantization algorithm in `ggml-quants.c`.**
+- Change the quantize function: new encoding schemes, custom bit packing
+- Change the dequantize function: match your new encoding
+- Shrink the block struct — but pair every removed byte with a recovery technique
+- Implement codebook quantization, residual quantization, mixed precision
+- Exploit weight distribution properties: sparsity, clustering, outlier handling
+- Create a genuinely new quant format, not a remix of existing types
 
 **Use the web search tool** to find the latest arXiv papers and research on
 LLM weight compression, novel quantization formats, and GPU-friendly encoding
