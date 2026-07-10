@@ -219,7 +219,10 @@ editable files; that list will always be stale.
     time-sink that could be avoided in future experiments, add 1-3 sentences
     to PITFALLS.md before returning.
 
-12. REPEAT
+12. CLEANUP: remove temporary files created during the experiment:
+    rm -f /tmp/qwen3.5-0.8b-q4km-clone-exp.gguf /tmp/*.gguf
+
+13. REPEAT
 ```
 
 ## Integrity Rules
