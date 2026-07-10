@@ -13,6 +13,21 @@
 | exp-006 | Scale-Dependent Min Prediction (SDM/SPD): predictor m≈(d/dmin)×sc with 4b grouped deltas then 5b sc+3b deltas (8-byte scales) | FAILED (implementation) |
 | exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | REGRESSION |
 | exp-008 | Extended superblock QK_K_CLONE=512 with shared d/dmin (284-byte block, 1.39% per-block savings) | REGRESSION |
+| exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | PENDING |
+
+## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
+
+**Hypothesis:** The token_embd tensor (1024 × 248320 = 254M elements), tied to the output projection in Qwen3.5-0.8B, is the single largest tensor at ~199 MB (Q6_K, 6.5625 bpw) — 40.2% of the total 494 MB model. The CODE (not the block struct) in `llama-quant.cpp` line 448-467 unconditionally overrides this tensor from the default_type (Q4_K_M_CLONE) to Q6_K, even for the clone ftype. By reserving only the clone ftype from this override, we let the tied embeddings use Q4_K_M_CLONE (4.5 bpw), saving approximately 65.6 MB (12.4% of total). **This is purely a per-tensor mixing change — no block struct modifications at all.**
+
+Rationale:
+1. Token embeddings are semantically organized — cosine-similar tokens occupy nearby regions. The 4-bit quantization grid (16 levels × scale) has sufficient resolution for this structure
+2. The output projection maps a fixed-dimension (1024) hidden state to a fixed vocabulary (248320). Small quantization errors in weight magnitudes partially cancel in the dot product
+3. Q4_K_M_CLONE preserves full 6-bit scale/min per sub-block (same metadata quality as Q6_K's 8-bit scales). Only weight precision drops from 6.5→4.5 bpw
+4. The unsloth quantization already uses Q5_K for token_embd in some profiles, suggesting the embedding layer can tolerate lower precision
+
+Changes: **1 line** in `src/llama-quant.cpp` — modify the OUTPUT/TOKEN_EMBD handler to not override the clone type to Q6_K
+
+**Expected outcome:** GGUF size reduces by ~65 MB (from ~505 MB to ~440 MB). KLD may increase moderately but could stay within the 0.062947 threshold if the output projection is tolerant. Same top p might degrade slightly.
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
