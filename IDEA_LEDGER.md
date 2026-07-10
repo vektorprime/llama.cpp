@@ -577,6 +577,31 @@ Key observations:
 
 ---
 
+## exp-018: Column-Major Block Reordering for Better zstd Compression
+
+**Hypothesis:** The quantized block data stored in GGUF files is in row-major order: all blocks of row 0, then all blocks of row 1, etc. For a 2D weight matrix W[output_dim, input_dim] stored with K as inner dimension, each "column" of blocks (covering the same K range across different output rows) contains similar byte patterns because weight statistics tend to be consistent per input dimension. By reordering blocks from row-major to column-major order (grouping blocks from the same K range across all rows), zstd finds longer runs of similar bytes and achieves better compression ratios. This is a purely lossless byte permutation: the same quantized data is stored, just in a different order. No changes to block struct, quantization, or dequantization. The decompressor reverses the permutation before the dequant code sees the data.
+
+This is fundamentally different from all prior experiments:
+- Does NOT change block struct (144 bytes — no CUDA issues)
+- Does NOT change quantization or dequantization at all
+- Does NOT change scale encoding (no exp-017 fragility)
+- Works at the FILE FORMAT level — a pure reordering like the zstd compression itself
+- Applies to ALL quantized types (Q4_K_M_CLONE, Q5_K, Q6_K) in the file
+- Similar to JPEG zigzag scanning / column-major storage in numerical computing
+
+The expected compression improvement comes from:
+1. Same-K-position blocks across rows have similar scale/min values (consistent input magnitude)
+2. Same-K-position nibble patterns correlate across rows (consistent "importance" per input dimension)
+3. Column-major grouping puts these similar bytes adjacent in the file, within zstd's matching window
+
+**Changes:**
+1. `src/llama-quant.cpp`: After quantization, transpose 2D tensor blocks to column-major order before writing. Set GGUF KV `"gguf.tensor_data_layout" = "col_major"`.
+2. `src/llama-model-loader.cpp`: After reading tensor data, check flag. If present and 2D tensor, apply inverse block transposition to restore row-major order before data is used by dequant.
+
+**Expected outcome:** GGUF size reduces by 1-5% beyond current zstd compression (from ~513 MB to ~500-510 MB). Quality metrics identical to exp-016 (KLD 0.056838, same top p 87.200%) because it's lossless. If the reordering creates better byte patterns, zstd should find more compressible structure in the column-major layout.
+
+---
+
 ## exp-017: Trade FWHT Quality Headroom for Size — 6+2-bit Scale/Min Encoding (8-byte scales, 140-byte block)
 
 **Hypothesis:** Exp-016 created significant quality headroom (KLD 0.056838 vs baseline 0.062947, +0.0061 margin) by applying FWHT+IWH preprocessing. The FWHT transforms heavy-tailed weight distributions to near-Gaussian, making per-sub-block min offsets consistently closer to zero. This means min precision can be reduced without major quality loss. By encoding each sub-block's (scale, min) as 6+2 bits instead of 6+6 bits, we compress scales[] from 12 to 8 bytes (140-byte block, 2.78% per clone block, ~1.67% overall ≈ 8 MB from 494 MB). The full 6-bit scale precision is preserved — only mins drop to 2 bits (4 levels of grid centering). With FWHT making distributions near-zero-centered, 4 min levels should be sufficient for adequate grid positioning. The quality cost should fit within the 0.0061 KLD headroom.
