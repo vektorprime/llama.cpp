@@ -300,7 +300,6 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                 case GGML_TYPE_Q3_K:
                     return ne11 <= 3;
                 case GGML_TYPE_Q4_K:
-        case GGML_TYPE_Q4_K_M_CLONE:
                     return ne11 <= 2;
                 case GGML_TYPE_Q5_K:
                     return ne11 <= 3;
@@ -321,7 +320,6 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                 return ne11 <= 5;
             case GGML_TYPE_Q3_K:
             case GGML_TYPE_Q4_K:
-        case GGML_TYPE_Q4_K_M_CLONE:
             case GGML_TYPE_Q5_K:
                 return ne11 <= 3;
             case GGML_TYPE_Q6_K:

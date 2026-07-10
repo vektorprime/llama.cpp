@@ -1692,18 +1692,75 @@ size_t quantize_q4_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     return nrow * row_size;
 }
 
-// ====================== Q4_K_M_CLONE — thin wrappers around Q4_K (identical struct layout)
+// ====================== Q4_K_M_CLONE — Hadamard-preprocessed Q4_K
+
+// Fast Walsh-Hadamard Transform of size 256, in-place.
+// H[i][j] = (-1)^popcount(i & j), H @ H = 256 * I
+// O(N log N) = 2048 operations for N=256
+static void fwht_256(float * x) {
+    for (int step = 1; step < 256; step <<= 1) {
+        for (int i = 0; i < 256; i += 2*step) {
+            for (int j = i; j < i + step; j++) {
+                float a = x[j];
+                float b = x[j + step];
+                x[j] = a + b;
+                x[j + step] = a - b;
+            }
+        }
+    }
+}
+
+// Inverse FWHT: same as forward, then divide by 256 (since H^T = H and H @ H = 256*I)
+static void ifwht_256(float * x) {
+    fwht_256(x);
+    for (int i = 0; i < 256; i++) {
+        x[i] *= (1.0f / 256.0f);
+    }
+}
 
 void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_CLONE * GGML_RESTRICT y, int64_t k) {
-    quantize_row_q4_K_ref(x, (block_q4_K *)y, k);
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
+
+    for (int64_t b = 0; b < nb; b++) {
+        float rotated[QK_K];
+        memcpy(rotated, x + b * QK_K, QK_K * sizeof(float));
+        fwht_256(rotated);
+        quantize_row_q4_K_ref(rotated, (block_q4_K *)(y + b), QK_K);
+    }
 }
 
 void dequantize_row_q4_K_M_CLONE(const block_q4_K_M_CLONE * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    dequantize_row_q4_K((const block_q4_K *)x, y, k);
+    assert(k % QK_K == 0);
+    const int64_t nb = k / QK_K;
+
+    for (int64_t b = 0; b < nb; b++) {
+        dequantize_row_q4_K((const block_q4_K *)(x + b), y + b * QK_K, QK_K);
+        ifwht_256(y + b * QK_K);
+    }
 }
 
 size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    return quantize_q4_K(src, dst, nrow, n_per_row, quant_weights);
+    assert(n_per_row % QK_K == 0);
+    const int64_t nb = n_per_row / QK_K;
+    const size_t row_size = nb * sizeof(block_q4_K);
+
+    float * rotated = (float *) malloc(n_per_row * sizeof(float));
+    if (!rotated) return 0;
+
+    for (int64_t row = 0; row < nrow; row++) {
+        const float * row_src = src + row * n_per_row;
+        memcpy(rotated, row_src, n_per_row * sizeof(float));
+
+        for (int64_t b = 0; b < nb; b++) {
+            fwht_256(rotated + b * QK_K);
+        }
+
+        quantize_row_q4_K_ref(rotated, (block_q4_K *)((char *)dst + row * row_size), n_per_row);
+    }
+
+    free(rotated);
+    return nrow * row_size;
 }
 
 // ====================== 5-bit (de)-quantization

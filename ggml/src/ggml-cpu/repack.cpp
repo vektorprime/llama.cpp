@@ -3229,7 +3229,7 @@ static int repack_q4_0_to_q4_0_4_bl(struct ggml_tensor * t, int interleave_block
 }
 
 static int repack_q4_K_to_q4_K_8_bl(struct ggml_tensor * t, int interleave_block, const void * GGML_RESTRICT data, size_t data_size) {
-    GGML_ASSERT(t->type == GGML_TYPE_Q4_K || t->type == GGML_TYPE_Q4_K_M_CLONE);
+    GGML_ASSERT(t->type == GGML_TYPE_Q4_K);
     GGML_ASSERT(interleave_block == 8 || interleave_block == 4);
     constexpr int nrows_interleaved = 8;
 
@@ -3260,7 +3260,7 @@ static int repack_q4_K_to_q4_K_8_bl(struct ggml_tensor * t, int interleave_block
 }
 
 static int repack_q4_K_to_q4_K_16_bl(struct ggml_tensor * t, int interleave_block, const void * GGML_RESTRICT data, size_t data_size) {
-    GGML_ASSERT(t->type == GGML_TYPE_Q4_K || t->type == GGML_TYPE_Q4_K_M_CLONE);
+    GGML_ASSERT(t->type == GGML_TYPE_Q4_K);
     constexpr int nrows_interleaved = 16;
 
     block_q4_Kx16 * dst = (block_q4_Kx16*)t->data;
@@ -4597,7 +4597,7 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
             }
             #endif
         }
-    } else if (cur->type == GGML_TYPE_Q4_K || cur->type == GGML_TYPE_Q4_K_M_CLONE) {
+    } else if (cur->type == GGML_TYPE_Q4_K) {
         if (ggml_cpu_has_avx2()) {
             if (cur->ne[1] % 8 == 0) {
                 return &q4_K_8x8_q8_K;

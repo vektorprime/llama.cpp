@@ -232,6 +232,61 @@ static __global__ void dequantize_block_q4_K(const void * __restrict__ vx, dst_t
 }
 
 template<typename dst_t>
+static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ vx, dst_t * __restrict__ yy) {
+    const block_q4_K * x = (const block_q4_K *) vx;
+
+    const int64_t i = blockIdx.x;
+
+    // 32 threads, store dequantized values in shared memory for FWHT
+    __shared__ float tmp[QK_K];
+
+    const int64_t tid = threadIdx.x;
+    const int64_t il  = tid/8;
+    const int64_t ir  = tid%8;
+    const int64_t is  = 2*il;
+    const int64_t n   = 4;
+
+    const float dall = __low2half(x[i].dm);
+    const float dmin = __high2half(x[i].dm);
+
+    const uint8_t * q = x[i].qs + 32*il + n*ir;
+
+    uint8_t sc, m;
+    get_scale_min_k4(is + 0, x[i].scales, sc, m);
+    const float d1 = dall * sc; const float m1 = dmin * m;
+    get_scale_min_k4(is + 1, x[i].scales, sc, m);
+    const float d2 = dall * sc; const float m2 = dmin * m;
+
+    for (int l = 0; l < n; ++l) {
+        tmp[64*il + n*ir + l     ] = d1 * (q[l] & 0xF) - m1;
+        tmp[64*il + n*ir + l + 32] = d2 * (q[l] >>  4) - m2;
+    }
+
+    __syncthreads();
+
+    // In-place FWHT on shared memory: 8 stages, 128 pairs each
+    for (int step = 1; step < QK_K; step <<= 1) {
+        for (int j = tid; j < QK_K/2; j += 32) {
+            const int group   = j / step;
+            const int offset  = j % step;
+            const int left    = group * (2 * step) + offset;
+            const int right   = left + step;
+            const float a = tmp[left];
+            const float b = tmp[right];
+            tmp[left]  = a + b;
+            tmp[right] = a - b;
+        }
+        __syncthreads();
+    }
+
+    // Scale by 1/256 (inverse WHT) and write to output
+    dst_t * y = yy + i*QK_K;
+    for (int j = tid; j < QK_K; j += 32) {
+        y[j] = (dst_t)(tmp[j] * (1.0f / 256.0f));
+    }
+}
+
+template<typename dst_t>
 static __global__ void dequantize_block_q5_K(const void * __restrict__ vx, dst_t * __restrict__ yy) {
     const block_q5_K * x = (const block_q5_K *) vx;
 
@@ -547,6 +602,12 @@ static void dequantize_row_q4_K_cuda(const void * vx, dst_t * y, const int64_t k
 }
 
 template<typename dst_t>
+static void dequantize_row_q4_K_M_CLONE_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int nb = k / QK_K;
+    dequantize_block_q4_K_M_CLONE<<<nb, 32, 0, stream>>>(vx, y);
+}
+
+template<typename dst_t>
 static void dequantize_row_q5_K_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = k / QK_K;
     dequantize_block_q5_K<<<nb, 64, 0, stream>>>(vx, y);
@@ -732,8 +793,9 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
         case GGML_TYPE_Q3_K:
             return dequantize_row_q3_K_cuda;
         case GGML_TYPE_Q4_K:
-        case GGML_TYPE_Q4_K_M_CLONE:
             return dequantize_row_q4_K_cuda;
+        case GGML_TYPE_Q4_K_M_CLONE:
+            return dequantize_row_q4_K_M_CLONE_cuda;
         case GGML_TYPE_Q5_K:
             return dequantize_row_q5_K_cuda;
         case GGML_TYPE_Q6_K:
@@ -788,8 +850,9 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
         case GGML_TYPE_Q3_K:
             return dequantize_row_q3_K_cuda;
         case GGML_TYPE_Q4_K:
-        case GGML_TYPE_Q4_K_M_CLONE:
             return dequantize_row_q4_K_cuda;
+        case GGML_TYPE_Q4_K_M_CLONE:
+            return dequantize_row_q4_K_M_CLONE_cuda;
         case GGML_TYPE_Q5_K:
             return dequantize_row_q5_K_cuda;
         case GGML_TYPE_Q6_K:
