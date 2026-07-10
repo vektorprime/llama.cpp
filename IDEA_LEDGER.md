@@ -20,6 +20,7 @@
 | exp-013 | Iterative Joint Optimization (IJO): multi-pass refinement of superblock parameters within 144-byte block — fix nibbles, re-optimize grid, iterate | REGRESSION |
 | exp-014 | Transparent zstd compression of GGUF file (post-quantization) — lossless decompression on load | SUCCESS |
 | exp-015 | zstd level 19 — maximum GGUF compression, benchmarked all algorithms/params (xz, bzip2, --ultra -22, split, delta) | SUCCESS |
+| exp-016 | Walsh-Hadamard per-superblock preprocessing — FWHT before quantize, IWHT after dequantize | PENDING |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -528,4 +529,29 @@ Additional findings:
 - The metadata (11 MB of tokenizer strings) compresses ~78% regardless of compressor
 - Total achievable post-quantization compression is ~3.06% of GGUF file size
 - Post-quantization compression plateaus hard because 97.93% of the file is near-entropy quantized weights
-- This approach has ZERO quality cost and adds minimal code (one line change) Post-quantization zstd compression is a free lunch: it reduces file size with zero quality cost by exploiting the compressibility of the GGUF metadata (tokenizer strings, architecture params) and the residual structure in the quantized data. The compression ratio is modest (2.65%) but comes at zero quality penalty. This approach can be combined with any quantization algorithm and any future quality improvements. The root cause: the grid parameters (d, dmin, sc_j, m_j) undergo secondary quantization (fp16 for d/dmin, 6-bit for sc/m) which introduces non-smooth distortions. When we compute "optimal" a_j, b_j from the current nibbles and then re-quantize them, the distortion from secondary quantization changes the effective grid. The re-quantized nibbles then have a different optimal grid, creating an oscillating cycle that converges to a WORSE local minimum than the original greedy one-shot approach. The original Q4_K algorithm works well precisely BECAUSE it derives grid parameters directly from the weight distribution statistics (not from a quantized approximation), and the one-shot nature avoids the circular dependency problem. Future approaches should focus on improving the INITIAL grid estimation (e.g., better min/max detection, outlier handling) rather than attempting post-hoc refinement of an already-quantized block.
+- The root cause: the grid parameters (d, dmin, sc_j, m_j) undergo secondary quantization (fp16 for d/dmin, 6-bit for sc/m) which introduces non-smooth distortions. When we compute "optimal" a_j, b_j from the current nibbles and then re-quantize them, the distortion from secondary quantization changes the effective grid. The re-quantized nibbles then have a different optimal grid, creating an oscillating cycle that converges to a WORSE local minimum than the original greedy one-shot approach. The original Q4_K algorithm works well precisely BECAUSE it derives grid parameters directly from the weight distribution statistics (not from a quantized approximation), and the one-shot nature avoids the circular dependency problem. Future approaches should focus on improving the INITIAL grid estimation (e.g., better min/max detection, outlier handling) rather than attempting post-hoc refinement of an already-quantized block.
+
+---
+
+## exp-016: Walsh-Hadamard Per-Superblock Preprocessing (FWHT/IWHT)
+
+**Hypothesis:** QuIP/QuIP# (Chee et al., 2023, Tseng et al., 2024) and PolarQuant (2025) have demonstrated that applying a Hadamard rotation to weight matrices before quantization dramatically improves quality — PolarQuant reports that "Hadamard rotation alone accounts for 98% of the quality improvement." The mechanism: weight distributions in LLMs are heavy-tailed with outliers. A Walsh-Hadamard transform (WHT) applied to each vector of 256 weights spreads outlier energy uniformly across all elements via the butterfly network. After transformation, each element is a weighted sum of ALL original elements (coefficients ±1), producing approximately Gaussian distributed values. Outlier-eliminated distributions quantize with significantly lower MSE because no single element dominates the quantization grid.
+
+We apply the **Fast Walsh-Hadamard Transform (FWHT)** to each 256-element superblock BEFORE the standard Q4_K quantization. During dequantization, we apply the **Inverse WHT** (identical to forward WHT up to scaling factor 1/256) to recover the original weights. The block format is **unchanged** (144 bytes) — quality improves at the same file size.
+
+Key implementation details:
+- FWHT of size 256: O(N log N) = 2048 operations, implemented as 8 butterfly stages
+- Block stores: `quantize_q4_K(FWHT(W))` — the rotated, quantized weights
+- Dequantize returns: `IWHT(dequantize_q4_K(block)) / 256` ≈ W
+- Since H is self-inverse (H·H = 256·I), IWHT = FWHT followed by /256
+
+**Changes:**
+1. `ggml/src/ggml-quants.c`: Replace thin wrappers with self-contained quantize (FWHT + std Q4_K) and dequantize (std Q4_K + IWHT/256)
+2. `ggml/src/ggml-cuda/convert.cu`: New CUDA dequant kernel `dequantize_block_q4_K_M_CLONE` with 32 threads, shared memory FWHT
+3. `ggml/src/ggml-cuda/convert.cu`: Register new kernel in `ggml_get_to_fp16_cuda` and `ggml_get_to_fp32_cuda`
+4. `ggml/src/ggml-cpu/ggml-cpu.c`: Set vec_dot = NULL, vec_dot_type = GGML_TYPE_COUNT for clone (fallback to dequant + dot)
+5. `ggml/src/ggml-cuda/mmq.cu`: Remove clone from `ggml_cuda_should_use_mmq` (falls back to cublas)
+6. `ggml/src/ggml-cuda/mmvq.cu`: Remove clone from `ggml_cuda_should_use_mmvq` (falls back to cublas)
+7. `ggml/src/ggml-cpu/repack.cpp`: Remove clone from repack support (3 locations)
+
+**Expected outcome:** GGUF size unchanged (529,297,440 bytes — same block format). Quality should IMPROVE (KLD < baseline 0.062947, same top p > baseline 86.387%) because Hadamard rotation reduces per-element quantization error by eliminating outlier-dominated sub-blocks. The FWHT makes all 256 weights within a superblock have similar magnitude, improving the efficiency of the per-sub-block scale/min adaptation. If quality improves, this validates the approach and opens the door to future experiments that trade the quality headroom for size reduction (e.g., compressing scales).
