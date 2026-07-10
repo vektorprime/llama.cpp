@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-027 | Inter-block d/dmin predictor with snap: snap d/dmin to previous block if <0.5% relative diff, one-shot nibble re-quantize — zstd cross-block byte matching | PENDING |
+| exp-027 | Inter-block d/dmin predictor with snap: snap d/dmin to previous block if <0.5% relative diff, one-shot nibble re-quantize — zstd cross-block byte matching | NULL — redundant with fp16 rounding |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
 | exp-002 | Remove Q6_K boost for ATTENTION_WV and FFN_DOWN from clone | REGRESSION |
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
@@ -888,4 +888,12 @@ Unlike all prior experiments that modify within-block byte patterns, this approa
 
 **Expected outcome:** GGUF zstd size reduces by 0.3-1.5 MB from exp-025 (510,848,302 bytes) because snapped d/dmin runs create long LZ77 matches. KLD increases modestly from nibble grid deformation but stays well within the 11.5% headroom (target: KLD ≤ 0.060, same_top_p ≥ 87.0%).
 
-**Actual outcome:** PENDING
+**Actual outcome:** NULL — size +1,506 bytes (510,849,808 vs 510,848,302), quality unchanged:
+- GGUF size (zstd): 510,849,808 bytes (vs exp-025: 510,848,302, +1,506 bytes, +0.0003% — essentially identical)
+- KLD mean: 0.055691 (vs exp-025 0.055735, -0.08% — identical)
+- Same top p: 87.443% (vs exp-025 87.364%, +0.08pp — identical)
+- PPL: 22.570 (vs exp-025 22.576, identical)
+
+The 0.5% relative threshold was too conservative. After existing 4-bit mantissa fp16 rounding (mask 0xFFC0), only ~16 distinct fp16 values exist per exponent, so consecutive blocks already show significant byte-level repetition. The snapping failed to create additional byte-identical runs beyond what fp16 rounding already provides. The d/dmin fields (2.78% of block) are already at near-maximum zstd compressibility from existing techniques.
+
+**Lesson:** d/dmin snapping is redundant with existing fp16 mantissa rounding — both target the same compressibility mechanism. Any future cross-block pattern approach must target fields OTHER than d/dmin (e.g., qs[] or scales[]), or use a much larger threshold that forces byte-identity even when quality cost is significant. The 2.78% d/dmin space has been fully exploited by exp-020/022/025.
