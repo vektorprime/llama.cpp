@@ -327,19 +327,24 @@ typedef struct {
 } block_q4_K;
 static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
-// Q4_K_M_CLONE — exact structural copy of Q4_K for size-reduction research
+// Q4_K_M_CLONE — compact asymmetric quantization format (CAQ)
+// 140 bytes per 256 elements = 4.375 bpw
+// Formula: x = d * sc_j * q_i - dmin * m_j — same as Q4_K but with 4+4 packed scales
+// d, dmin: fp16 scales for scale and min ranges (independent)
+// scales[8]: 8 sub-blocks, each byte = (sc << 4) | m (4+4 bits packed)
+// qs[128]: 4-bit nibbles with rotation + consecutive packing
 typedef struct {
     GGML_EXTENSION union {
         struct {
-            ggml_half d;
-            ggml_half dmin;
+            ggml_half d;              // 2 bytes — superblock scale for scales
+            ggml_half dmin;           // 2 bytes — superblock scale for mins
         } GGML_COMMON_AGGR_S;
-        ggml_half2 dm;
+        ggml_half2 dm;               // 4 bytes total
     } GGML_COMMON_AGGR_U;
-    uint8_t scales[K_SCALE_SIZE];
-    uint8_t qs[QK_K/2];
+    uint8_t scales[8];        // 8 bytes — 4-bit sc + 4-bit m per sub-block
+    uint8_t qs[QK_K/2];       // 128 bytes — 4-bit nibbles
 } block_q4_K_M_CLONE;
-static_assert(sizeof(block_q4_K_M_CLONE) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K_M_CLONE block size/padding");
+static_assert(sizeof(block_q4_K_M_CLONE) == 2*sizeof(ggml_half) + 8 + QK_K/2, "wrong q4_K_M_CLONE block size/padding");
 
 // 5-bit quantization
 // 8 blocks of 32 elements each

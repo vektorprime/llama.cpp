@@ -233,7 +233,7 @@ static __global__ void dequantize_block_q4_K(const void * __restrict__ vx, dst_t
 
 template<typename dst_t>
 static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ vx, dst_t * __restrict__ yy) {
-    const block_q4_K * x = (const block_q4_K *) vx;
+    const block_q4_K_M_CLONE * x = (const block_q4_K_M_CLONE *) vx;
 
     const int64_t i = blockIdx.x;
 
@@ -242,14 +242,17 @@ static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ v
 
     const int64_t tid = threadIdx.x;
 
+    // CAQ format: independent d and dmin via dm union (same as Q4_K)
     const float dall = __low2half(x[i].dm);
     const float dmin = __high2half(x[i].dm);
 
     // Pre-compute d*sc and dmin*m for all 8 sub-blocks in shared memory
+    // scales[j] = (sc << 4) | m  — one byte per sub-block
     __shared__ float dsc[8], msc[8];
     if (tid < 8) {
-        uint8_t sc, m;
-        get_scale_min_k4(tid, x[i].scales, sc, m);
+        uint8_t sm = x[i].scales[tid];
+        uint8_t sc = sm >> 4;
+        uint8_t m  = sm & 0xF;
         dsc[tid] = dall * sc;
         msc[tid] = dmin * m;
     }
