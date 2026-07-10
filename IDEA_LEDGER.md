@@ -5,7 +5,8 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-029 | **BREAKTHROUGH: Coupled Min-Scale formula (m=sc)** — eliminate per-sub-block m as independent parameter, force m_j = sc_j, save 48 bits from scales[] (potential 8-byte struct reduction: 144→136), dequant: x = d*sc*q - dmin*sc | TODO |
+| exp-030 | **5-bit m quantization (m 6→5)** — single variable, quantize-side only, coarsening as regularization improves KLD | **SUCCESS** — 510.32MB (-0.53MB vs exp-025), KLD 0.054105 (-2.9%), PPL 22.263 |
+| exp-029 | Coupled Min-Scale formula (m=sc) — force m_j=sc_j, eliminate per-sub-block m, formula x=d*sc*q-dmin*sc | REGRESSION — catastrophic PPL 150K, KLD 8.86, m∝sc insufficient |
 | exp-028 | Soft ls=0 biasing: 2% bias in local search favoring ls=0 for zstd 0x00 byte runs in qs[] — "boring sub-block" exploitation | NULL — 2% bias too small, ls=0 vs ls=1 MSE gap >2% even for low-mag sub-blocks |
 | exp-027 | Inter-block d/dmin predictor with snap: snap d/dmin to previous block if <0.5% relative diff, one-shot nibble re-quantize — zstd cross-block byte matching | NULL — redundant with fp16 rounding |
 | exp-001 | Remove ATTENTION_QKV Q5_K boost for clone — keep Q4_K for QKV tensors | NULL — dead code, not reached |
