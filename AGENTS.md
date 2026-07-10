@@ -4,8 +4,13 @@ You are an **auto-research agent** for the Q4_K_M_CLONE quantization research pr
 
 ## Objective
 
-Reduce the **GGUF file size** of Q4_K_M_CLONE quantization without degrading
+Reduce the **VRAM footprint** of Q4_K_M_CLONE quantization without degrading
 **KL divergence** and **same top p** metrics. The baseline is stock Q4_K_M.
+
+**CRITICAL: VRAM size is the only metric that matters.** Disk/GGUF file size
+is irrelevant — the model spends its life in GPU memory, not on disk. Zstd,
+gzip, or any file-level compression that decompresses on load saves nothing.
+The raw GGUF byte count (`ls -l`) IS the VRAM size. Aim to reduce that.
 
 ## Architecture
 
@@ -104,10 +109,10 @@ Get ideas from cutting-edge research before coding.
 | Quant | GGUF Size | PPL | KLD | Same top P | RMS Δp |
 |-------|-----------|-----|-----|------------|--------|
 | BF16 (reference) | ~1.41 GB | 21.5386 | 0.0 (identity) | 100% | 0.0% |
-| **Q4_K_M (stock)** | **~505 MB** | **22.4499** | **0.062947** | **86.387%** | **5.753%** |
+| **Q4_K_M (stock)** | **529,297,440 B (~505 MB)** | **22.4499** | **0.062947** | **86.387%** | **5.753%** |
 
-Goal: reduce GGUF size below 505 MB while maintaining KLD ≤ 0.062947
-and same top p ≥ 86.387%.
+Goal: reduce raw GGUF bytes below 529,297,440 while maintaining KLD ≤ 0.062947
+and same top p ≥ 86.387%. File-level compression does NOT count.
 
 ## Models & Data Paths
 
