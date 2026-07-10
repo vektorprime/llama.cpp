@@ -11,6 +11,7 @@
 | exp-004 | Reduce scale/min from 6+6b to 5+3b per sub-block (8-byte scales, 140-byte block) | REGRESSION |
 | exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (10-byte scales, 142B block) | REGRESSION |
 | exp-006 | Scale-Dependent Min Prediction (SDM/SPD): predictor m≈(d/dmin)×sc with 4b grouped deltas then 5b sc+3b deltas (8-byte scales) | FAILED (implementation) |
+| exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | PENDING |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -167,6 +168,39 @@ Dual anchors halve the maximum DPCM chain length from 7 to 3 steps, bounding cum
 2. **Struct alignment constraint**: The `ggml_half2 dm` union enforces 4-byte alignment. With 8-byte scales, the struct is 140 bytes (correctly aligned). But with 10-byte scales, it would be 142 bytes padded to 144 — wasting the savings. Only 8, 12, or 16-byte scales yield actual size reductions.
 
 **Lesson:** Changing block_q4_K_M_CLONE struct size requires COMPLETE replacement of ALL quant/dequant functions — thin wrappers that cast to block_q4_K* are fundamentally incompatible with a resized struct. Additionally, plan scale sizes around the 4-byte alignment constraint: 4+scales+128 must be a multiple of 4 to avoid wasted padding. Future experiments must write fully self-contained quant/dequant functions, disable all cast-based dispatch (MMQ, MMVQ, repack, vec_dot), and verify that the dequant CUDA kernel is actually being called. A good incremental testing strategy: first write a version that encodes scalemins identically to Q4_K but in fewer bytes (e.g., 8 sub-blocks × 6+6 bits packed into 8 bytes with lossless 8→6 compression mapping), verify round-trip correctness on a small test, THEN introduce the predictor-based approach.
+
+---
+
+## exp-007: Codebook VQ of Scale-Min Pairs + Per-Weight Nibble Re-optimization
+
+**Hypothesis:** Within a Q4_K superblock of 256 weights, the 8 per-sub-block (scale, min) pairs cluster into a small number of representative patterns. By compressing these 8 pairs into a 4-entry codebook with 2-bit per-sub-block indices (12→8 bytes, saving 4 bytes per block = 2.78%), we reduce the block from 144→140 bytes. The VQ approximation error is recovered by re-optimizing each weight's 4-bit nibble to minimize MSE with the original BF16 weight, given the approximated (sc_vq, m_vq).
+
+This is fundamentally different from prior approaches:
+- exp-003/004: reduced precision directly (no recovery method)
+- exp-005: DPCM chain with error accumulation
+- exp-006: predictor-based with implementation bugs
+
+The codebook VQ approach:
+1. Clusters scale-min pairs without error chains (each sub-block is independent)
+2. Has a RECOVERY METHOD: per-weight nibble re-optimization directly compensates for VQ error
+3. Preserves asymmetric quantization (dmin + mins intact)
+4. No precision reduction: each codebook entry is still 6+6 bits
+5. 4-byte aligned: 2+2+8+128 = 140 bytes (no padding waste)
+
+**Changes:**
+1. `ggml/src/ggml-common.h`: K_SCALE_SIZE_CLONE=8, struct with scales[8], static_assert
+2. `ggml/src/ggml-quants.c`: New self-contained quant/dequant with codebook VQ + weight re-opt
+3. `ggml/src/ggml-cpu/ggml-cpu.c`: Remove vec_dot for clone
+4. `ggml/src/ggml-cpu/repack.cpp`: Remove clone from repack support
+5. `ggml/src/ggml-cuda/convert.cu`: New CUDA dequant kernel with codebook lookup
+6. `ggml/src/ggml-cuda/mmq.cu`: Remove clone from MMQ supported
+7. `ggml/src/ggml-cuda/mmvq.cu`: Remove clone from all MMVQ locations
+
+**Expected outcome:** GGUF size reduces by ~14 MB (2.78%). KLD should stay ≤ 0.062947; same top p ≥ 86.387%. The recovery method (nibble re-optimization) should absorb most VQ error.
+
+**Actual outcome:** PENDING
+
+**Lesson:** PENDING
 
 ---
 
