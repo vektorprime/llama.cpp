@@ -10,6 +10,7 @@
 | exp-003 | Symmetric sub-block quantization with 8-bit scales (remove dmin) | REGRESSION |
 | exp-004 | Reduce scale/min from 6+6b to 5+3b per sub-block (8-byte scales, 140-byte block) | REGRESSION |
 | exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (10-byte scales, 142B block) | REGRESSION |
+| exp-006 | Scale-Dependent Min Prediction (SDM/SPD): predictor m≈(d/dmin)×sc with 4b grouped deltas then 5b sc+3b deltas (8-byte scales) | FAILED (implementation) |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -143,6 +144,29 @@ Dual anchors halve the maximum DPCM chain length from 7 to 3 steps, bounding cum
 - PPL: 25.380 (vs baseline 22.450) — 13.1% worse
 
 **Lesson:** DPCM delta encoding compounds errors across chains, even with dual anchors (max 3-step chain). The inter-sub-block scale/min deltas within a superblock are sometimes larger than the 4-bit range (-8 to +7), causing clamping. Furthermore, the error accumulates: if subblock 1's delta is clamped, subblocks 2-3 are decoded from an incorrect base, amplifying the error. The correlation between adjacent sub-blocks is not strong enough to overcome the precision loss from delta encoding. For scale/min compression to work with DPCM, delta ranges of at least 5-6 bits are needed, which limits the compression achievable. Future directions should explore non-DPCM compression methods: codebook-based vector quantization of scale-min pairs, or exploiting the scale-min correlation within the SAME sub-block (delta-encode m from sc rather than from previous m).
+
+---
+
+## exp-006: Scale-Dependent Min Prediction (SDM/SPD)
+
+**Hypothesis:** Within each Q4_K superblock, per-sub-block min multipliers (m_j) are approximately proportional to per-sub-block scales (sc_j), because both track local weight magnitude. A predictor m_pred = round((d/dmin) × sc_j) provides a first-order estimate, and a small residual delta captures the deviation. This INTRA-sub-block correlation is stronger than inter-sub-block correlation (which exp-005 showed was weak), avoiding error accumulation. By encoding sc at 6 bits and m as a 4-bit signed delta from the predictor, scales[] compresses from 12→8 bytes (saving 4 bytes = 2.78% of block). Two variants tested: (a) SDM with 6-bit sc + 4-bit grouped deltas (2 sub-blocks share delta), (b) SPD with 5-bit sc + 3-bit per-sub-block deltas.
+
+**Changes:**
+1. Multiple approaches tried across several build→quantize→eval cycles
+2. Changed K_SCALE_SIZE_CLONE to 8 in ggml-common.h
+3. Wrote new quant/dequant functions with predictor-based m recovery
+4. Wrote new CUDA dequant kernel for 8-byte scales
+5. Disabled MMQ/MMVQ for clone, removed vec_dot, removed repack support
+
+**Expected outcome:** GGUF size reduces by ~5.8 MB (1.15%). KLD should stay near baseline; same top p ≥ 86.387%.
+
+**Actual outcome:** FAILED (implementation) — model produced catastrophic output (PPL ~9.7M, KLD ~13.5, Same top p 0%). Two key bugs were discovered:
+
+1. **Thin wrapper cast incompatibility**: The quantize function `quantize_q4_K_M_CLONE` was changed to call `quantize_row_q4_K_ref` which writes to `block_q4_K *` (12-byte scales). But the clone struct had 8-byte scales. The Q4_K quantizer wrote 12 bytes into 8-byte scales[], corrupting the first 4 bytes of qs[].
+
+2. **Struct alignment constraint**: The `ggml_half2 dm` union enforces 4-byte alignment. With 8-byte scales, the struct is 140 bytes (correctly aligned). But with 10-byte scales, it would be 142 bytes padded to 144 — wasting the savings. Only 8, 12, or 16-byte scales yield actual size reductions.
+
+**Lesson:** Changing block_q4_K_M_CLONE struct size requires COMPLETE replacement of ALL quant/dequant functions — thin wrappers that cast to block_q4_K* are fundamentally incompatible with a resized struct. Additionally, plan scale sizes around the 4-byte alignment constraint: 4+scales+128 must be a multiple of 4 to avoid wasted padding. Future experiments must write fully self-contained quant/dequant functions, disable all cast-based dispatch (MMQ, MMVQ, repack, vec_dot), and verify that the dequant CUDA kernel is actually being called. A good incremental testing strategy: first write a version that encodes scalemins identically to Q4_K but in fewer bytes (e.g., 8 sub-blocks × 6+6 bits packed into 8 bytes with lossless 8→6 compression mapping), verify round-trip correctness on a small test, THEN introduce the predictor-based approach.
 
 ---
 

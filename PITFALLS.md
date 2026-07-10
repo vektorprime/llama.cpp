@@ -22,3 +22,13 @@ Populated by sub-agents at the end of each experiment. Read before starting.
 - **Scale-min correlation within a superblock is weak.** Adjacent sub-block
   scales are not strongly correlated, so DPCM/predictive coding of scales
   accumulates drift that dominates the error budget.
+- **Changing block_q4_K_M_CLONE struct size breaks ALL thin-wrappers.** The
+  clone's quantize/dequantize functions cast to `block_q4_K *` which expects
+  12-byte K_SCALE_SIZE. If scales[] is resized (e.g., to 8 bytes), the cast
+  pointer has wrong layout and writing 12 bytes to an 8-byte array corrupts
+  qs[]. All quant/dequant functions must be self-contained for the new layout.
+- **Struct padding from ggml_half2 union enforces 4-byte alignment.** The
+  union (4 bytes, align 4) forces trailing padding. Sizes that are NOT
+  multiples of 4 waste bytes: 10-byte scales → 142→144, 9-byte→141→144.
+  Only 8, 12, 16-byte scales yield actual savings. Plan your compression
+  around these alignment constraints.
