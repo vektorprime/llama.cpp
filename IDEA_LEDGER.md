@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 mask at final write to ensure all d/dmin on 4-bit mantissa grid after refinement steps — slight zstd improvement with bounded quality cost** | **TBD** |
+| **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 at final write — catastrophic regression, refinement escape from grid is essential** | **REGRESSION — 505.0MB, KLD 0.2477, top_p 73.99%** |
 | **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — min coarsening hurt more than scale improvement helped** | **REGRESSION — 506.1MB, KLD 0.05981, top_p 87.11%** |
 | exp-032 | CAQ: Compact Asymmetric Quantization — 140-byte block, 4+4 packed sc/m, independent d/dmin, rewritten CPU+CUDA dequant | SUCCESS — 505.9MB, KLD 0.0562, top_p 87.37% |
 | exp-030 | **5-bit m quantization (m 6→5)** — single variable, quantize-side only, coarsening as regularization improves KLD | **SUCCESS** — 510.32MB (-0.53MB vs exp-025), KLD 0.054105 (-2.9%), PPL 22.263 |
@@ -974,3 +974,13 @@ By re-applying the 0xFFC0 mask at write time, we ensure ALL blocks' d and dmin v
 1. `ggml/src/ggml-quants.c` lines 1856-1857: Apply 0xFFC0 mask to fp16 values before writing y->d and y->dmin
 
 **Expected outcome:** GGUF zstd size reduces by 0.05-0.5 MB. KLD should stay within threshold. Same top p should stay ≥ 86.387%.
+
+**Actual outcome:** REGRESSION — catastrophic quality:
+- GGUF size (zstd): 504,992,349 bytes (vs exp-032: 505,901,055, -0.91 MB, -0.18%)
+- KLD mean: 0.247719 (vs exp-032: 0.056214, +340%; vs threshold 0.062947: +293%)
+- Same top p: 73.994% (vs exp-032: 87.367%, -13.4pp; vs threshold 86.387%: -12.4pp)
+- PPL: 28.132 (vs exp-032: 23.016)
+- RMS Δp: 12.254% (vs exp-032: 5.296%)
+- Quantize time: 69.91s
+
+**Lesson:** The d/dmin refinement steps (±1-2% candidate search) are NOT optional — they are ESSENTIAL for quality. The Step 2.5 fp16 rounding provides a coarse starting point on the 4-bit mantissa grid, but the refinement intentionally finds slightly off-grid values that produce better MSE. Snapping back to the grid at write time completely negates the refinement benefit, causing 4.4x KLD increase. The 0.91 MB size reduction is real (zstd responds to on-grid d/dmin) but the quality cost is unacceptable. The refinement's ability to escape the grid is a FEATURE, not a bug — the coarse grid from Step 2.5 is just a guardrail to prevent the refinement from wandering too far. For future: do NOT re-round at write time. Instead, if further zstd compression is wanted, consider approaches that don't constrain per-block parameters (e.g., post-GGUF compression, different block layout, or entropy coding).
