@@ -27,7 +27,7 @@
 | **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
 | **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
 | **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **SUCCESS (-0.11MB vs exp-020, KLD +2.7% but 13.7% headroom)** |
-| exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | PENDING |
+| exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | SUCCESS (-0.65MB, KLD +1.5% but 12.4% headroom) |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -61,6 +61,16 @@ The marginal size reduction (-0.11 MB) is smaller than exp-020's jump (-0.92 MB)
 4. `ggml/src/ggml-quants.c` line 1827: local search boundary try_ls > 63 → > 31
 
 **Expected outcome:** zstd compression of scales[] bytes improves from reduced entropy (5-bit sc values create more byte-level repetition). Size reduction modest (scales[] is 8.33% of block, ~2.8× larger than d/dmin). KLD may increase but should stay within 13.7% headroom.
+
+**Actual outcome:** SUCCESS — size reduced, quality within thresholds:
+- GGUF size (zstd): 512,175,330 bytes (vs exp-022: 512,839,250, -0.65 MB, -0.13%)
+- KLD mean: 0.055148 (vs exp-022 0.054332, +1.50%; vs threshold 0.062947, 12.4% headroom)
+- Same top p: 87.414% (vs exp-022 87.654%, -0.24pp; vs threshold 86.387%, +1.03pp)
+- RMS Δp: 5.256% (vs exp-022 5.199%)
+- PPL: 22.658 (vs exp-022 22.455, +0.203)
+- Quantize time: 71.57s
+
+The 5-bit sc created enough byte-level repetition to save 0.65 MB — notably MORE than exp-022's d/dmin rounding step (-0.11 MB), confirming that scales[] (8.33% of block) is a more productive target than d/dmin (2.78% of block). KLD increased modestly (+1.50%) and remains well within the 12.4% headroom. The approach validates the "lossy preprocessing for lossless compression" strategy applied to the scales field.
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 
