@@ -13,6 +13,9 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
+
+#include <unistd.h>
+#include <stdlib.h>
 #include "gguf.h"
 
 #include <algorithm>
@@ -278,8 +281,40 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
 // Returns 0 on success, -1 on error, and -2 on cancellation via llama_progress_callback
 static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
+    std::string actual_fname = fname;
+    std::string decomp_fname;
+
+    // transparent zstd decompression for compressed GGUF files
+    if (!actual_fname.empty() && splits.empty()) {
+        FILE * test_fp = ggml_fopen(actual_fname.c_str(), "rb");
+        if (test_fp) {
+            uint8_t magic[4];
+            if (fread(magic, 1, 4, test_fp) == 4 &&
+                magic[0] == 0x28 && magic[1] == 0xB5 &&
+                magic[2] == 0x2F && magic[3] == 0xFD) {
+                fclose(test_fp);
+                char tmpname[] = "/tmp/llama-decomp-XXXXXX";
+                int tmpfd = mkstemp(tmpname);
+                if (tmpfd < 0) {
+                    throw std::runtime_error("failed to create temp file for zstd decompression");
+                }
+                close(tmpfd);
+                decomp_fname = tmpname;
+                std::string cmd = "zstd -d -q -f \"" + actual_fname + "\" -o \"" + decomp_fname + "\"";
+                if (std::system(cmd.c_str()) != 0) {
+                    unlink(decomp_fname.c_str());
+                    throw std::runtime_error("zstd decompression failed");
+                }
+                actual_fname = decomp_fname;
+                params.use_mmap = false; // mmap unsuitable for temp decompressed file
+            } else {
+                fclose(test_fp);
+            }
+        }
+    }
+
     try {
-        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.use_mmap, params.use_direct_io,
+        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, actual_fname, splits, file, params.use_mmap, params.use_direct_io,
             params.check_tensors, params.no_alloc, params.kv_overrides, params.tensor_buft_overrides);
 
         ml.print_info();

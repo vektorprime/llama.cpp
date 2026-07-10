@@ -719,6 +719,15 @@ int llama_quantize(int argc, char ** argv) {
             return 1;
         }
 
+        // post-quantization: compress GGUF with zstd for smaller file size
+        {
+            std::string cmd = "zstd -q -f \"" + fname_out + "\" -o \"" + fname_out + ".zst\"";
+            if (std::system(cmd.c_str()) == 0) {
+                std::rename((fname_out + ".zst").c_str(), fname_out.c_str());
+                fprintf(stderr, "%s: compressed output with zstd\n", __func__);
+            }
+        }
+
         t_quantize_us = llama_time_us() - t_start_us;
     }
 
