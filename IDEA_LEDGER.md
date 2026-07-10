@@ -28,7 +28,7 @@
 | **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
 | **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **SUCCESS (-0.11MB vs exp-020, KLD +2.7% but 13.7% headroom)** |
 | exp-023 | 5-bit sc quantization (single variable change: sc 6→5 bits, m stays 6-bit, same 144B struct, quantize-side only) | SUCCESS (-0.65MB, KLD +1.5% but 12.4% headroom) |
-| exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | PENDING |
+| exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | SUCCESS (-0.60MB, KLD +1.1% but 11.5% headroom remaining) |
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
@@ -88,6 +88,18 @@ The pattern from exp-020 through exp-022 was that d/dmin coarsening hit diminish
 4. `ggml/src/ggml-quants.c` line 1827: local search boundary try_ls > 31 → > 15
 
 **Expected outcome:** zstd compression of scales[] bytes should improve from 4-bit sc (16 distinct values) creating more byte-level repetition than 5-bit (32 values). Size reduction modest but measurable. KLD should increase but stay within 12.4% headroom.
+
+**Actual outcome:** SUCCESS — size reduced, quality within thresholds:
+- GGUF size (zstd): 511,565,412 bytes (vs exp-023: 512,175,330, -0.60 MB, -0.12%)
+- KLD mean: 0.055735 (vs exp-023 0.055148, +1.06%; vs threshold 0.062947, 11.5% headroom)
+- Same top p: 87.364% (vs exp-023 87.414%, -0.05pp; vs threshold 86.387%, +0.98pp)
+- RMS Δp: 5.239% (vs exp-023 5.256%)
+- PPL: 22.576 (vs exp-023 22.658, -0.082 improvement)
+- Quantize time: 69.01s
+
+The 4-bit sc (16 levels vs 5-bit's 32) saved an additional 0.60 MB — similar magnitude to exp-023's 5-bit step (-0.65 MB from exp-022). This confirms that sc precision reduction on scales[] (8.33% of block) is a productive target. The KLD increase (+1.06%) is smaller than exp-023's step (+1.50%), suggesting the quality cost may be sublinear as sc precision drops. Interestingly, PPL actually IMPROVED slightly vs exp-023 (22.576 vs 22.658), though same top p edged down slightly.
+
+**Lesson:** The scales[] field continues to respond to coarsening with diminishing but non-zero returns. Going from 6→5→4-bit sc has yielded: 6→5 saved 0.65 MB (+1.5% KLD), 5→4 saved 0.60 MB (+1.1% KLD). The KLD cost per saved MB is 0.00098 for the 5→4 step vs 0.00127 for the 6→5 step — more efficient. There is still 11.5% headroom remaining. Further potential: 3-bit sc (8 levels) would be the next step, though exp-021's lesson about the "cliff" effect suggests caution — quality degradation may accelerate non-linearly past 4 bits.
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 

@@ -1736,13 +1736,13 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
     }
 
     // Step 2: Secondary quantization to 6-bit min / 5-bit scale (standard heuristic)
-    float inv_scale = max_scale > 0 ? 31.f/max_scale : 0.f;
+    float inv_scale = max_scale > 0 ? 15.f/max_scale : 0.f;
     float inv_min   = max_min   > 0 ? 63.f/max_min   : 0.f;
     for (int j = 0; j < QK_K/32; j++) {
-        ls[j] = MIN(31, nearest_int(inv_scale * scales[j]));
+        ls[j] = MIN(15, nearest_int(inv_scale * scales[j]));
         lm[j] = MIN(63, nearest_int(inv_min * mins[j]));
     }
-    float d_val_candidate = max_scale / 31.f;
+    float d_val_candidate = max_scale / 15.f;
     float dmin_val_candidate = max_min / 63.f;
 
     // Step 2.5: Round d/dmin to coarser fp16 (keep 6 mantissa bits out of 10)
@@ -1824,7 +1824,7 @@ static void quantize_fwht_superblock(const float * x, block_q4_K_M_CLONE * y) {
         float best_mse = EVAL_SUB_MSE(32*j, dsc, dm);
         for (int dls = -1; dls <= 1; dls++) {
             int try_ls = ls[j] + dls;
-            if (try_ls < 0 || try_ls > 31) continue;
+            if (try_ls < 0 || try_ls > 15) continue;
             for (int dlm = -1; dlm <= 1; dlm++) {
                 int try_lm = lm[j] + dlm;
                 if (try_lm < 0 || try_lm > 63) continue;
