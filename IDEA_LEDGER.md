@@ -26,6 +26,18 @@
 | exp-019 | FWHT + MSE-optimized secondary quantization via local search (quantize-side only, same struct) | SUCCESS (+2.3% KLD, +0.21pp same_top_p vs exp-016) |
 | **exp-020** | **Coarse fp16 rounding of d/dmin (5 mantissa bits cleared) for better zstd compression — quantize-side only, same 144B struct** | **SUCCESS (-0.9MB vs exp-019, -4.7% KLD)** |
 | **exp-021** | **Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding — quantize-side only, same 144B struct** | **REGRESSION (KLD tripled)** |
+| **exp-022** | **4-bit d/dmin mantissa rounding (from exp-020's 5-bit) — single variable change, quantize-side only, same 144B struct** | **TBD** |
+
+## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
+
+**Hypothesis:** exp-020 proved that coarse fp16 rounding of d/dmin (5 mantissa bits kept) improved zstd compression by 0.92 MB while IMPROVING KLD by 4.7% (regularization effect). With 16% KLD headroom remaining, the next conservative step is clearing one more mantissa bit (5→4 bits kept, mask `0xFFE0` → `0xFFC0`). This reduces distinct d/dmin byte patterns from 32→16 per exponent (2× more repetition), creating more byte-level matches for zstd. Critically, this is exactly ONE variable change — exp-021's lesson showed that changing two things (d/dmin + ls/lm) simultaneously caused multiplicative error. The 16% headroom (0.010 KLD) provides margin for this isolated change.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` line 1753-1754: Change fp16 mask from `& 0xFFE0u` (5 mantissa bits kept) to `& 0xFFC0u` (4 mantissa bits kept)
+
+**Expected outcome:** GGUF zstd size reduces by 0.5-1.5 MB compared to exp-020 due to more repetitive d/dmin byte patterns. KLD may increase modestly from 0.0529 but should stay well within the 0.0629 threshold given 16% headroom. Same top p should remain ≥ 86.387%.
+
+**Actual outcome:** TBD
 
 ## exp-021: Aggressive fp16 rounding (3 mantissa bits) + 4-bit ls/lm rounding
 
