@@ -16,7 +16,7 @@
 | exp-009 | Reduce token_embd/output from Q6_K to Q4_K_M_CLONE for the clone ftype (no block struct changes) | REGRESSION |
 | exp-010 | Reduce token_embd/output from Q6_K to Q5_K for clone ftype | REGRESSION (borderline) |
 | exp-011 | Q5_K token_embd/output + Q6_K for ALL QKV layers (clone) | SUCCESS |
-| exp-012 | Q5_K embd + Q6_K for first 16/24 QKV + Q5_K for last 8/24 QKV layers | In progress |
+| exp-012 | Salience-Driven Mixed Precision within Superblocks: 136-byte block, 12 salient 4b + 20 non-salient 2b weights per sub-block, 2b centered on zero_q | In progress |
 
 ## exp-009: Reduce token_embd/output from Q6_K to Q4_K_M_CLONE
 
@@ -377,3 +377,36 @@ Key findings:
 3. Net result: BETTER KLD than baseline (0.0618 vs 0.0629) while still saving 20.25 MB
 
 **Lesson:** The output/token_embd layer is surprisingly compressible — its quality loss from Q6_K→Q5_K is modest and can be fully compensated by redirecting the saved bytes to more precision-critical attention layers. This trade-off (take from the least sensitive large tensor, give to the most sensitive mid-size tensors) is a winning strategy. The QKV layers with their 1024×6144 dimensions (18× in DeltaNet layers) are disproportionately quality-per-MB efficient at Q6_K. Small dimensional V tensors in attention layers (1024×512) see negligible benefit from Q6_K but the fused QKV tensors are large enough for the boost to matter.
+
+## exp-012: Salience-Driven Mixed Precision Within Superblocks (SDMP-WS)
+
+**Hypothesis:** Within each Q4_K superblock of 256 weights, small-magnitude weights contribute little to matrix multiplication outputs (y_j = Σ w_ij * x_j). By assigning 4-bit precision only to the 12 most salient (highest-magnitude) weights per sub-block and compressing the remaining 20 to 2-bit precision, we save 8 bytes per superblock (144→136 bytes, 5.56% per clone block, ~3.3% overall ≈ 17 MB from 505 MB). The 2-bit values map to 4 quantization levels centered on the sub-block's zero point (zero_q = round(min*m/(d*sc))), ensuring small weights (near the distribution center) have minimal quantization error while retaining full precision for large-magnitude weights that drive dot product outputs.
+
+This is fundamentally different from all prior approaches:
+- exp-003/004/005/006/007: compressed scales/mins (sensitive metadata) — ALL FAILED
+- exp-008: shared d/dmin (broke QK_K assumption) — CATASTROPHIC
+- exp-009/010/011: per-tensor mixing (not block-struct change) — FORBIDDEN
+
+SDMP-WS compresses qs[] (weight data) using mixed precision guided by weight magnitude. This is grounded in recent research: SpQR (Dettmers+, 2023) uses sparse+quantized representations with high-precision outliers; SliM-LLM (Huang+, ICML 2025) assigns group-wise bit-widths based on salience. The novelty here is applying mixed precision WITHIN a single superblock at per-weight granularity, with 2-bit levels auto-calibrated to the sub-block's zero point.
+
+Block layout (136 bytes, 4.25 bpw):
+- d: 2 bytes (fp16)
+- dmin: 2 bytes (fp16)
+- scales: 12 bytes (unchanged 6-bit scale/min × 8)
+- qs: 120 bytes (128 - 8 = 8-byte saving)
+  - 32 bytes: 8 × 4-byte salience masks (1=4b, 0=2b per weight)
+  - 48 bytes: 8 × 6 bytes for 12 salient 4-bit nibbles per sub-block
+  - 40 bytes: 8 × 5 bytes for 20 non-salient 2-bit values (4 per byte)
+
+**Changes:**
+1. `ggml/src/ggml-common.h`: Change qs[128] → qs[120], update static_assert
+2. `ggml/src/ggml-quants.c`: New self-contained quantize/dequantize with SDMP encoding (no more thin wrappers)
+3. `ggml/src/ggml-cpu/ggml-cpu.c`: Remove vec_dot for clone (incompatible with new layout)
+4. `ggml/src/ggml-cpu/repack.cpp`: Remove clone from repack support
+5. `ggml/src/ggml-cuda/convert.cu`: New CUDA dequant kernel for 136-byte layout
+6. `ggml/src/ggml-cuda/mmq.cu`: Remove clone from MMQ supported types
+7. `ggml/src/ggml-cuda/mmvq.cu`: Remove clone from all MMVQ locations
+
+**Expected outcome:** GGUF size reduces by ~17 MB (3.3%). The 2-bit quantization of small-magnitude weights should minimally impact the dot product since their contribution (|w_i| * x_i) is small. The per-sub-block zero_q auto-calibration ensures 2-bit levels adapt to local weight distributions. KLD should stay near baseline 0.062947; same top p ≥ 86.387%.
+
+**Actual outcome:** (to be filled after experiment)
