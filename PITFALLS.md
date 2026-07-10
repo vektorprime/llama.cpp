@@ -22,4 +22,14 @@ Populated by sub-agents at the end of each experiment. Read before starting.
   union (4 bytes, align 4) forces trailing padding. Sizes that are NOT
   multiples of 4 waste bytes: 10-byte scales → 142→144, 9-byte→141→144.
   Only 8, 12, 16-byte scales yield actual savings. Plan your compression
-  around these alignment constraints.
+   around these alignment constraints.
+- **Per-weight re-optimization cannot fix systematic scale errors.** When a
+  sub-block's (sc, m) pair is approximated (e.g., via VQ codebook), all 32
+  weights in the sub-block share the same wrong grid (center + scale). Re-tuning
+  individual 4-bit nibbles within that grid cannot correct the grid position
+  itself. Scale compression needs ≤1-2 bits of error, or a grid-level recovery
+  method (e.g., re-optimizing d or dmin to partially absorb sub-block bias).
+- **Block compression only affects non-Q6_K tensors.** ~40% of model size comes
+  from Q6_K tensors (token_embd, QKV, ffn_down in some layers) which don't use
+  the clone block. The effective size reduction from block compression is much
+  smaller than theoretical: a 2.78% per-block saving yields ~1.15% overall.

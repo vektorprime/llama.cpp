@@ -11,7 +11,7 @@
 | exp-004 | Reduce scale/min from 6+6b to 5+3b per sub-block (8-byte scales, 140-byte block) | REGRESSION |
 | exp-005 | Dual-anchor DPCM delta encoding of scale-min pairs (10-byte scales, 142B block) | REGRESSION |
 | exp-006 | Scale-Dependent Min Prediction (SDM/SPD): predictor m≈(d/dmin)×sc with 4b grouped deltas then 5b sc+3b deltas (8-byte scales) | FAILED (implementation) |
-| exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | PENDING |
+| exp-007 | Codebook VQ of scale-min pairs (4-entry, 12→8 bytes) + per-weight nibble re-optimization recovery | REGRESSION |
 
 ## exp-004: Scale-Min Differential Pulse Code Modulation (SM-DPCM)
 
@@ -198,9 +198,13 @@ The codebook VQ approach:
 
 **Expected outcome:** GGUF size reduces by ~14 MB (2.78%). KLD should stay ≤ 0.062947; same top p ≥ 86.387%. The recovery method (nibble re-optimization) should absorb most VQ error.
 
-**Actual outcome:** PENDING
+**Actual outcome:** REGRESSION — size reduced from 529,297,440 to 523,209,760 bytes (~6.1 MB, 1.15%):
+- KLD mean: 0.101213 (vs baseline 0.062947) — 60.8% increase
+- Same top p: 83.631% (vs baseline 86.387%) — below threshold by 2.76pp
+- RMS Δp: 7.468% (vs baseline 5.753%)
+- PPL: 24.845 (vs baseline 22.450) — 10.7% worse
 
-**Lesson:** PENDING
+**Lesson:** 4-entry codebook VQ cannot capture the full diversity of 8 (scale, min) pairs within a superblock. Nibble re-optimization adjusts individual weights but cannot correct the systematic grid bias from VQ scale errors (all 32 weights in a sub-block are shifted by the same wrong sc_vq/m_vq). Future approaches need either: (a) more codebook entries or better scale encoding with less error, or (b) a grid-level recovery method (e.g., re-optimizing d/dmin to compensate). Also: Q6_K tensors don't benefit from block compression, limiting effective savings to ~1.15% vs theoretical 2.78%.
 
 ---
 
