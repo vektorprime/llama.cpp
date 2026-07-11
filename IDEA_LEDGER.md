@@ -5,6 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| exp-040 | **Revert m to 6-bit (from 5+5 to 5+6) + add local d/dmin/ls/lm search for maximum quality headroom** | **TBD** |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
 | **exp-039** | **GGUF Metadata Stripping — strip redundant tokenizer data (chat_template, token_type, merges) + minimize token list with empty strings. Zero struct changes, quality identical to baseline.** | **TBD** |
 | **exp-038** | **5-bit sc + 5-bit m COMBINED — both variables at 5 bits simultaneously, clean FWHT base, quantize-side only, same 144B struct. Compounds regularization benefits from both variables' first coarsening steps.** | **SUCCESS — 529.3MB, KLD 0.0607 (-3.6% vs baseline), STP 86.78% (+0.39pp)** |
@@ -1117,3 +1118,32 @@ Key: n_vocab (248320) is preserved via the array length of the minimized tokens 
 2. `src/llama-vocab.cpp`: Make `tokenizer.ggml.merges` optional for BPE models
 
 **Expected outcome:** GGUF raw size reduces by ~4-5 MB. KLD and same top p identical to baseline (0.062947, 86.387%) since all tensor data is unchanged.
+
+## exp-040: Revert m to 6-bit precision + add local d/dmin/ls/lm search for maximum quality headroom
+
+**Hypothesis:** exp-038 (sc=5, m=5 combined) achieved KLD 0.060695 (-3.6% vs baseline) but was WORSE than exp-037's single-variable sc=5, m=6 config (KLD 0.058347, -7.3%). The lesson from exp-038 was that sc+m coarsening benefits DO NOT compound — they overlap significantly. The optimal configuration is exp-037 (sc=5, m=6). By reverting m from 5 bits back to 6 bits, we immediately recover exp-037's quality level (KLD 0.058, -7.3% vs threshold).
+
+Furthermore, the current code uses only the basic min/max heuristic for secondary quantization (d, dmin, ls, lm). exp-019 proved that a local search over these parameters (±1 on ls/lm, ±2% on d/dmin) directly minimizing reconstruction MSE finds consistently better configurations, yielding +2.3% KLD improvement. Adding this local search to the optimal sc=5, m=6 configuration should compound the quality gains.
+
+Expected combined quality: KLD ~0.055-0.056 (10-13% below threshold of 0.062947). This creates significant headroom for future size-reduction experiments — enough that we could potentially afford a modest structural change (e.g., a 2-byte scale reduction) while staying above baseline quality.
+
+Key safety properties:
+1. Quantize-side only — no struct, dequant, or CUDA changes
+2. sc stays at 5 bits (proven beneficial), m reverts to 6 bits (proven optimal)
+3. Local search operates in already-quantized parameter space (avoids exp-013's alternating optimization failure)
+4. d/dmin remain in fp16, search candidates are ±2% of current value (bounded exploration)
+
+The local search evaluates 9×8 sub-block candidates (ls±1, lm±1) + 5 d candidates + 5 dmin candidates = 82 evaluations per superblock. Each evaluation re-quantizes nibbles and computes MSE. At ~2M superblocks, this is ~10B weight evaluations — well within quantize time budget (estimated 60-90s total).
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` — `quantize_row_q4_K_M_CLONE_ref`: m precision 5→6 bits (inv_min = 63.f, lm = MIN(63, lm), dmin = max_min/63.f)
+2. `ggml/src/ggml-quants.c` — `quantize_row_q4_K_M_CLONE_ref`: Add local search step after initial heuristic:
+   - Compute best MSE with initial ls/lm/d/dmin from heuristic
+   - For each sub-block j: try ls[j] ± 1, lm[j] ± 1 (9 combos per sub-block), re-quantize 32 weights, evaluate sub-block MSE
+   - Try d = d × {0.98, 0.99, 1.00, 1.01, 1.02} (5 candidates), re-quantize full 256 weights, evaluate
+   - Try dmin = dmin × {0.98, 0.99, 1.00, 1.01, 1.02} (5 candidates), re-quantize full 256 weights, evaluate
+   - Pick configuration with lowest total MSE
+3. `ggml/src/ggml-quants.c` — `quantize_q4_K_M_CLONE` no-imatrix path: Same changes
+4. No changes to dequantize functions, CUDA kernel, struct, or dispatch paths
+
+**Expected outcome:** GGUF raw size unchanged (same 144B struct). Quality should significantly improve vs current KLD 0.060695. Target: KLD 0.054-0.057 (10-13% below threshold), same_top_p 87.5-88.0%. Quantize time increases to ~60-90s (from current ~10s) due to local search overhead.
