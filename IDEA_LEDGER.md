@@ -4,7 +4,9 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **exp-048** | **3-bit element quantization (108-byte block, 22.9% block reduction) — PPL 8972, KLD 5.94, STP 6.1%. 8-level elements fundamentally insufficient** | **REGRESSION** |
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| **exp-048** | **3-bit element quantization (108-byte block) — 256×3bit=96B qs, 5+3 sc/m, 140→108B block. Most aggressive structural compression yet (22.9% per-block savings)** | **REGRESSION** |
 | exp-044 | **5+3 bit sc/m within 8-byte scales (same 140B struct) — sc 4→5 bits, m 4→3 bits. FWHT symmetrization makes min precision less critical** | **SUCCESS** |
 | exp-045 | **6+2 bit sc/m — sc 5→6 bits (64 levels), m 3→2 bits (4 levels). Ultra-coarse mins (2-bit) near enough for FWHT-symmetric distribution; fine scales recover precision** | **REGRESSION** |
 | exp-046 | **Asymmetric sc/m bit allocation across frequency bands — allocate more sc bits to low-frequency sub-blocks, more m bits to high-freq. Same 140B struct, same 8-byte scales, same 64-bit total budget. Instead of uniform 5+3, use 6+2 for sub-blocks 0-1 (lowest freq), 5+3 for 2-3 (mid freq), 4+4 for 4-7 (highest freq)** | **REGRESSION** |
@@ -1276,3 +1278,26 @@ Total budget: 2×(6+2) + 2×(5+3) + 4×(4+4) = 16+16+32 = 64 bits = 8 bytes = sa
 **Actual outcome:** REGRESSION — size 512,267,968 B (unchanged vs exp-044, same 140B struct), KLD 0.066134 (+12.8% vs exp-044's 0.058633, +5.06% above baseline threshold of 0.062947), same top p 86.454% (-0.71pp vs exp-044's 87.162%, +0.067pp vs baseline but KLD failed).
 
 **Lesson:** Asymmetric bit allocation (6+2 for low-freq, 4+4 for high-freq) degrades quality compared to the uniform 5+3 baseline (exp-044). The extra scale precision (6-bit, 64 levels) on sub-blocks 0-1 doesn't compensate for the 2-bit min precision loss there, and the coarser 4-bit scales on sub-blocks 4-7 introduce additional error on high-freq positions despite getting better min precision (4-bit). The uniform 5+3 remains the optimal trade-off found so far. The d_val computation formula (max_j scales[j]/ls_max[j]) worked correctly — the quality degradation is from the bit allocation itself, not from implementation bugs. The asymmetry introduces more total error than the uniform allocation, suggesting that the FWHT frequency bands don't have sufficiently different scale/min sensitivity to justify trading precision between them.
+
+---
+
+## exp-048: 3-bit Element Quantization — 108-byte block (most aggressive structural compression yet)
+
+**Hypothesis:** Reducing per-element precision from 4-bit to 3-bit saves 32 bytes per block (128→96 byte qs[], 22.9% per clone block, ~4.4% overall). 3-bit quantization gives 8 levels vs 16, halving the representable weight range. With the 5+3 bit sc/m per sub-block (from exp-044), the scale/min precision should partially compensate for the coarser weight quantization. The FWHT preprocessing makes weight distributions more symmetric, reducing the penalty of fewer quantization levels.
+
+**Changes:**
+1. `ggml-common.h`: struct with qs[QK_K*3/8] = qs[96], static_assert for 108 bytes
+2. `ggml-quants.c`: 3-bit quantize (qmax=7 in make_qkx2_quants, 8-value→3-byte packing), dequant formula: x = d*(sc/32)*(value/7) - dmin*(mn/8)
+3. `ggml-quants.c`: dequantize — 3-bit unpacking, same dequant formula
+4. `ggml-cuda/convert.cu`: CUDA dequant kernel with 3-bit unpacking and same formula
+
+**Actual outcome:** REGRESSION — massive quality collapse:
+- GGUF size: 463,566,528 bytes (vs exp-044 512,267,968, -48.7 MB, -9.5% reduction)
+- PPL: 8971.68 (vs baseline 22.45, 400x worse)
+- KLD mean: 5.942218 (vs baseline 0.0629, 94x worse)
+- Same top p: 6.113% (vs baseline 86.387%, -80.27pp)
+- RMS Δp: 44.192% (vs baseline 5.753%)
+
+The initial implementation had a scaling bug (d initialized at max_scale*32/31 instead of max_scale*224/31, causing PPL 2.5M). After fixing the d/dmin scaling to account for the /32, /7, and /8 normalizers in the dequant formula, PPL improved to 8972 but remains catastrophic.
+
+**Lesson:** 3-bit quantization (8 levels per weight) is fundamentally insufficient for LLM weights, even with FWHT preprocessing and 5+3 bit per-sub-block scales/mins. The 4→3 bit reduction halves the quantization levels (16→8) and the representable weight range per element. The per-sub-block scale/min can reposition the quantization grid but cannot recover the lost precision between adjacent quantization levels. The 4-bit floor established by the stock Q4_K format (4.5 bpw) appears to be a hard quality limit — dropping below 4 bits per element causes catastrophic degradation regardless of how much metadata (scales, mins) is preserved. The 108-byte block (3.375 bpw) is fundamentally too small for the model's weight precision requirements.
