@@ -1317,6 +1317,20 @@ Total budget: 2×(6+2) + 2×(5+3) + 4×(4+4) = 16+16+32 = 64 bits = 8 bytes = sa
 - Same top p: 6.113% (vs baseline 86.387%, -80.27pp)
 - RMS Δp: 44.192% (vs baseline 5.753%)
 
+## exp-051: Non-Uniform Quantization Grid — quality improvement via grid template selection
+
+**Hypothesis:** The linear quantization grid `x = d*ls*q - dmin*lm` assumes weights are uniformly distributed per sub-block, which is suboptimal even after FWHT preprocessing. While FWHT reduces anisotropy, internal sub-block distributions retain central concentration. Replacing the uniform grid with a non-uniform power-law grid that places more quantization levels near the distribution center (where probability mass concentrates) should reduce quantization error at the same 4-bit budget.
+
+**Implementation:**
+1. Define 2 grid templates: linear (original q=0..15) and power-law (grid[q] denser near center via power-1.5 mapping)
+2. Allocate 1 bit from lm (3→2 bits): ls=5, template=1, lm=2 in the same 8-bit scale byte
+3. During quantize: for each sub-block, try both templates, select by minimum MSE
+4. During dequant: unpack template bit from lm field, use grid[template][q] instead of raw q
+5. No struct changes — same 140-byte block
+6. Quality improvement from better distribution modeling creates headroom for future size-reduction experiments
+
+**Expected outcome:** Non-uniform grid should reduce quantization error in high-density regions, improving KLD by 2-10% (0.053-0.058 vs baseline 0.059). The 1-bit lm reduction (8→4 levels) may partially offset gains in min-sensitive sub-blocks. Overall KLD expected to be slightly better or comparable to baseline.
+
 The initial implementation had a scaling bug (d initialized at max_scale*32/31 instead of max_scale*224/31, causing PPL 2.5M). After fixing the d/dmin scaling to account for the /32, /7, and /8 normalizers in the dequant formula, PPL improved to 8972 but remains catastrophic.
 
 **Lesson:** 3-bit quantization (8 levels per weight) is fundamentally insufficient for LLM weights, even with FWHT preprocessing and 5+3 bit per-sub-block scales/mins. The 4→3 bit reduction halves the quantization levels (16→8) and the representable weight range per element. The per-sub-block scale/min can reposition the quantization grid but cannot recover the lost precision between adjacent quantization levels. The 4-bit floor established by the stock Q4_K format (4.5 bpw) appears to be a hard quality limit — dropping below 4 bits per element causes catastrophic degradation regardless of how much metadata (scales, mins) is preserved. The 108-byte block (3.375 bpw) is fundamentally too small for the model's weight precision requirements.
