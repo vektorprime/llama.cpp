@@ -251,10 +251,9 @@ static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ v
 
     const uint8_t * q = x[i].qs + 32*il + n*ir;
 
-    uint8_t sc0 = x[i].scales[is + 0] & 0x1F;
-    uint8_t mn0 = (x[i].scales[is + 0] >> 5) & 0x7;
-    uint8_t sc1 = x[i].scales[is + 1] & 0x1F;
-    uint8_t mn1 = (x[i].scales[is + 1] >> 5) & 0x7;
+    uint8_t sc0, mn0, sc1, mn1;
+    get_scale_min_k4(is + 0, x[i].scales, sc0, mn0);
+    get_scale_min_k4(is + 1, x[i].scales, sc1, mn1);
     const float d1 = dall * sc0; const float dm1 = dmin * mn0;
     const float d2 = dall * sc1; const float dm2 = dmin * mn1;
 
