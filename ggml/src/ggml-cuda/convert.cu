@@ -233,7 +233,7 @@ static __global__ void dequantize_block_q4_K(const void * __restrict__ vx, dst_t
 
 template<typename dst_t>
 static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ vx, dst_t * __restrict__ yy) {
-    const block_q4_K * x = (const block_q4_K *) vx;
+    const block_q4_K_M_CLONE * x = (const block_q4_K_M_CLONE *) vx;
 
     const int64_t i = blockIdx.x;
 
@@ -251,15 +251,16 @@ static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ v
 
     const uint8_t * q = x[i].qs + 32*il + n*ir;
 
-    uint8_t sc, m;
-    get_scale_min_k4(is + 0, x[i].scales, sc, m);
-    const float d1 = dall * sc; const float m1 = dmin * m;
-    get_scale_min_k4(is + 1, x[i].scales, sc, m);
-    const float d2 = dall * sc; const float m2 = dmin * m;
+    uint8_t sc0 = x[i].scales[is + 0] & 0xF;
+    uint8_t mn0 = x[i].scales[is + 0] >> 4;
+    uint8_t sc1 = x[i].scales[is + 1] & 0xF;
+    uint8_t mn1 = x[i].scales[is + 1] >> 4;
+    const float d1 = dall * sc0; const float dm1 = dmin * mn0;
+    const float d2 = dall * sc1; const float dm2 = dmin * mn1;
 
     for (int l = 0; l < n; ++l) {
-        tmp[64*il + n*ir + l     ] = d1 * (q[l] & 0xF) - m1;
-        tmp[64*il + n*ir + l + 32] = d2 * (q[l] >>  4) - m2;
+        tmp[64*il + n*ir + l     ] = d1 * (q[l] & 0xF) - dm1;
+        tmp[64*il + n*ir + l + 32] = d2 * (q[l] >>  4) - dm2;
     }
 
     __syncthreads();
