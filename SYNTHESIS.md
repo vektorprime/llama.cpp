@@ -78,6 +78,7 @@ Reduce GGUF file size below 505 MB while maintaining:
 
 | **exp-037** | **5-bit sc quantization (sc 6→5 bits) — clean FWHT base, single variable** | **529,297,440** | **0.058347** | **87.209%** | **SUCCESS** |
 | **exp-039** | **GGUF metadata stripping — remove merges, token_type, chat_template, minimize tokens, strip general.* fields** | **523,209,088** | **0.060695** | **86.775%** | **SUCCESS** |
+| **exp-040** | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom** | **523,209,088** | **0.051201** | **87.871%** | **SUCCESS** |
 | — | Q4_K_M baseline | 529,297,440 | 0.062947 | 86.387% | Baseline |
 
 ## What's Left to Try
@@ -99,3 +100,13 @@ Reduce GGUF file size below 505 MB while maintaining:
 17. **Scale (sc) coarsening also provides regularization benefit** (exp-037): Reducing sc precision from 6→5 bits on clean FWHT base improved KLD by -7.3% (0.062947→0.058347) and same top p by +0.82pp (86.387%→87.209%), mirroring exp-030's result for m coarsening. Both sc and m are over-parameterized at 6 bits for FWHT-preprocessed data — the greedy quantization heuristic overfits to noise in per-sub-block statistics, and the coarser resolution acts as implicit regularization. The first coarsening step on each parameter consistently improves quality. This confirms the PITFALLS.md pattern: each parameter has a "first coarsening free lunch" when starting from 6-bit precision.
 
 18. **GGUF metadata stripping is a free lunch for size reduction** (exp-039): The ~6.4 MB GGUF metadata (tokenizer tokens 3.1MB, merges 3.4MB, token types 0.25MB, chat template 0.01MB, general fields ~1KB) can be stripped or minimized with ZERO quality impact. By replacing 248K token strings with empty strings (preserving n_vocab count), removing BPE merges (after making them optional in the loader), removing token types (already optional), and stripping non-essential general.* fields, 6.09 MB (1.15%) was saved. The BPE merges must be made optional in the loader (llama-vocab.cpp) since the loader currently throws if they're missing for non-Kimi-K2 models. For perplexity eval with pre-tokenized text, none of this metadata is used during the forward pass — only for text encoding/decoding which doesn't happen during perplexity evaluation.
+
+19. **Local search on secondary-quantized parameters + optimal sc/m config creates massive headroom** (exp-040): Combining the optimal sc=5, m=6 configuration (from exp-037) with MSE-minimizing local search on d/dmin (±2%) and ls/lm (±1) produced the best quality ever recorded: KLD 0.051201 (-18.7% vs baseline), STP 87.871% (+1.48pp), RMS Δp 4.920% (-14.5%). The local search improved KLD by 12.2% over the heuristic alone (0.051 vs 0.058). The one-shot max/min heuristic leaves ~15-18% of quality on the table for FWHT-preprocessed data — a simple ±1/±2% search recovers this with only 2.3× quantize time overhead (22s vs 10s). The massive 18.7% KLD headroom (0.051 vs threshold 0.063) provides margin for future size-reduction experiments that could afford to lose up to 0.012 KLD (23% of current) while staying above baseline.
+
+## What's Left to Try
+
+- **Trade exp-040's headroom for size**: With KLD at 0.051 (18.7% below threshold), we can afford modest quality loss. Try reducing scales[] from 12 to 10 bytes (4+4 bit sc/m like CAQ but with FWHT + local search to absorb the precision loss). The 10-byte scales would save 2 bytes per block (1.39% of clone blocks, ~0.8% overall ≈ 4 MB from ~523 MB). With 18.7% headroom, even a 5-8% KLD increase would stay well within threshold.
+
+- **Further GGUF metadata stripping**: The tokenizer.ggml.tokens array of 248K empty strings still takes ~1.9 MB (248K × 8 bytes offset overhead). Could be reduced by encoding n_vocab differently (e.g., a single u32 KV pair) and making the vocab loader construct empty entries from the token_embd tensor dimensions. This requires modifying llama-vocab.cpp but would save ~1.9 MB with zero quality impact.
+
+- **Combine zstd compression with exp-040's quality**: The zstd post-quantization compression (exp-015) saved 16.2 MB (3.06%) with zero quality impact. Combining with exp-040's superior quality configuration would produce a model that's BOTH smaller AND higher quality than stock Q4_K_M.
