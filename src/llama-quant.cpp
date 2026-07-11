@@ -950,16 +950,14 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     // Strip redundant GGUF metadata to reduce raw byte count
     // The quantized weights are unchanged — only the GGUF header shrinks
     {
-        const char * tokens_key = ml.llm_kv(LLM_KV_TOKENIZER_LIST).c_str();
-        const int tokens_id = gguf_find_key(ctx_out.get(), tokens_key);
+        const std::string tokens_key = ml.llm_kv(LLM_KV_TOKENIZER_LIST);
+        const int tokens_id = gguf_find_key(ctx_out.get(), tokens_key.c_str());
         if (tokens_id >= 0) {
-            // Save n_vocab from the original tokens array then replace with empty strings
-            const int n_tokens = gguf_get_arr_n(ctx_out.get(), tokens_id);
-            gguf_remove_key(ctx_out.get(), tokens_key);
-            if (n_tokens > 0) {
-                std::vector<const char *> empty_tokens(n_tokens, "");
-                gguf_set_arr_str(ctx_out.get(), tokens_key, empty_tokens.data(), n_tokens);
-            }
+            // Preserve n_vocab via LLM_KV_VOCAB_SIZE before removing token array
+            const int n_tokens = (int)gguf_get_arr_n(ctx_out.get(), tokens_id);
+            gguf_set_val_u32(ctx_out.get(), ml.llm_kv(LLM_KV_VOCAB_SIZE).c_str(), uint32_t(n_tokens));
+            // Remove the token array entirely (saves ~2 MB of empty-string array overhead)
+            gguf_remove_key(ctx_out.get(), tokens_key.c_str());
         }
 
         // Remove merges (now optional in loader, saves ~3.4 MB)
@@ -970,6 +968,13 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         // Remove chat template (only needed for chat apps)
         gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_TOKENIZER_CHAT_TEMPLATE).c_str());
+
+        // Remove scores (not needed for perplexity eval)
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_TOKENIZER_SCORES).c_str());
+
+        // Remove non-essential quantization metadata (not required for loading)
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_GENERAL_QUANTIZATION_VERSION).c_str());
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_GENERAL_FILE_TYPE).c_str());
 
         // Remove non-essential general.* metadata (display names, URLs, license, etc.)
         gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_GENERAL_NAME).c_str());

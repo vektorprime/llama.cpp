@@ -2373,12 +2373,19 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
         ml.get_key(LLM_KV_TOKENIZER_REMOVE_EXTRA_WS, remove_extra_whitespaces, false);
     }
 
+    uint32_t n_tokens = 0;
+
     const int token_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_LIST).c_str());
     if (token_idx == -1) {
-        throw std::runtime_error("cannot find tokenizer vocab in model file\n");
+        // token list stripped — derive n_vocab from LLM_KV_VOCAB_SIZE
+        if (ml.get_key(LLM_KV_VOCAB_SIZE, n_tokens, false)) {
+            LLAMA_LOG_WARN("%s: tokenizer vocab stripped, deriving n_vocab=%u from vocab_size\n", __func__, n_tokens);
+        } else {
+            throw std::runtime_error("cannot find tokenizer vocab or vocab_size in model file\n");
+        }
+    } else {
+        n_tokens = gguf_get_arr_n(ctx, token_idx);
     }
-
-    const uint32_t n_tokens = gguf_get_arr_n(ctx, token_idx);
 
     const float * scores = nullptr;
     const int score_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_SCORES).c_str());
@@ -2403,9 +2410,11 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
     id_to_token.resize(n_tokens);
 
     for (uint32_t i = 0; i < n_tokens; i++) {
-        std::string word = gguf_get_arr_str(ctx, token_idx, i);
+        std::string word;
+        if (token_idx >= 0) {
+            word = gguf_get_arr_str(ctx, token_idx, i);
+        }
         if (word.empty()) {
-            LLAMA_LOG_WARN("%s: empty token at index %u\n", __func__, i);
             word = "[EMPTY_" + std::to_string(i) + "]";
         }
 
