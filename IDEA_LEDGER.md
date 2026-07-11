@@ -6,6 +6,7 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
+| **exp-038** | **5-bit sc + 5-bit m COMBINED — sc 6→5 AND m 6→5 simultaneously, clean FWHT base, quantize-side only, same 144B struct. Compounds regularization benefits from both variables' first coarsening steps.** | **PENDING** |
 | **exp-037** | **5-bit sc (scale) quantization — sc 6→5 bits, single variable, clean FWHT base, quantize-side only, same 144B struct. Complement to exp-030's 5-bit m. First sc coarsening provides regularization — KLD -7.3%, STP +0.82pp.** | **SUCCESS — 529.3MB, KLD 0.0583 (-7.3%), STP 87.21% (+0.82pp)** |
 | **exp-035** | **Collapsed Sub-Block Scales — 144→136 byte block, global sc/mn — eval segfault, offset shift killed all paths** | **FAILED** |
 | **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 at final write — catastrophic regression, refinement escape from grid is essential** | **REGRESSION — 505.0MB, KLD 0.2477, top_p 73.99%** |
@@ -1064,3 +1065,26 @@ The FWHT homogenization may mitigate this somewhat but won't eliminate it — su
 Key finding: sc 6→5 bits from clean FWHT base provides a regularization benefit (mirroring exp-030's m 6→5 bit result), improving both KLD and same top p. This confirms the PITFALLS.md pattern that the first coarsening step on each parameter captures a "free lunch" regularization effect. Both scale (sc) and min (m) now confirmed to benefit from 6→5 bit coarsening.
 
 **Lesson:** The sc and m parameters in Q4_K are over-parameterized at 6 bits for FWHT-preprocessed data. Reducing either to 5 bits improves quality by preventing the greedy heuristic from overfitting to noise in the sub-block statistics. The FWHT makes weights more uniform, so the full 64-level range is unnecessary. Future experiments: both sc AND m at 5-bit (two-variable change) could compound the regularization benefit, or apply the 5-bit sc+m to a pure baseline (no FWHT) to test if the benefit requires FWHT preprocessing.
+
+## exp-038: 5-bit sc + 5-bit m COMBINED — both parameters at 5 bits simultaneously
+
+**Hypothesis:** Both sc and m individually benefit from 6→5 bit coarsening as "regularization free lunches":
+- exp-030: m 6→5 improved KLD by ~14% (0.062947→0.054105 from clean non-FWHT base, actually the chart shows exp-030 as KLD 0.054105 vs 0.062947 baseline = -14.2%)
+- exp-037: sc 6→5 improved KLD by 7.3% (0.062947→0.058347 from clean FWHT base)
+
+Both show that the first coarsening step on each parameter provides a regularization benefit — the 6-bit range allows the greedy heuristic to overfit to noise in per-sub-block statistics. The FWHT-preprocessed data has more uniform weight distributions, making the 5-bit range (32 levels) sufficient for both sc and m.
+
+Critical question: Do the regularization benefits COMPOUND when applied simultaneously, or do they partially overlap? Both parameters feed into the same quantization grid (x = d*sc*q - dmin*m), so there is potential for: (a) additive benefit — each parameter independently clips a different overfitting pathway, or (b) partial overlap — both are largely capturing the same overfitting signal, so the combined benefit is less than the sum.
+
+From the clean FWHT base (exp-037's code), changing m from 6→5 bits is the ONLY remaining variable change needed. The code already has sc at 5-bit. This is a TRUE two-variable experiment with no other confounds.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c` — `quantize_row_q4_K_M_CLONE_ref`: m precision 6→5 bits
+   - `inv_min = 31.f/max_min` (was 63.f)
+   - `lm = MIN(31, lm)` (was MIN(63, lm))
+   - `dmin = GGML_FP32_TO_FP16(max_min/31.f)` (was max_min/63.f)
+2. `ggml/src/ggml-quants.c` — `quantize_q4_K_M_CLONE` no-imatrix path: same 3 changes
+3. `ggml/src/ggml-quants.c` — `quantize_q4_K_M_CLONE` imatrix path: `make_qp_quants(..., 31, mins, ...)` (was 63)
+4. No changes to dequantize functions, CUDA kernel, struct, or dispatch paths
+
+**Expected outcome:** GGUF raw size unchanged (same 144B struct). KLD may improve further from exp-037's already-improved 0.058347 (perhaps to ~0.055-0.057). Same top p may improve from 87.21%. If the regularization effects partially overlap, the benefit will be smaller than additive but still positive. If they compound cleanly, this could produce the best quality metrics yet (surpassing exp-030's KLD 0.054105).
