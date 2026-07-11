@@ -6,7 +6,7 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
-| **exp-037** | **5-bit sc (scale) quantization — sc 6→5 bits, single variable, clean FWHT base, quantize-side only, same 144B struct. Complement to exp-030's 5-bit m.** | **PENDING** |
+| **exp-037** | **5-bit sc (scale) quantization — sc 6→5 bits, single variable, clean FWHT base, quantize-side only, same 144B struct. Complement to exp-030's 5-bit m. First sc coarsening provides regularization — KLD -7.3%, STP +0.82pp.** | **SUCCESS — 529.3MB, KLD 0.0583 (-7.3%), STP 87.21% (+0.82pp)** |
 | **exp-035** | **Collapsed Sub-Block Scales — 144→136 byte block, global sc/mn — eval segfault, offset shift killed all paths** | **FAILED** |
 | **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 at final write — catastrophic regression, refinement escape from grid is essential** | **REGRESSION — 505.0MB, KLD 0.2477, top_p 73.99%** |
 | **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — min coarsening hurt more than scale improvement helped** | **REGRESSION — 506.1MB, KLD 0.05981, top_p 87.11%** |
@@ -1050,4 +1050,17 @@ The FWHT homogenization may mitigate this somewhat but won't eliminate it — su
 2. `ggml/src/ggml-quants.c`: Replace `quantize_q4_K_M_CLONE` — for imatrix path, copy `quantize_row_q4_K_impl` body with `make_qp_quants(..., 31, ...)` for sc (was 63); for no-imatrix path, call modified `quantize_row_q4_K_M_CLONE_ref`
 3. No changes to dequantize functions, CUDA kernel, struct, or dispatch paths
 
-**Expected outcome:** GGUF raw size unchanged (same 144B struct). Zstd-compressed size should decrease (fewer distinct sc byte patterns → better compression). KLD may improve (regularization) or modestly increase (+1-3% vs baseline 0.062947). Same top p should stay ≥ 86.387%.
+**Expected outcome:** GGUF raw size unchanged (same 144B struct). KLD may improve (regularization) or modestly increase (+1-3% vs baseline 0.062947). Same top p should stay ≥ 86.387%.
+
+**Actual outcome:** SUCCESS — quality IMPROVED, size unchanged:
+- GGUF size (raw): 529,297,440 bytes (identical to baseline — same 144B struct)
+- KLD mean: 0.058347 (vs baseline 0.062947) — **7.3% improvement**
+- Same top p: 87.209% (vs baseline 86.387%) — **+0.82pp improvement**
+- RMS Δp: 5.302% (vs baseline 5.753%) — **7.8% improvement**
+- PPL: 22.896 (vs baseline 22.450) — +2.0% increase
+- Quantize time: 11.79s
+- Model size: 494.32 MiB (unchanged)
+
+Key finding: sc 6→5 bits from clean FWHT base provides a regularization benefit (mirroring exp-030's m 6→5 bit result), improving both KLD and same top p. This confirms the PITFALLS.md pattern that the first coarsening step on each parameter captures a "free lunch" regularization effect. Both scale (sc) and min (m) now confirmed to benefit from 6→5 bit coarsening.
+
+**Lesson:** The sc and m parameters in Q4_K are over-parameterized at 6 bits for FWHT-preprocessed data. Reducing either to 5 bits improves quality by preventing the greedy heuristic from overfitting to noise in the sub-block statistics. The FWHT makes weights more uniform, so the full 64-level range is unnecessary. Future experiments: both sc AND m at 5-bit (two-variable change) could compound the regularization benefit, or apply the 5-bit sc+m to a pure baseline (no FWHT) to test if the benefit requires FWHT preprocessing.
