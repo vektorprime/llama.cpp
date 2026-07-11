@@ -5,7 +5,8 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-042 | **CAQ 140-byte block with complete dispatch path support — trade exp-040's 18.7% headroom for block struct compression, FIX ALL dispatch paths** | **TBD** |
+| exp-043 | **Reduce sub-blocks 8→4 (64 elem each), scales 8→4 bytes, struct 140→136B — FWHT homogenization makes sub-block precision less needed** | **REGRESSION** |
+| exp-042 | **CAQ 140-byte block with complete dispatch path support — trade exp-040's 18.7% headroom for block struct compression, FIX ALL dispatch paths** | **SUCCESS** |
 | exp-040 | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom (KLD -18.7%, STP +1.48pp)** | **SUCCESS** |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
 | **exp-039** | **GGUF Metadata Stripping — strip redundant tokenizer data (chat_template, token_type, merges) + minimize token list with empty strings. Zero struct changes, quality identical to baseline.** | **TBD** |
@@ -1119,6 +1120,16 @@ Key: n_vocab (248320) is preserved via the array length of the minimized tokens 
 2. `src/llama-vocab.cpp`: Make `tokenizer.ggml.merges` optional for BPE models
 
 **Expected outcome:** GGUF raw size reduces by ~4-5 MB. KLD and same top p identical to baseline (0.062947, 86.387%) since all tensor data is unchanged.
+
+## exp-043: Reduce sub-blocks 8→4 — struct 140→136B
+
+**Hypothesis:** FWHT homogenization means all 256 positions have identical variance, so sub-block-level precision is less needed. Reducing from 8 sub-blocks (32 elements each) to 4 sub-blocks (64 elements each) should have negligible quality impact.
+
+**Implementation:** Changed all QK_K/32→QK_K/64 in quantize/dequant functions, K_SCALE_SIZE_CLONE 8→4, updated CUDA dequant kernel for single (sc,mn) per sub-block. Same 4+4 bit sc/m encoding, FWHT preprocessing, d/dmin refinement, all dispatch paths as in exp-042.
+
+**Result: REGRESSION** — Size reduced from 512.3MB (exp-042) to 506.2MB (-6.1MB, 4→136 bytes per block), but KLD increased from 0.058 to 0.0717 (+23.6%) and same_top_p dropped from 86.86% to 85.67%. KLD is WORSE than baseline Q4_K_M (0.0629).
+
+**Lesson:** Even with FWHT homogenization of variance, sub-block count matters for reconstruction accuracy. The original 8 sub-blocks allow the secondary quantization (sc,m) to capture local distribution shape even when variance is uniform. Reducing to 4 sub-blocks creates larger reconstruction regions where a single (sc,m) pair must span twice the original range — the 4-bit sc/m precision becomes insufficient across 64 elements. The FWHT homogenization of variance does NOT mean sub-block granularity is free — variance uniformity and distribution shape capture are different things. The 8-sub-block layout remains the right granularity for 4+4 bit scale/min encoding.
 
 ## exp-042: CAQ 140-byte block with complete dispatch path support
 
