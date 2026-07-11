@@ -4,7 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
-| **exp-058** | **GGUF Binary Format Optimization — compact string length encoding (uint64_t→uint8_t/0xFF escape), eliminate alignment padding (32→1), remove general.alignment key. No tensor data changes. Targets ~7KB savings from header overhead.** | **TBD** |
+| **exp-058** | **GGUF Binary Format Optimization — compact string encoding (uint64_t→uint8_t/0xFF escape), eliminate alignment padding (32→1), remove general.alignment key. No tensor data changes. Targets ~7KB savings from header overhead.** | **NULL** |
 | **exp-056** | **Symmetric quantization (no dmin, no per-sub-block mins) with 136-byte struct. d(2) + 8×6-bit sc packed into 6B scales + qs(128B) = 136B. FWHT-preprocessed weights are Gaussian with zero mean → mins redundant. Signed nibble (-8 to +7) stored as nibble+8.** | **TBD** |
 | **exp-053** | **Mixed precision: 4-bit for low-freq elements 0-127, 3-bit for high-freq 128-255. 112B qs + 12B scales (6+6 bit) = 128B struct. Recovers full scale precision from 3-bit high-freq savings.** | **TBD** |
 | **exp-052** | **Aggressive MSE local search on d/dmin (±5% 21-step), ls/lm (±2 5-step), + simulated annealing — REGRESSION vs exp-044. Wider search overfits MSE objective.** | **REGRESSION** |
@@ -1427,3 +1427,5 @@ Total expected savings: ~7.6 KB. No tensor data changes — this is pure header 
 3. `src/llama-quant.cpp`: Add general.alignment to metadata removal list
 
 **Quality expectation:** Identical — zero tensor data changes. KLD=0.058633, STP=87.162% (same as exp-057).
+
+**Outcome (NULL):** All quantized tensor sizes are naturally 32-byte multiples (block sizes 140/210 produce 32-aligned totals), so zero padding is saved. Compact string encoding broke BF16 model reading. Only alignment change + key survived, adding 18 bytes (key: 35B, saved metadata padding: 17B). Net: +18 bytes, no size reduction. GGUF header overhead is irreducible without changing the binary format or compression post-hoc.
