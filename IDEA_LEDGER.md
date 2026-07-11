@@ -473,6 +473,20 @@ next? What does this reveal about the problem?
 
 ---
 
+## exp-050: Data-Driven d/dmin Codebook — dm_idx(1B) + scales(8B) + qs(128B) = 137B block
+
+**Hypothesis:** exp-049 showed that a codebook approach for d/dmin can structurally save 3 bytes per block (144→141→137 target), but its fixed hand-tuned bounds (D_MIN=5e-6, D_MAX=0.5, DMIN_MIN=1e-8, DMIN_MAX=0.1) were far too constrained, producing PPL 8182. By collecting ACTUAL d/dmin statistics from the quantizer and using data-driven bounds (per-tensor or globally), the log-spaced 16×16 codebook should cover the observed ranges more accurately. The 5+3 bit scale/min encoding (exp-044's proven best config) is retained for scales[].
+
+**Changes:**
+1. `ggml-common.h`: Remove GGML_EXTENSION union (ggml_half d/dmin), replace with `uint8_t dm_idx`. Struct: 1+8+128=137 bytes.
+2. `ggml-quants.c`: Quantize collects per-tensor d/dmin stats, computes bounds, encodes as dm_idx. Dequant decodes dm_idx via log-spaced codebook.
+3. `ggml-cuda/convert.cu`: CUDA dequant kernel reads dm_idx instead of x[i].dm union.
+4. `llama-quant.cpp`: Write codebook bounds as GGUF KV pair "q4_clone.codebook" (4×fp32).
+5. `llama-model-loader.cpp`: Read KV pair, store in global variable.
+6. Validation: update VALIDATE_ROW_DATA_DM_F16_IMPL → skip validation for clone (no fp16 fields).
+
+**Expected outcome:** GGUF raw size reduces by ~3 bytes per clone block (~5-6 MB overall). KLD expected modest increase due to d/dmin quantization to 256 levels, but data-driven bounds should be far better than exp-049's fixed bounds.
+
 ## exp-008: Extended superblock with shared d/dmin (QK_K_CLONE=512)
 
 **Hypothesis:** Adjacent 256-element superblocks in LLM weight matrices have highly correlated weight magnitude distributions. The d and dmin secondary quantization parameters vary slowly across consecutive blocks. By expanding the superblock from 256 to 512 weights (16 sub-blocks of 32) and sharing a single (d, dmin) pair across all 16, we save 4 bytes per 512 weights: block goes from 2×144=288 bytes to 284 bytes (1.39% per clone block, ~0.6% overall = ~3 MB from 505 MB).
