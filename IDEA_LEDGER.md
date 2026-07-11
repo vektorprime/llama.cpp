@@ -4,6 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **exp-062** | **138-byte block with log-encoded d/dmin (uint8 d8,m8) + 5+3 sc/m (8B scales). Hypothesis: exp-047 failure was 3+3 sc/m not log d/dmin. DISPROVEN — log d/dmin alone KLD=0.394 (625% above). d/dmin need fp16 precision.** | **REGRESSION** |
 | **exp-058** | **GGUF Binary Format Optimization — compact string encoding (uint64_t→uint8_t/0xFF escape), eliminate alignment padding (32→1), remove general.alignment key. No tensor data changes. Targets ~7KB savings from header overhead.** | **NULL** |
 | **exp-056** | **Symmetric quantization (no dmin, no per-sub-block mins) with 136-byte struct. d(2) + 8×6-bit sc packed into 6B scales + qs(128B) = 136B. FWHT-preprocessed weights are Gaussian with zero mean → mins redundant. Signed nibble (-8 to +7) stored as nibble+8.** | **TBD** |
 | **exp-053** | **Mixed precision: 4-bit for low-freq elements 0-127, 3-bit for high-freq 128-255. 112B qs + 12B scales (6+6 bit) = 128B struct. Recovers full scale precision from 3-bit high-freq savings.** | **TBD** |
@@ -1429,3 +1430,21 @@ Total expected savings: ~7.6 KB. No tensor data changes — this is pure header 
 **Quality expectation:** Identical — zero tensor data changes. KLD=0.058633, STP=87.162% (same as exp-057).
 
 **Outcome (NULL):** All quantized tensor sizes are naturally 32-byte multiples (block sizes 140/210 produce 32-aligned totals), so zero padding is saved. Compact string encoding broke BF16 model reading. Only alignment change + key survived, adding 18 bytes (key: 35B, saved metadata padding: 17B). Net: +18 bytes, no size reduction. GGUF header overhead is irreducible without changing the binary format or compression post-hoc.
+
+## exp-062: 138-byte block with log-encoded d/dmin + 5+3 sc/m
+
+**Hypothesis:** exp-047's catastrophic failure (KLD 12.57, PPL 4.4M) was driven by the 3+3 sc/m encoding being below the quality floor — NOT by the 8-bit log-encoded d/dmin. The log encoding provides 256 levels with ~4 orders of magnitude range (2^-8 to 2^8), which should cover typical d/dmin values (1e-4 to 1e-1). By pairing log-encoded d/dmin with proven 5+3 sc/m (the best known configuration from exp-044), the quality should be within thresholds. The 138-byte struct (1B d8 + 1B m8 + 8B scales + 128B qs) saves 2 bytes vs the 140B block.
+
+**Changes:**
+1. `ggml-common.h`: 138-byte struct with uint8_t d8, m8, scales[8] (no GGML_EXTENSION union)
+2. `ggml-quants.c`: Log encoding: d8=round(16*log2(d)+127), clamped to 0..255. Decoding via exp2f lookup table. 5+3 sc/m packing per byte: (ls&0x1F)|((lm&0x7)<<5). FWHT, local search, all quality features retained.
+3. `ggml-cuda/convert.cu`: CUDA kernel decodes d8→d via exp2f, 5+3 sc/m per-byte unpack
+4. Validation replaced with simple bounds check (no more fp16 d/dmin fields)
+
+**Outcome (REGRESSION):**
+- GGUF size: 509,224,128 bytes (vs exp-044 512,267,968, -3.0 MB, -0.59%)
+- KLD: 0.3936 (vs baseline 0.0629, **625% ABOVE** threshold)
+- PPL: 33.82 (vs baseline 22.45)
+- Same top p: 69.41% (vs baseline 86.39%)
+
+**Lesson:** The 8-bit log encoding for d/dmin IS the primary cause of quality failure, not the 3+3 sc/m. Going from fp16 (10-bit mantissa, 65536 levels) to uint8 log (256 levels) loses critical information. d/dmin define the quantization grid for all 256 weights in the superblock. The log encoding's non-uniform spacing concentrates precision at wrong values; the typical d/dmin range (1e-4 to 1e-1) gets fewer effective quantization levels than a uniform grid would provide. **d/dmin require fp16 precision — they are the most quality-sensitive 2 bytes in the block struct. Do NOT attempt to compress them.**
