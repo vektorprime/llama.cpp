@@ -309,7 +309,7 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                 case GGML_TYPE_IQ1_S:
                     return ne11 <= 5;
                 case GGML_TYPE_IQ2_XXS:
-                case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ3_S:
                 case GGML_TYPE_IQ4_XS:
                     return ne11 <= 6;
                 default:
