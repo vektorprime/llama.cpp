@@ -4,6 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **exp-052** | **Aggressive MSE local search on d/dmin (±5% 21-step), ls/lm (±2 5-step), + simulated annealing — find better local minima in the 140B 5+3 sc/m space** | **TBD** |
 | **exp-048** | **3-bit element quantization (108-byte block, 22.9% block reduction) — PPL 8972, KLD 5.94, STP 6.1%. 8-level elements fundamentally insufficient** | **REGRESSION** |
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | **exp-048** | **3-bit element quantization (108-byte block) — 256×3bit=96B qs, 5+3 sc/m, 140→108B block. Most aggressive structural compression yet (22.9% per-block savings)** | **REGRESSION** |
@@ -1334,3 +1335,18 @@ Total budget: 2×(6+2) + 2×(5+3) + 4×(4+4) = 16+16+32 = 64 bits = 8 bytes = sa
 The initial implementation had a scaling bug (d initialized at max_scale*32/31 instead of max_scale*224/31, causing PPL 2.5M). After fixing the d/dmin scaling to account for the /32, /7, and /8 normalizers in the dequant formula, PPL improved to 8972 but remains catastrophic.
 
 **Lesson:** 3-bit quantization (8 levels per weight) is fundamentally insufficient for LLM weights, even with FWHT preprocessing and 5+3 bit per-sub-block scales/mins. The 4→3 bit reduction halves the quantization levels (16→8) and the representable weight range per element. The per-sub-block scale/min can reposition the quantization grid but cannot recover the lost precision between adjacent quantization levels. The 4-bit floor established by the stock Q4_K format (4.5 bpw) appears to be a hard quality limit — dropping below 4 bits per element causes catastrophic degradation regardless of how much metadata (scales, mins) is preserved. The 108-byte block (3.375 bpw) is fundamentally too small for the model's weight precision requirements.
+
+## exp-052: Aggressive MSE Local Search with Simulated Annealing
+
+**Hypothesis:** exp-040's local MSE search on (±2% d/dmin, ±1 ls/lm) improved KLD by ~18.7%. With all structural approaches exhausted, further quality improvements can only come from finding BETTER local minima in the existing 140B, 5+3 sc/m parameter space. The current search has narrow ranges (±2% d/dmin, ±1 ls/lm) and may be getting stuck in sub-optimal local minima. By:
+1. Expanding the d/dmin search range from ±2% to ±5% (21-step grid vs 5-step)
+2. Expanding the ls/lm search range from ±1 to ±2 (5×5=25 candidates per sub-block vs 3×3=9)
+3. Adding simulated annealing — accept worse intermediate states with decreasing probability to jump out of local minima (wide search ±10% d/dmin, ±3 ls/lm gradually narrowing to fine-tune)
+4. Running 6+ phases (vs current 2)
+
+…we should find significantly better d/dmin/ls/lm configurations within the same 140B struct.
+
+**Changes:**
+1. `ggml-quants.c`: Modify local search in BOTH `quantize_row_q4_K_M_CLONE_ref` and `quantize_q4_K_M_CLONE` — replace 2-phase narrow search with 6-phase wide+SA search
+
+**Expected outcome:** KLD drops from 0.059 (exp-044 baseline) to 0.050-0.055 range (10-20% improvement), creating significant quality headroom for future size-reduction experiments. Quantize time increases but stays within 1200s budget.
