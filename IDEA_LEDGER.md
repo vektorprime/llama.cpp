@@ -4,6 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **exp-053** | **Mixed precision: 4-bit for low-freq elements 0-127, 3-bit for high-freq 128-255. 112B qs + 12B scales (6+6 bit) = 128B struct. Recovers full scale precision from 3-bit high-freq savings.** | **TBD** |
 | **exp-052** | **Aggressive MSE local search on d/dmin (±5% 21-step), ls/lm (±2 5-step), + simulated annealing — REGRESSION vs exp-044. Wider search overfits MSE objective.** | **REGRESSION** |
 | **exp-048** | **3-bit element quantization (108-byte block, 22.9% block reduction) — PPL 8972, KLD 5.94, STP 6.1%. 8-level elements fundamentally insufficient** | **REGRESSION** |
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
@@ -1356,3 +1357,32 @@ The initial implementation had a scaling bug (d initialized at max_scale*32/31 i
 Comparison vs stock Q4_K_M baseline: KLD 0.0624 vs 0.0629 (-0.9%, marginal), STP 86.64% vs 86.39% (+0.25pp, marginal). So it's ever-so-slightly better than stock but materially worse than exp-044.
 
 **Lesson:** More aggressive MSE-based local search does NOT improve end-to-end quality. The MSE objective on FWHT-transformed weights is a proxy that doesn't perfectly correlate with KLD/same_top_p. Expanding the search space (±5% d/dmin, ±2 ls/lm, SA) finds configurations with lower block-level MSE but WORSE cross-block statistical properties for perplexity. Additionally, simulated annealing with random perturbation followed by deterministic fine-tuning can undo the deterministic optimizations from earlier phases. The original 2-phase narrow search (±2% d/dmin, ±1 ls/lm) from exp-040 is near-optimal — the larger search space introduces overfitting. Future experiments should focus on CHANGING THE OBJECTIVE function (e.g., incorporating KLD-like weighting) rather than just expanding the search space on the same MSE objective.
+
+---
+
+## exp-053: Mixed Precision — 4-bit for Low-Freq, 3-bit for High-Freq with 6+6 bit Scale Recovery
+
+**Hypothesis:** FWHT concentrates energy at low position indices (0-127 = high energy/structural, 128-255 = low energy/noise-like). This frequency-dependent energy distribution enables mixed precision: 4-bit for low-frequency elements (need finer quantization) and 3-bit for high-frequency elements (noise-like, 8 levels adequate). The savings are re-invested to recover full 6+6 bit scale/min precision (back to original Q4_K quality from exp-044's 5+3 bit).
+
+Key arithmetic:
+- 4-bit for elements 0-127: 64 bytes in qs
+- 3-bit for elements 128-255: 48 bytes in qs
+- Total qs: 112 bytes (was 128, save 16B)
+- Scales: 12 bytes (6+6 bit, original Q4_K scale precision, was 8 bytes with 5+3)
+- Struct: 4(d+dmin) + 112(qs) + 12(scales) = 128 bytes
+- Net savings: 144->128 = 16 bytes per block (11.1% per-block reduction)
+- vs exp-044: 140->128 = 12 bytes per block (8.6% additional reduction)
+
+The 3-bit quantization uses formula x = d*sc*(15/7)*q3 - dmin*m where q3 in [0,7]. The scale factor (15/7) ensures the 3-bit values span the same dynamic range as 4-bit values. The 3-bit packing uses 8 values -> 3 bytes (24 bits).
+
+Full 6+6 bit scale recovery means sc and m each have 64 levels (vs exp-044's 32+8), fully restoring the original Q4_K scale precision that was lost in the 140B struct compression.
+
+**Changes:**
+1. `ggml-common.h`: K_SCALE_SIZE_CLONE=12, QS_SIZE_CLONE=112, struct=128B
+2. `ggml-quants.c`: quantize -- 6+6 bit scale/min, 4-bit for sub-blocks 0-3, 3-bit for sub-blocks 4-7 with scale_3bit factor
+3. `ggml-quants.c`: dequant -- dual unpacking (4-bit consecutive for elements 0-127, 3-bit group unpack for elements 128-255)
+4. `ggml-cuda/convert.cu`: CUDA dequant kernel with pre-decoded 6+6 scales, mixed 4/3-bit unpacking per element index
+5. `ggml.c`: type_size auto from sizeof
+6. `ggml-cpu/ggml-cpu.c`: type_size auto from sizeof (vec_dot stays NULL)
+
+**Expected outcome:** GGUF raw size ~502-506 MB (vs exp-044 ~512 MB, ~6-10 MB further reduction). Quality trade: 3-bit quantization of high-frequency FWHT components has minor impact (these components carry only ~10% of total energy), while full 6+6 bit scale precision recovery may actually IMPROVE KLD vs the 5+3 bit scales of exp-044. Net effect expected to be neutral-to-positive on quality.
