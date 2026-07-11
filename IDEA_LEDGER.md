@@ -485,7 +485,12 @@ next? What does this reveal about the problem?
 5. `llama-model-loader.cpp`: Read KV pair, store in global variable.
 6. Validation: update VALIDATE_ROW_DATA_DM_F16_IMPL → skip validation for clone (no fp16 fields).
 
-**Expected outcome:** GGUF raw size reduces by ~3 bytes per clone block (~5-6 MB overall). KLD expected modest increase due to d/dmin quantization to 256 levels, but data-driven bounds should be far better than exp-049's fixed bounds.
+**Actual outcome:** REGRESSION — 507.7MB, KLD 0.1714 (+172% vs baseline 0.0629), STP 79.06% (-7.33pp), PPL 26.29. 
+- Size: 507,702,208 bytes (same as exp-049, 137B struct saves 3B/block).
+- Quality: Much better than exp-049 (KLD 5.90 → 0.171, PPL 8182 → 26.3), proving data-driven bounds are essential. But 16-level quantization of both d and dmin (256 total pairs) is still too coarse — a 2.72x KLD increase is unacceptable.
+- The d/dmin parameters control the entire 256-element superblock grid; fp16 precision (thousands of effective levels) cannot be reduced to 4+4 bits without severe quality loss, even with optimal log-spaced boundaries.
+
+**Lesson:** The codebook approach reduces KLD to 0.17 (from exp-049's 5.9) with data-driven bounds, but even with perfect boundaries, 16 quantization levels per parameter are fundamentally insufficient. d and dmin are the most quality-critical 4 bytes in the block — they set the grid scale and offset for all 256 weights. Going below fp16 precision on either parameter by more than ~1-2 bits causes unacceptable quality degradation. The 3 bytes saved (4→1) are not worth the 172% KLD increase. Future work should investigate asymmetric bit allocation (e.g., 6+2 bits, 32×4 levels) or focus compression elsewhere (scales[], metadata stripping).
 
 ## exp-008: Extended superblock with shared d/dmin (QK_K_CLONE=512)
 
