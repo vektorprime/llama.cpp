@@ -6,7 +6,8 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-044 | **5+3 bit sc/m within 8-byte scales (same 140B struct) — sc 4→5 bits, m 4→3 bits. FWHT symmetrization makes min precision less critical** | **SUCCESS** |
-| exp-045 | **6+2 bit sc/m — sc 5→6 bits (64 levels), m 3→2 bits (4 levels). Ultra-coarse mins (2-bit) near enough for FWHT-symmetric distribution; fine scales recover precision** | TBD |
+| exp-045 | **6+2 bit sc/m — sc 5→6 bits (64 levels), m 3→2 bits (4 levels). Ultra-coarse mins (2-bit) near enough for FWHT-symmetric distribution; fine scales recover precision** | **REGRESSION** |
+| exp-046 | **Asymmetric sc/m bit allocation across frequency bands — allocate more sc bits to low-frequency sub-blocks, more m bits to high-freq. Same 140B struct, same 8-byte scales, same 64-bit total budget. Instead of uniform 5+3, use 6+2 for sub-blocks 0-1 (lowest freq), 5+3 for 2-3 (mid freq), 4+4 for 4-7 (highest freq)** | TBD |
 | exp-043 | **Reduce sub-blocks 8→4 (64 elem each), scales 8→4 bytes, struct 140→136B — FWHT homogenization makes sub-block precision less needed** | **REGRESSION** |
 | exp-042 | **CAQ 140-byte block with complete dispatch path support — trade exp-040's 18.7% headroom for block struct compression, FIX ALL dispatch paths** | **SUCCESS** |
 | exp-040 | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom (KLD -18.7%, STP +1.48pp)** | **SUCCESS** |
@@ -1223,5 +1224,32 @@ The local search improves on the heuristic by: (a) finding better ls/lm values (
 4. `ggml-cuda/convert.cu` — `dequantize_block_q4_K_M_CLONE`: Update unpacking masks
 
 **Expected outcome:** Same struct size (140B, 512,267,968 B GGUF). If min is truly near-irrelevant in FWHT space, KLD and STP should be comparable to exp-044. If mins matter more than expected, quality will degrade.
+
+**Actual outcome:** REGRESSION — size 512,267,968 B (unchanged), KLD 0.077962 (+33% vs exp-044's 0.058633, +23.9% vs baseline 0.062947), STP 85.676% (-1.49pp vs exp-044, -0.71pp vs baseline). 2-bit mins (4 levels) are below the quality floor even with FWHT symmetrization.
+
+## exp-046: Asymmetric sc/m bit allocation across frequency bands
+
+**Hypothesis:** FWHT energy concentrates at low position indices (position 0 = DC, highest energy; higher positions = lower energy). Sub-blocks 0-3 cover low-frequency positions 0-127 and carry structural information; sub-blocks 4-7 cover high-frequency positions 128-255 with noise-like detail. Instead of uniform 5+3 bit sc/m across all 8 sub-blocks (exp-044), allocate bits asymmetrically:
+
+- Sub-blocks 0-1 (positions 0-63, lowest freq): sc=6, m=2 (fine scale for structure, coarse offset acceptable in symmetrized space)
+- Sub-blocks 2-3 (positions 64-127, mid freq): sc=5, m=3 (balanced, same as exp-044 baseline)
+- Sub-blocks 4-7 (positions 128-255, highest freq): sc=4, m=4 (coarse scale OK for noise-like components, fine offset for centering)
+
+Total budget: 2×(6+2) + 2×(5+3) + 4×(4+4) = 16+16+32 = 64 bits = 8 bytes = same struct.
+
+**Key insight:** exp-045 proved 6+2 is catastrophic when applied UNIFORMLY to all sub-blocks (KLD 0.078 vs 0.059 baseline). But when concentrated on the 2 lowest-frequency sub-blocks (which carry the DC and low-frequency structural components), the extra scale precision at those critical positions may more than compensate for the min precision loss there. Meanwhile, applying 4+4 to the 4 highest-frequency sub-blocks trades unnecessary scale precision for better min centering on fine detail.
+
+**Why this could work:**
+1. Low-freq FWHT components (DC, slow-varying patterns) define the overall tensor shape — they need fine scale control to accurately reproduce the magnitude. Min is less critical because the symmetrized distribution centers near zero.
+2. High-freq FWHT components (fine texture, noise-like) are less structurally important and can tolerate coarser scales. But they may benefit from better min precision for accurate grid centering of small-magnitude values.
+3. The d_val parameter (shared across all sub-blocks) is computed to satisfy: d_val ≥ max_j(scales[j]/ls_max[j]), ensuring every sub-block's effective scale range covers its actual scale.
+
+**Changes:**
+1. `ggml-quants.c` — `quantize_row_q4_K_M_CLONE_ref`: Per-sub-block ls_max/lm_max, d_val/dmin_val computed as max over all j of scales[j]/ls_max[j] and mins[j]/lm_max[j], per-sub-block packing masks
+2. `ggml-quants.c` — `quantize_q4_K_M_CLONE` (both branches): Same per-sub-block allocation
+3. `ggml-quants.c` — `dequantize_row_q4_K_M_CLONE`: Per-sub-block unpacking
+4. `ggml-cuda/convert.cu` — `dequantize_block_q4_K_M_CLONE`: Per-sub-block unpacking in CUDA kernel
+
+**Expected outcome:** Same struct size (140B = 8B scales, GGUF 512,267,968 B). KLD should be better than exp-045's uniform 6+2 (0.078) and hopefully better than exp-044's uniform 5+3 (0.059). The asymmetric allocation gives structural components the extra scale precision they need while giving noise-like components only what they need.
 
 **Actual outcome:** TBD
