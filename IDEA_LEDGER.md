@@ -5,6 +5,8 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | PENDING |
+| **exp-035** | **Collapsed Sub-Block Scales — 144→136 byte block, global sc/mn — eval segfault, offset shift killed all paths** | **FAILED** |
 | **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 at final write — catastrophic regression, refinement escape from grid is essential** | **REGRESSION — 505.0MB, KLD 0.2477, top_p 73.99%** |
 | **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — min coarsening hurt more than scale improvement helped** | **REGRESSION — 506.1MB, KLD 0.05981, top_p 87.11%** |
 | exp-032 | CAQ: Compact Asymmetric Quantization — 140-byte block, 4+4 packed sc/m, independent d/dmin, rewritten CPU+CUDA dequant | SUCCESS — 505.9MB, KLD 0.0562, top_p 87.37% |
@@ -38,6 +40,30 @@
 | exp-024 | 4-bit sc quantization (from exp-023's 5-bit: sc 5→4 bits, m stays 6-bit, same 144B struct, quantize-side only) — use 12.4% KLD headroom for more zstd compression | SUCCESS (-0.60MB, KLD +1.1% but 11.5% headroom remaining) |
 | **exp-025** | **Nibble rotation + consecutive packing — (q+8)&0xF rotation maps center levels→0x0/0xF, consecutive-weight byte pairing for byte runs in qs[], same 144B struct, qs+-dequant** | **SUCCESS (-0.68MB, no quality change)** |
 | exp-026 | Re-pack scales[] to group 8 sc values in 4 consecutive bytes + 8 m values in 8 consecutive bytes (stock packing interleaves sc/m bits across 12 bytes, breaking zstd gradient detection) — quantize+dequant side, same 144B struct, lossless on decoded values | REGRESSION (+453KB) |
+
+## exp-036: FWHT + Compact Scale Encoding (CSE) — 140-byte block with 4+4 bit sc/m
+
+**Hypothesis:** exp-032 (CAQ) proved that 4+4 bit sc/m at 8 bytes per 256 weights saves 4 bytes per block (2.78% per clone block, ~4.4% overall) with quality within thresholds (KLD 0.0562, same_top_p 87.37%). However, CAQ was reverted when the codebase was cleaned back to FWHT-only. The key question: does FWHT preprocessing IMPROVE OR DEGRADE the quality of CAQ-style scale compression?
+
+The FWHT makes all 256 positions have nearly identical variance. This has two opposing effects:
+1. **Positive**: with uniform variance, 4-bit scales (16 levels) can track per-sub-block differences more effectively than in non-FWHT space, because sub-blocks are all similarly-behaved (no outlier sub-blocks that need the full 63-level range)
+2. **Negative**: but the FWHT also reduces the NEED for per-sub-block variation — all sub-blocks converge to similar magnitudes, making even 4-bit scales over-parameterized
+
+The FWHT quality headroom (exp-016: KLD -9.7% vs baseline, same_top_p +0.81pp) provides margin to absorb the scale precision reduction. If CAQ alone achieved KLD 0.0562, FWHT+CAQ should achieve KLD ≤ 0.0562 (potentially better).
+
+**Changes:**
+1. `ggml-common.h`: struct with scales[8] (140 bytes total), qs at offset 12. static_assert updated.
+2. `ggml-quants.c`: New self-contained quantize/dequant functions with FWHT + 4+4 scale encoding
+3. `ggml.c`: type_size auto-updates from sizeof
+4. `ggml-cpu/ggml-cpu.c`: type_size auto-updates, vec_dot = NULL (safety)
+5. `ggml-cuda/common.cuh`: type traits updated (qi, qr)
+6. `ggml-cuda/convert.cu`: New CUDA dequant kernel for 140-byte struct
+7. `ggml-cuda/mmvq.cu`: Disable MMVQ for clone (return false from eligibility)
+8. `ggml-cuda/mmq.cu`: Disable MMQ for clone
+9. `ggml-cpu/repack.cpp`: Skip clone
+10. `ggml-cpu/quants.c`: Update dispatcher
+
+**Expected outcome:** Raw GGUF bytes reduce by ~4.4% (~23 MB for the ~529 MB baseline) vs stock Q4_K_M_CLONE. FWHT quality headroom should keep KLD ≤ 0.062947 and same_top_p ≥ 86.387%.
 
 ## exp-022: 4-bit d/dmin mantissa rounding (single variable change from exp-020)
 
