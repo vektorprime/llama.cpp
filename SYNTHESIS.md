@@ -76,6 +76,9 @@ Reduce GGUF file size below 505 MB while maintaining:
    - The near-entropy tensor data fundamentally resists all generic compression
    - The total achievable post-quantization compression ceiling is approximately 3.06%
 
+| **exp-037** | **5-bit sc quantization (sc 6→5 bits) — clean FWHT base, single variable** | **529,297,440** | **0.058347** | **87.209%** | **SUCCESS** |
+| — | Q4_K_M baseline | 529,297,440 | 0.062947 | 86.387% | Baseline |
+
 ## What's Left to Try
 
 - **Combine zstd compression with exp-011's trade-off**: The token_embd Q6_K→Q5_K trade-off (exp-011) saved 20 MB with quality IMPROVEMENT. Combined with zstd -19 compression, this could save ~36 MB total (20 + 16). AGENTS.md rules restrict per-tensor mixing though.
@@ -91,3 +94,5 @@ Reduce GGUF file size below 505 MB while maintaining:
 15. **MSE local search on secondary quantization finds better parameters** (exp-019): The standard Q4_K max/min heuristic for d/dmin/ls/lm leaves measurable MSE on the table. A local search (±1 on ls/lm, ±2% on d/dmin) directly in the quantized parameter space finds 2.3% better KLD than the heuristic alone (0.0555 vs 0.0568). The key: search in already-quantized space avoids the circular re-quantization destabilization that killed exp-013.
 
 16. **Coarse fp16 rounding improves zstd compression AND quality** (exp-020): Clearing 5 low mantissa bits from d and dmin (reducing fp16 precision from 10 to 5 mantissa bits) creates repeating byte patterns that zstd compresses, saving 0.92 MB. Quality unexpectedly IMPROVED (KLD 0.0529 vs 0.0555) — the rounding acts as implicit regularization by preventing the MSE search from overfitting to fine d/dmin values. This demonstrates the "lossy preprocessing for lossless compression" strategy: controllable quality loss in metadata creates byte-level pattern matches that the compressor exploits, with net quality neutral or improved.
+
+17. **Scale (sc) coarsening also provides regularization benefit** (exp-037): Reducing sc precision from 6→5 bits on clean FWHT base improved KLD by -7.3% (0.062947→0.058347) and same top p by +0.82pp (86.387%→87.209%), mirroring exp-030's result for m coarsening. Both sc and m are over-parameterized at 6 bits for FWHT-preprocessed data — the greedy quantization heuristic overfits to noise in per-sub-block statistics, and the coarser resolution acts as implicit regularization. The first coarsening step on each parameter consistently improves quality. This confirms the PITFALLS.md pattern: each parameter has a "first coarsening free lunch" when starting from 6-bit precision.
