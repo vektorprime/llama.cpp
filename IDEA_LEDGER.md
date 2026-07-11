@@ -5,7 +5,8 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | PENDING |
+| exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
+| **exp-037** | **5-bit sc (scale) quantization — sc 6→5 bits, single variable, clean FWHT base, quantize-side only, same 144B struct. Complement to exp-030's 5-bit m.** | **PENDING** |
 | **exp-035** | **Collapsed Sub-Block Scales — 144→136 byte block, global sc/mn — eval segfault, offset shift killed all paths** | **FAILED** |
 | **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 at final write — catastrophic regression, refinement escape from grid is essential** | **REGRESSION — 505.0MB, KLD 0.2477, top_p 73.99%** |
 | **exp-033** | **CAQ 5+3-bit scales: sc 4→5 bits (32 levels), m 4→3 bits (8 levels), same 140-byte block — min coarsening hurt more than scale improvement helped** | **REGRESSION — 506.1MB, KLD 0.05981, top_p 87.11%** |
@@ -1031,3 +1032,22 @@ The FWHT homogenization may mitigate this somewhat but won't eliminate it — su
 **Expected outcome:** GGUF size ~517-520 MB (vs stock 529 MB, ~2.3% reduction). KLD > 0.5 (well above threshold of 0.063). Same top p < 75%. Expected status: REGRESSION.
 
 **Actual outcome:** FAILED — segfault during eval on both CPU and GPU. Quantize succeeded (size 517,122,080 bytes, 493.17 MB, 12.12s). The struct size change from 144 to 136 bytes shifted qs[] from offset 16 to offset 6. All CUDA acceleration paths (MMQ, MMVQ, repack) and CPU dispatch paths that assume block_q4_K layout read data at wrong offsets. The dequantize kernel was rewritten but the MMVQ/MMQ dispatch still tries to use Q4_K kernels with the clone data, causing segfault. Disabling MMVQ via should_use_mmvq() was not enough — the `mul_mat_id` path calls `get_mmvq_mmid_max_batch` directly which returned `MMVQ_MAX_BATCH_SIZE` for the clone. Additionally, the CPU path had `vec_dot_type = GGML_TYPE_COUNT` causing out-of-bounds array access. Full structural block compression requires rewriting ALL dispatch paths simultaneously, consistent with PITFALLS entry from exp-012.
+
+---
+
+## exp-037: 5-bit sc (scale) quantization — sc 6→5 bits from clean FWHT base
+
+**Hypothesis:** exp-030 proved that m 6→5 bits IMPROVED KLD by -2.9% through implicit regularization — the first coarsening step reduces overfitting of the one-shot greedy quantization heuristic. The logical complement is to apply the same single-variable change to sc (sub-block scale): sc 6→5 bits, m stays 6-bit. From the clean FWHT base (no prior d/dmin rounding, no nibble rotation, no local search), this is a TRUE single variable change. The FWHT-preprocessed weights have more uniform distributions, making the 5-bit sc range (0-31 vs 0-63) sufficient for 4-bit weight quantization. The PITFALLS.md pattern "first coarsening step captures the regularization free lunch" (from exp-030 lesson) suggests sc coarsening may also improve KLD, and even if it doesn't, exp-023 showed it's quality-safe (KLD +1.5% when stacked on d/dmin rounding).
+
+**Why this experiment now:** After exp-035 and exp-036 catastrophic failures from struct changes, we must work within the 144-byte struct. The clean FWHT codebase (post-revert) has zero zstd optimizations. exp-030's 5-bit m is the single-best proven individual change. The complementary 5-bit sc is the logical next step — it's ONE variable change, quantize-side only, no dequant/CUDA/struct changes needed.
+
+**Changes:**
+1. `ggml/src/ggml-quants.c`: Replace `quantize_row_q4_K_M_CLONE_ref` — copy the body of `quantize_row_q4_K_ref` but apply FWHT first and change sc precision:
+   - `inv_scale = 31.f/max_scale` (was 63.f)
+   - `ls = MIN(31, ls)` (was MIN(63, ls))
+   - `d = GGML_FP32_TO_FP16(max_scale/31.f)` (was max_scale/63.f)
+   - m stays at 6-bit (inv_min=63.f, lm=MIN(63,lm), dmin=max_min/63.f)
+2. `ggml/src/ggml-quants.c`: Replace `quantize_q4_K_M_CLONE` — for imatrix path, copy `quantize_row_q4_K_impl` body with `make_qp_quants(..., 31, ...)` for sc (was 63); for no-imatrix path, call modified `quantize_row_q4_K_M_CLONE_ref`
+3. No changes to dequantize functions, CUDA kernel, struct, or dispatch paths
+
+**Expected outcome:** GGUF raw size unchanged (same 144B struct). Zstd-compressed size should decrease (fewer distinct sc byte patterns → better compression). KLD may improve (regularization) or modestly increase (+1-3% vs baseline 0.062947). Same top p should stay ≥ 86.387%.
