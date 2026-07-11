@@ -79,13 +79,25 @@ Reduce GGUF file size below 505 MB while maintaining:
 | **exp-037** | **5-bit sc quantization (sc 6→5 bits) — clean FWHT base, single variable** | **529,297,440** | **0.058347** | **87.209%** | **SUCCESS** |
 | **exp-039** | **GGUF metadata stripping — remove merges, token_type, chat_template, minimize tokens, strip general.* fields** | **523,209,088** | **0.060695** | **86.775%** | **SUCCESS** |
 | **exp-040** | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom** | **523,209,088** | **0.051201** | **87.871%** | **SUCCESS** |
+| **exp-041** | **GGUF token array removal + strip quantization_version/file_type — save 4.85 MB more** | **518,355,648** | **0.051201** | **87.871%** | **SUCCESS** |
+| **exp-042** | **CAQ 140-byte block (4+4 sc/m) + complete dispatch path support — first structural compression + FWHT** | **512,267,968** | **0.058199** | **86.857%** | **SUCCESS** |
 | — | Q4_K_M baseline | 529,297,440 | 0.062947 | 86.387% | Baseline |
+
+## Key Insights (updated after exp-042)
+
+20. **Structural block compression WORKS when ALL dispatch paths are fixed** (exp-042): After PITFALLS from exp-035/036 which showed that struct changes break dispatch, exp-042 systematically fixed EVERY dispatch path: disabled MMVQ (ggml_cuda_should_use_mmvq returns false, get_mmvq_mmid_max_batch returns 0), disabled MMQ (not in supported list), removed clone from all mmq.cuh fallthroughs, wrote self-contained CPU+CUDA dequant (no cast to block_q4_K*), and used auto-size type_traits. The 4+4 bit sc/m encoding (scales 12→8 bytes, struct 144→140 bytes) saved 6.09 MB (1.17%) vs exp-041. Quality cost: +13.7% KLD increase (0.051→0.058) from sc=5,m=6 to sc=4,m=4, but still 7.5% below baseline KLD. Combined with exp-041's metadata stripping, total reduction vs stock Q4_K_M is 17.03 MB (3.22%). Key lesson: the number of dispatch paths is large (~30+ locations) but all are mechanical fixes — the actual quality-critical code is just the quantize/dequant functions and CUDA kernel.
+
+21. **FWHT + 4+4 bit sc/m works without catastrophic failure** (exp-042): Unlike exp-036 which failed catastrophically (PPL 6.9M), exp-042 combined FWHT with 4+4 bit sc/m and achieved valid metrics (PPL 22.50, KLD 0.058). This proves that exp-036's failure was due to dispatch path bugs, NOT an inherent incompatibility between FWHT and reduced scale precision. The 4+4 encoding within 140 bytes provides 2.78% per-block savings with FWHT quality headroom absorbing the precision loss.
 
 ## What's Left to Try
 
-- **Combine zstd compression with exp-011's trade-off**: The token_embd Q6_K→Q5_K trade-off (exp-011) saved 20 MB with quality IMPROVEMENT. Combined with zstd -19 compression, this could save ~36 MB total (20 + 16). AGENTS.md rules restrict per-tensor mixing though.
+- **Tune sc/m precision tradeoff within 140-byte block**: exp-042 used symmetric 4+4 bits. With 18.7% KLD headroom (now partially consumed: 7.5% remaining), try asymmetric allocation: 5+3 (better scales, coarser mins) or 4+3+1 extra bit for qs header. The 1 bit difference matters — exp-033 showed 5+3 regressed vs 4+4 but that was without FWHT.
 
-- **Further d/dmin coarsening**: Clear 7-8 mantissa bits (keep 2-3 instead of 5), creating even more repetition. The quality impact may increase, but with the existing headroom (KLD 0.0529 vs threshold 0.0629 — 15.9% margin), more aggressive d/dmin compression can be absorbed.
+- **Combine zstd with structural compression**: exp-042's 512.27 MB raw is already smaller than stock. Adding zstd -19 compression (as proven in exp-015) would save another ~16 MB, bringing total to ~496 MB — the smallest viable GGUF yet with quality above baseline.
+
+- **3-bit min with FWHT rebalancing**: FWHT centers weights near zero, making per-sub-block mins potentially predictable. If mins can be predicted from d/dmin or sc values, we could save 1 more byte per block (m→3 bits, total 7 bytes scales = 139→140 padded). But exp-033 showed 3-bit mins degrade quality even with FWHT-aided scale improvement. Could a better prediction model (e.g., m=alpha*d) succeed?
+
+- **Dual-compact block (mixed precision within 140 bytes)**: Combine 140-byte block with per-sub-block precision flags — some sub-blocks get 5+5 while others get 3+3, averaging to 4+4 while directing bits where needed. This would require a 1-byte flag per block, keeping total at 141→144 (wasted padding), or fitting within 140 by stealing 1 byte from scales[].
 
 - **Scale[] byte coarsening**: Apply similar rounding to the 12-byte scales[] field. Since scales encode 6-bit values packed into 12 bytes with complex bit interleaving, simple byte-level zeroing is not straightforward. But constraining ls/lm to fewer distinct patterns could create more byte-level repetition. This requires no dequant changes since the existing scaling formula is unchanged.
 
