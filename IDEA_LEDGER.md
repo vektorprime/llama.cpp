@@ -5,6 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| exp-042 | **CAQ 140-byte block with complete dispatch path support — trade exp-040's 18.7% headroom for block struct compression, FIX ALL dispatch paths** | **TBD** |
 | exp-040 | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom (KLD -18.7%, STP +1.48pp)** | **SUCCESS** |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
 | **exp-039** | **GGUF Metadata Stripping — strip redundant tokenizer data (chat_template, token_type, merges) + minimize token list with empty strings. Zero struct changes, quality identical to baseline.** | **TBD** |
@@ -1118,6 +1119,37 @@ Key: n_vocab (248320) is preserved via the array length of the minimized tokens 
 2. `src/llama-vocab.cpp`: Make `tokenizer.ggml.merges` optional for BPE models
 
 **Expected outcome:** GGUF raw size reduces by ~4-5 MB. KLD and same top p identical to baseline (0.062947, 86.387%) since all tensor data is unchanged.
+
+## exp-042: CAQ 140-byte block with complete dispatch path support
+
+**Hypothesis:** exp-040 created massive quality headroom (KLD 0.051201, 18.7% below threshold). exp-032 proved that the CAQ format (4+4 bit sc/m, 140-byte block) works and was within thresholds. But exp-035 and exp-036 failed catastrophically because struct changes broke MMVQ, MMQ, and CPU dispatch paths that weren't properly disabled/rewritten. PITFALLS.md documents the full list of broken paths.
+
+The thesis: with exp-040's 18.7% headroom, we CAN afford the quality cost of going from sc=5,m=6 to sc=4,m=4 (halving both precisions) within a 140-byte block. The key is to systematically fix EVERY dispatch path documented in PITFALLS.md, not just a subset.
+
+From PITFALLS.md line 89: *Block struct size change shifts field offsets for ALL dispatch paths.* The broken paths include:
+1. MMVQ's `get_mmvq_mmid_max_batch` — returns non-zero for clone, calls MMVQ with wrong struct
+2. `should_use_mmvq` — returns true for clone (falls to default case)
+3. MMVQ's `mul_mat_vec_q_switch_type` — fallthrough to Q4_K template with wrong offsets
+4. MMQ's `ggml_cuda_should_use_mmq` — not listing clone → returns false (SAFE, but mmq.cuh fallthroughs remain)
+5. MMQ's `mmq.cuh` switch cases (DS layout, DP4A, MMA tiles) — still fall through to Q4_K
+6. CPU `vec_dot_type = GGML_TYPE_COUNT` — out-of-bounds array index
+7. CPU repack support — not applicable for 140-byte struct
+
+**Changes (complete file inventory):**
+1. `ggml-common.h`: scales[K_SCALE_SIZE]→scales[8], static_assert 140 bytes
+2. `ggml-quants.c`: sc 5→4 bits (inv 31→15, MIN(31)→MIN(15)), m 6→4 bits (inv 63→15, MIN(63)→MIN(15)), packing to 4+4 per byte, self-contained dequant with IWHT
+3. `ggml-quants.c`: quantize_q4_K_M_CLONE row_size: sizeof(block_q4_K)→sizeof(block_q4_K_M_CLONE)
+4. `ggml-cuda/convert.cu`: Self-contained CUDA dequant kernel (no cast to block_q4_K*)
+5. `ggml-cuda/mmvq.cu`: Remove clone from ALL fallthrough cases (13+ locations), add explicit return-0 for get_mmvq_mmid_max_batch variants, add explicit return-false in should_use_mmvq
+6. `ggml-cuda/mmq.cuh`: Remove clone from switch fallthroughs (DS layout, DP4A, MMA)
+7. `ggml-cuda/common.cuh`: Update type_traits if needed (qi/qr)
+8. `ggml-cpu/ggml-cpu.c`: Already has vec_dot=NULL, type_size auto
+9. `ggml-cpu/repack.cpp`: Remove clone from repack assertions
+10. `ggml.c`: type_size auto from sizeof
+
+**Expected outcome:** Raw GGUF ~505-510 MB (vs 523 MB for exp-040, saving 13-18 MB, ~2.5-3.5% reduction). KLD ≤ 0.062947 (we can afford up to 0.011746 increase from exp-040's 0.051201). Same top p ≥ 86.387%.
+
+---
 
 ## exp-040: Revert m to 6-bit precision + add local d/dmin/ls/lm search for maximum quality headroom
 
