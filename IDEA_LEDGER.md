@@ -4,6 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **exp-056** | **Symmetric quantization (no dmin, no per-sub-block mins) with 136-byte struct. d(2) + 8×6-bit sc packed into 6B scales + qs(128B) = 136B. FWHT-preprocessed weights are Gaussian with zero mean → mins redundant. Signed nibble (-8 to +7) stored as nibble+8.** | **TBD** |
 | **exp-053** | **Mixed precision: 4-bit for low-freq elements 0-127, 3-bit for high-freq 128-255. 112B qs + 12B scales (6+6 bit) = 128B struct. Recovers full scale precision from 3-bit high-freq savings.** | **TBD** |
 | **exp-052** | **Aggressive MSE local search on d/dmin (±5% 21-step), ls/lm (±2 5-step), + simulated annealing — REGRESSION vs exp-044. Wider search overfits MSE objective.** | **REGRESSION** |
 | **exp-048** | **3-bit element quantization (108-byte block, 22.9% block reduction) — PPL 8972, KLD 5.94, STP 6.1%. 8-level elements fundamentally insufficient** | **REGRESSION** |
@@ -1386,3 +1387,22 @@ Full 6+6 bit scale recovery means sc and m each have 64 levels (vs exp-044's 32+
 6. `ggml-cpu/ggml-cpu.c`: type_size auto from sizeof (vec_dot stays NULL)
 
 **Expected outcome:** GGUF raw size ~502-506 MB (vs exp-044 ~512 MB, ~6-10 MB further reduction). Quality trade: 3-bit quantization of high-frequency FWHT components has minor impact (these components carry only ~10% of total energy), while full 6+6 bit scale precision recovery may actually IMPROVE KLD vs the 5+3 bit scales of exp-044. Net effect expected to be neutral-to-positive on quality.
+
+## exp-056: Symmetric Quantization (no dmin, no per-sub-block mins) — 136-byte struct
+
+**Hypothesis:** exp-003 proved that symmetric quantization WITHOUT FWHT is catastrophic (KLD +82%). But that was in original weight space where distributions are heavy-tailed and asymmetric. FWHT preprocessing (exp-016/054) transforms weights to approximately Gaussian with zero mean, making the distribution fundamentally symmetric. In FWHT space, dmin and per-sub-block mins are largely redundant — they encode the center offset which is consistently near zero. By dropping dmin (2B), removing all per-sub-block min encoding, and packing 8×6-bit scales into 6 bytes (8B→6B, saving 2 more bytes), the struct shrinks from 140→136 bytes (d(2) + scales(6) + qs(128) = 136B). This is 5.56% per-block vs the original 144B and 2.86% vs the current 140B baseline.
+
+Dequant formula: `output = d * (sc/32) * nibble_signed` where nibble_signed ∈ [-8, +7], stored as nibble_unsigned = nibble_signed + 8 (0-15). This is simpler than the original asymmetric formula `d*sc*q - dmin*m` and uses one fewer multiply per element.
+
+The key risk: removing mins eliminates the ability to correct per-sub-block center shifts. But with FWHT-symmetrized data, this is expected to be minimal. The 6-bit scale precision (64 levels per sub-block) provides fine width control to compensate.
+
+Option A (most aggressive): 136-byte struct with 6-bit scales packed into 6 bytes. If quality crashes, Options B (137B with 7-bit sc) or C (138B with 8-bit sc) are fallbacks.
+
+**Changes:**
+1. `ggml-common.h`: d(2) + scales[6] + qs[128] = 136B. Remove dmin, remove GGML_EXTENSION union, K_SCALE_SIZE_CLONE=6.
+2. `ggml-quants.c`: Complete rewrite — symmetric quantize (max_abs per sub-block → sc quant → nibble round(-8..+7) → store as 0-15) and dequant (unpack nibble → signed → d*sc/32*nibble → IFWHT). Local d refinement (±2% search).
+3. `ggml-cuda/convert.cu`: New kernel with symmetric dequant + FWHT, 6-bit scale unpacking.
+4. `ggml.c`: type_size auto from sizeof
+5. `ggml-cpu/ggml-cpu.c`: type_size auto from sizeof, vec_dot stays NULL
+
+**Expected outcome:** GGUF 504-508 MB (vs 512.3 MB baseline, ~4-8 MB savings). Quality: KLD may increase slightly from 0.0586 but the symmetric formula in FWHT space should retain most quality. Same top p expected ≥86.387%.
