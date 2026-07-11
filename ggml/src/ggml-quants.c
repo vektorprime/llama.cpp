@@ -1752,12 +1752,128 @@ void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_C
         }
 
         float inv_scale = max_scale > 0 ? 31.f/max_scale : 0.f;
-        float inv_min   = max_min   > 0 ? 31.f/max_min   : 0.f;
+        float inv_min   = max_min   > 0 ? 63.f/max_min   : 0.f;
+        uint8_t best_ls[QK_K/32];
+        uint8_t best_lm[QK_K/32];
         for (int j = 0; j < QK_K/32; ++j) {
             uint8_t ls = nearest_int(inv_scale*scales[j]);
             uint8_t lm = nearest_int(inv_min*mins[j]);
             ls = MIN(31, ls);
-            lm = MIN(31, lm);
+            lm = MIN(63, lm);
+            best_ls[j] = ls;
+            best_lm[j] = lm;
+        }
+
+        float best_d_val = max_scale/31.f;
+        float best_dmin_val = max_min/63.f;
+
+        // Local search on secondary-quantized parameters (ls, lm, d, dmin)
+        for (int phase = 0; phase < 2; phase++) {
+            // Phase 0: ls/lm search per sub-block
+            // Phase 1: d and dmin refinement
+            for (int j = 0; j < QK_K/32; ++j) {
+                const float * sb = rotated + 32*j;
+                uint8_t cur_ls = best_ls[j];
+                uint8_t cur_lm = best_lm[j];
+                float best_sb_mse = INFINITY;
+                uint8_t sb_best_ls = cur_ls;
+                uint8_t sb_best_lm = cur_lm;
+
+                for (int dls = -1; dls <= 1; ++dls) {
+                    int try_ls = (int)cur_ls + dls;
+                    if (try_ls < 0 || try_ls > 31) continue;
+                    for (int dlm = -1; dlm <= 1; ++dlm) {
+                        int try_lm = (int)cur_lm + dlm;
+                        if (try_lm < 0 || try_lm > 63) continue;
+
+                        float dsc = best_d_val * (float)try_ls;
+                        if (dsc == 0.0f) continue;
+                        float dmm = best_dmin_val * (float)try_lm;
+                        float mse = 0.0f;
+                        for (int ii = 0; ii < 32; ++ii) {
+                            int q = (int)roundf((sb[ii] + dmm) / dsc);
+                            q = q < 0 ? 0 : (q > 15 ? 15 : q);
+                            float diff = sb[ii] - (dsc * (float)q - dmm);
+                            mse += diff * diff;
+                        }
+                        if (mse < best_sb_mse) {
+                            best_sb_mse = mse;
+                            sb_best_ls = (uint8_t)try_ls;
+                            sb_best_lm = (uint8_t)try_lm;
+                        }
+                    }
+                }
+                best_ls[j] = sb_best_ls;
+                best_lm[j] = sb_best_lm;
+            }
+
+            // d refinement: try ±2% scaling
+            {
+                float d_candidates[5] = {
+                    best_d_val * 0.98f, best_d_val * 0.99f,
+                    best_d_val,
+                    best_d_val * 1.01f, best_d_val * 1.02f
+                };
+                float best_mse = INFINITY;
+                float best_d_cand = best_d_val;
+                for (int di = 0; di < 5; ++di) {
+                    float mse = 0.0f;
+                    for (int j = 0; j < QK_K/32; ++j) {
+                        float dsc = d_candidates[di] * (float)best_ls[j];
+                        if (dsc == 0.0f) continue;
+                        float dmm = best_dmin_val * (float)best_lm[j];
+                        const float * sb = rotated + 32*j;
+                        for (int ii = 0; ii < 32; ++ii) {
+                            int q = (int)roundf((sb[ii] + dmm) / dsc);
+                            q = q < 0 ? 0 : (q > 15 ? 15 : q);
+                            float diff = sb[ii] - (dsc * (float)q - dmm);
+                            mse += diff * diff;
+                        }
+                    }
+                    if (mse < best_mse) {
+                        best_mse = mse;
+                        best_d_cand = d_candidates[di];
+                    }
+                }
+                best_d_val = best_d_cand;
+            }
+
+            // dmin refinement: try ±2% scaling
+            {
+                float dm_candidates[5] = {
+                    best_dmin_val * 0.98f, best_dmin_val * 0.99f,
+                    best_dmin_val,
+                    best_dmin_val * 1.01f, best_dmin_val * 1.02f
+                };
+                float best_mse = INFINITY;
+                float best_dm_cand = best_dmin_val;
+                for (int di = 0; di < 5; ++di) {
+                    float mse = 0.0f;
+                    for (int j = 0; j < QK_K/32; ++j) {
+                        float dsc = best_d_val * (float)best_ls[j];
+                        if (dsc == 0.0f) continue;
+                        float dmm = dm_candidates[di] * (float)best_lm[j];
+                        const float * sb = rotated + 32*j;
+                        for (int ii = 0; ii < 32; ++ii) {
+                            int q = (int)roundf((sb[ii] + dmm) / dsc);
+                            q = q < 0 ? 0 : (q > 15 ? 15 : q);
+                            float diff = sb[ii] - (dsc * (float)q - dmm);
+                            mse += diff * diff;
+                        }
+                    }
+                    if (mse < best_mse) {
+                        best_mse = mse;
+                        best_dm_cand = dm_candidates[di];
+                    }
+                }
+                best_dmin_val = best_dm_cand;
+            }
+        }
+
+        // Pack scales with best ls/lm values
+        for (int j = 0; j < QK_K/32; ++j) {
+            uint8_t ls = best_ls[j];
+            uint8_t lm = best_lm[j];
             if (j < 4) {
                 y[i].scales[j] = ls;
                 y[i].scales[j+4] = lm;
@@ -1767,9 +1883,10 @@ void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_C
                 y[i].scales[j-0] |= ((lm >> 4) << 6);
             }
         }
-        y[i].d = GGML_FP32_TO_FP16(max_scale/31.f);
-        y[i].dmin = GGML_FP32_TO_FP16(max_min/31.f);
+        y[i].d = GGML_FP32_TO_FP16(best_d_val);
+        y[i].dmin = GGML_FP32_TO_FP16(best_dmin_val);
 
+        // Final nibble re-quantization with best parameters
         uint8_t sc, m;
         for (int j = 0; j < QK_K/32; ++j) {
             get_scale_min_k4(j, y[i].scales, &sc, &m);
@@ -1848,12 +1965,122 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
                 }
 
                 float inv_scale = max_scale > 0 ? 31.f/max_scale : 0.f;
-                float inv_min   = max_min   > 0 ? 31.f/max_min   : 0.f;
+                float inv_min   = max_min   > 0 ? 63.f/max_min   : 0.f;
+                uint8_t best_ls[QK_K/32];
+                uint8_t best_lm[QK_K/32];
                 for (int j = 0; j < QK_K/32; ++j) {
                     uint8_t ls = nearest_int(inv_scale*scales[j]);
                     uint8_t lm = nearest_int(inv_min*mins[j]);
                     ls = MIN(31, ls);
-                    lm = MIN(31, lm);
+                    lm = MIN(63, lm);
+                    best_ls[j] = ls;
+                    best_lm[j] = lm;
+                }
+
+                float best_d_val = max_scale/31.f;
+                float best_dmin_val = max_min/63.f;
+
+                for (int phase = 0; phase < 2; phase++) {
+                    for (int j = 0; j < QK_K/32; ++j) {
+                        const float * sb = r + 32*j;
+                        uint8_t cur_ls = best_ls[j];
+                        uint8_t cur_lm = best_lm[j];
+                        float best_sb_mse = INFINITY;
+                        uint8_t sb_best_ls = cur_ls;
+                        uint8_t sb_best_lm = cur_lm;
+
+                        for (int dls = -1; dls <= 1; ++dls) {
+                            int try_ls = (int)cur_ls + dls;
+                            if (try_ls < 0 || try_ls > 31) continue;
+                            for (int dlm = -1; dlm <= 1; ++dlm) {
+                                int try_lm = (int)cur_lm + dlm;
+                                if (try_lm < 0 || try_lm > 63) continue;
+
+                                float dsc = best_d_val * (float)try_ls;
+                                if (dsc == 0.0f) continue;
+                                float dmm = best_dmin_val * (float)try_lm;
+                                float mse = 0.0f;
+                                for (int ii = 0; ii < 32; ++ii) {
+                                    int q = (int)roundf((sb[ii] + dmm) / dsc);
+                                    q = q < 0 ? 0 : (q > 15 ? 15 : q);
+                                    float diff = sb[ii] - (dsc * (float)q - dmm);
+                                    mse += diff * diff;
+                                }
+                                if (mse < best_sb_mse) {
+                                    best_sb_mse = mse;
+                                    sb_best_ls = (uint8_t)try_ls;
+                                    sb_best_lm = (uint8_t)try_lm;
+                                }
+                            }
+                        }
+                        best_ls[j] = sb_best_ls;
+                        best_lm[j] = sb_best_lm;
+                    }
+
+                    {
+                        float d_candidates[5] = {
+                            best_d_val * 0.98f, best_d_val * 0.99f,
+                            best_d_val,
+                            best_d_val * 1.01f, best_d_val * 1.02f
+                        };
+                        float best_mse = INFINITY;
+                        float best_d_cand = best_d_val;
+                        for (int di = 0; di < 5; ++di) {
+                            float mse = 0.0f;
+                            for (int j = 0; j < QK_K/32; ++j) {
+                                float dsc = d_candidates[di] * (float)best_ls[j];
+                                if (dsc == 0.0f) continue;
+                                float dmm = best_dmin_val * (float)best_lm[j];
+                                const float * sb = r + 32*j;
+                                for (int ii = 0; ii < 32; ++ii) {
+                                    int q = (int)roundf((sb[ii] + dmm) / dsc);
+                                    q = q < 0 ? 0 : (q > 15 ? 15 : q);
+                                    float diff = sb[ii] - (dsc * (float)q - dmm);
+                                    mse += diff * diff;
+                                }
+                            }
+                            if (mse < best_mse) {
+                                best_mse = mse;
+                                best_d_cand = d_candidates[di];
+                            }
+                        }
+                        best_d_val = best_d_cand;
+                    }
+
+                    {
+                        float dm_candidates[5] = {
+                            best_dmin_val * 0.98f, best_dmin_val * 0.99f,
+                            best_dmin_val,
+                            best_dmin_val * 1.01f, best_dmin_val * 1.02f
+                        };
+                        float best_mse = INFINITY;
+                        float best_dm_cand = best_dmin_val;
+                        for (int di = 0; di < 5; ++di) {
+                            float mse = 0.0f;
+                            for (int j = 0; j < QK_K/32; ++j) {
+                                float dsc = best_d_val * (float)best_ls[j];
+                                if (dsc == 0.0f) continue;
+                                float dmm = dm_candidates[di] * (float)best_lm[j];
+                                const float * sb = r + 32*j;
+                                for (int ii = 0; ii < 32; ++ii) {
+                                    int q = (int)roundf((sb[ii] + dmm) / dsc);
+                                    q = q < 0 ? 0 : (q > 15 ? 15 : q);
+                                    float diff = sb[ii] - (dsc * (float)q - dmm);
+                                    mse += diff * diff;
+                                }
+                            }
+                            if (mse < best_mse) {
+                                best_mse = mse;
+                                best_dm_cand = dm_candidates[di];
+                            }
+                        }
+                        best_dmin_val = best_dm_cand;
+                    }
+                }
+
+                for (int j = 0; j < QK_K/32; ++j) {
+                    uint8_t ls = best_ls[j];
+                    uint8_t lm = best_lm[j];
                     if (j < 4) {
                         y[i].scales[j] = ls;
                         y[i].scales[j+4] = lm;
@@ -1863,8 +2090,8 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
                         y[i].scales[j-0] |= ((lm >> 4) << 6);
                     }
                 }
-                y[i].d = GGML_FP32_TO_FP16(max_scale/31.f);
-                y[i].dmin = GGML_FP32_TO_FP16(max_min/31.f);
+                y[i].d = GGML_FP32_TO_FP16(best_d_val);
+                y[i].dmin = GGML_FP32_TO_FP16(best_dmin_val);
 
                 uint8_t sc, m;
                 for (int j = 0; j < QK_K/32; ++j) {

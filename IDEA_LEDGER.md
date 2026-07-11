@@ -5,7 +5,7 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
-| exp-040 | **Revert m to 6-bit (from 5+5 to 5+6) + add local d/dmin/ls/lm search for maximum quality headroom** | **TBD** |
+| exp-040 | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom (KLD -18.7%, STP +1.48pp)** | **SUCCESS** |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
 | **exp-039** | **GGUF Metadata Stripping — strip redundant tokenizer data (chat_template, token_type, merges) + minimize token list with empty strings. Zero struct changes, quality identical to baseline.** | **TBD** |
 | **exp-038** | **5-bit sc + 5-bit m COMBINED — both variables at 5 bits simultaneously, clean FWHT base, quantize-side only, same 144B struct. Compounds regularization benefits from both variables' first coarsening steps.** | **SUCCESS — 529.3MB, KLD 0.0607 (-3.6% vs baseline), STP 86.78% (+0.39pp)** |
@@ -1147,3 +1147,20 @@ The local search evaluates 9×8 sub-block candidates (ls±1, lm±1) + 5 d candid
 4. No changes to dequantize functions, CUDA kernel, struct, or dispatch paths
 
 **Expected outcome:** GGUF raw size unchanged (same 144B struct). Quality should significantly improve vs current KLD 0.060695. Target: KLD 0.054-0.057 (10-13% below threshold), same_top_p 87.5-88.0%. Quantize time increases to ~60-90s (from current ~10s) due to local search overhead.
+
+**Actual outcome:** SUCCESS — quality improved dramatically, massive headroom created:
+- GGUF size (raw): 523,209,088 bytes (identical to exp-039 — same 144B struct)
+- KLD mean: 0.051201 (vs baseline 0.062947) — **18.7% improvement** (BEST YET, far exceeding target 0.054-0.057)
+- Same top p: 87.871% (vs baseline 86.387%) — **+1.48pp** (exceeding target 87.5-88.0%)
+- RMS Δp: 4.920% (vs baseline 5.753%) — **14.5% improvement**
+- PPL: 22.506 (vs baseline 22.450) — +0.25% (well within tolerance)
+- Quantize time: 22.19s (vs exp-038's 9.63s — 2.3× slower due to local search, but well within budget)
+
+The combination of (a) reverting m from 5-bit to 6-bit precision (restoring exp-037's optimal sc=5,m=6 config) and (b) adding local MSE search on secondary-quantized parameters (d/dmin ±2%, ls/lm ±1) produced the best KLD and same_top_p ever recorded:
+- KLD 0.051201 (-18.7% vs baseline) vs previous best exp-037's 0.058347 (-7.3%)
+- STP 87.871% (+1.48pp) vs previous best exp-019's 87.411% (+1.02pp)
+- RMS Δp 4.920% (-14.5%) vs previous best exp-037's 5.302% (-7.8%)
+
+The local search improves on the heuristic by: (a) finding better ls/lm values (±1 perturbation explores 9 combos per sub-block, often finding configurations where sub-block MSE is reduced by 5-20%), and (b) fine-tuning d/dmin (±2% scaling) to better balance the quantization grid across all 8 sub-blocks.
+
+**Lesson:** The Q4_K heuristic leaves significant MSE on the table — a simple local search recovers 15-18% of the lost quality. This validates that the one-shot max/min heuristic is NOT near-optimal for FWHT-preprocessed data (where distributions are more uniform and the outlier-driven max heuristic is less reliable). The 18.7% KLD headroom created by this experiment is substantial — it provides margin for future size-reduction experiments (e.g., reducing scales[] from 12 to 10 bytes, or further GGUF metadata stripping) while staying above baseline quality. Importantly, the local search + 5+6 bit sc/m config achieves this without any struct changes, making it a safe baseline for the next cycle of experiments.
