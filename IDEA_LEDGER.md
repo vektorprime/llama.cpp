@@ -5,6 +5,8 @@
 | Exp | Description | Outcome |
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
+| exp-044 | **5+3 bit sc/m within 8-byte scales (same 140B struct) — sc 4→5 bits, m 4→3 bits. FWHT symmetrization makes min precision less critical** | **SUCCESS** |
+| exp-045 | **6+2 bit sc/m — sc 5→6 bits (64 levels), m 3→2 bits (4 levels). Ultra-coarse mins (2-bit) near enough for FWHT-symmetric distribution; fine scales recover precision** | TBD |
 | exp-043 | **Reduce sub-blocks 8→4 (64 elem each), scales 8→4 bytes, struct 140→136B — FWHT homogenization makes sub-block precision less needed** | **REGRESSION** |
 | exp-042 | **CAQ 140-byte block with complete dispatch path support — trade exp-040's 18.7% headroom for block struct compression, FIX ALL dispatch paths** | **SUCCESS** |
 | exp-040 | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom (KLD -18.7%, STP +1.48pp)** | **SUCCESS** |
@@ -1207,3 +1209,19 @@ The combination of (a) reverting m from 5-bit to 6-bit precision (restoring exp-
 The local search improves on the heuristic by: (a) finding better ls/lm values (±1 perturbation explores 9 combos per sub-block, often finding configurations where sub-block MSE is reduced by 5-20%), and (b) fine-tuning d/dmin (±2% scaling) to better balance the quantization grid across all 8 sub-blocks.
 
 **Lesson:** The Q4_K heuristic leaves significant MSE on the table — a simple local search recovers 15-18% of the lost quality. This validates that the one-shot max/min heuristic is NOT near-optimal for FWHT-preprocessed data (where distributions are more uniform and the outlier-driven max heuristic is less reliable). The 18.7% KLD headroom created by this experiment is substantial — it provides margin for future size-reduction experiments (e.g., reducing scales[] from 12 to 10 bytes, or further GGUF metadata stripping) while staying above baseline quality. Importantly, the local search + 5+6 bit sc/m config achieves this without any struct changes, making it a safe baseline for the next cycle of experiments.
+
+## exp-045: 6+2 bit sc/m — double down on min coarsening
+
+**Hypothesis:** exp-044 showed that 5+3 bit sc/m (within the same 140B struct from exp-042) gives better same_top_p (+0.305pp) than 4+4 bit despite slightly worse KLD (+0.000434). The direction is clear: finer scales, coarser mins. Taking this to its logical extreme — 6+2 bits — tests whether FWHT symmetrization can truly make min precision nearly irrelevant. At just 2 bits (4 levels: 0, 1, 2, 3 → factor 0, dmin/3, 2*dmin/3, dmin), the mins have only coarse control, but the 6-bit scales (64 levels, matching original Q4_K sc precision) should fully recover the lost min precision.
+
+**Key assumption:** The FWHT transform makes the distribution symmetric enough that mins (which capture the negative-side extent) are far less critical than scales (which capture the overall spread). exp-044's 3-bit mins were already "good enough" — 2-bit mins are one further coarsening step. If the regularization benefit pattern (exp-030/037) holds, this single-variable coarsening may even IMPROVE quality.
+
+**Changes (SINGLE-VARIABLE from exp-044):**
+1. `ggml-quants.c` — `quantize_row_q4_K_M_CLONE_ref`: sc range 0..63 (was 0..31), m range 0..3 (was 0..7), inv_scale = 63.f, inv_min = 3.f, d = max_scale/63.f, dmin = max_min/3.f
+2. `ggml-quants.c` — `dequantize_row_q4_K_M_CLONE`: unpack sc & 0x3F (was 0x1F), m = (>> 6) & 0x3 (was (>> 5) & 0x7)
+3. `ggml-quants.c` — `quantize_q4_K_M_CLONE` (both branches): Same bit allocation changes + local search bounds
+4. `ggml-cuda/convert.cu` — `dequantize_block_q4_K_M_CLONE`: Update unpacking masks
+
+**Expected outcome:** Same struct size (140B, 512,267,968 B GGUF). If min is truly near-irrelevant in FWHT space, KLD and STP should be comparable to exp-044. If mins matter more than expected, quality will degrade.
+
+**Actual outcome:** TBD
