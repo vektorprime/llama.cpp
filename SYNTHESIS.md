@@ -81,9 +81,16 @@ Reduce GGUF file size below 505 MB while maintaining:
 | **exp-040** | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom** | **523,209,088** | **0.051201** | **87.871%** | **SUCCESS** |
 | **exp-041** | **GGUF token array removal + strip quantization_version/file_type — save 4.85 MB more** | **518,355,648** | **0.051201** | **87.871%** | **SUCCESS** |
 | **exp-042** | **CAQ 140-byte block (4+4 sc/m) + complete dispatch path support — first structural compression + FWHT** | **512,267,968** | **0.058199** | **86.857%** | **SUCCESS** |
+| exp-043 | Reduce sub-blocks 8→4, 140→136B struct — low sub-block count fails | 506,180,288 | 0.071653 | 85.669% | REGRESSION |
+| **exp-044** | **5+3 bit sc/m within same 140B struct — better STP than 4+4** | **512,267,968** | **0.058633** | **87.162%** | **SUCCESS** |
+| exp-045 | 6+2 bit sc/m — 2-bit mins below quality floor | 512,267,968 | 0.077962 | 85.676% | REGRESSION |
+| exp-046 | Asymmetric sc/m allocation (6+2/5+3/4+4) across frequency bands | 512,267,968 | 0.066134 | 86.454% | REGRESSION |
+| exp-047 | 136-byte block — 8-bit log d/dmin + 3+3 sc/m in 6-byte scales | 506,180,288 | 12.566970 | 0.003% | REGRESSION |
 | — | Q4_K_M baseline | 529,297,440 | 0.062947 | 86.387% | Baseline |
 
-## Key Insights (updated after exp-042)
+## Key Insights (updated after exp-047)
+
+22. **136-byte block is beyond current encoding limits** (exp-047): Attempting to reach 136 bytes by replacing fp16 d/dmin with 8-bit log encoding + reducing sc from 5→3 bits (3+3 bit sc/m packed into 6-byte scales) produced catastrophic failure (PPL 4.4M, KLD 12.57, STP 0.003%). The root cause is likely the 3-bit sc (8 levels for scale precision) which is below the quality floor — even when combined with high-precision 8-bit log d/dmin encoding. Previous experiments showed sc 4→4 bit (exp-042: KLD 0.058 from sc=4,m=4) works but sc 4→3 bit (exp-047: KLD 12.57) is a catastrophic cliff. The "first coarsening free lunch" pattern does NOT extend from 4→3 bits for scales. The 136-byte target with 6-byte scales (3+3 bit) forces sc precision below the usable floor. Future attempts to reach 136 bytes must either: (a) compress d/dmin differently (e.g., shared across adjacent blocks), (b) use 4+3+4+3 or other asymmetric allocation while keeping SOME sub-blocks at 4+4, or (c) accept that 140 bytes is the minimum with 8 sub-blocks and 4-bit qs.
 
 20. **Structural block compression WORKS when ALL dispatch paths are fixed** (exp-042): After PITFALLS from exp-035/036 which showed that struct changes break dispatch, exp-042 systematically fixed EVERY dispatch path: disabled MMVQ (ggml_cuda_should_use_mmvq returns false, get_mmvq_mmid_max_batch returns 0), disabled MMQ (not in supported list), removed clone from all mmq.cuh fallthroughs, wrote self-contained CPU+CUDA dequant (no cast to block_q4_K*), and used auto-size type_traits. The 4+4 bit sc/m encoding (scales 12→8 bytes, struct 144→140 bytes) saved 6.09 MB (1.17%) vs exp-041. Quality cost: +13.7% KLD increase (0.051→0.058) from sc=5,m=6 to sc=4,m=4, but still 7.5% below baseline KLD. Combined with exp-041's metadata stripping, total reduction vs stock Q4_K_M is 17.03 MB (3.22%). Key lesson: the number of dispatch paths is large (~30+ locations) but all are mechanical fixes — the actual quality-critical code is just the quantize/dequant functions and CUDA kernel.
 
