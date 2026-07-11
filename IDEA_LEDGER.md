@@ -7,7 +7,7 @@
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-044 | **5+3 bit sc/m within 8-byte scales (same 140B struct) — sc 4→5 bits, m 4→3 bits. FWHT symmetrization makes min precision less critical** | **SUCCESS** |
 | exp-045 | **6+2 bit sc/m — sc 5→6 bits (64 levels), m 3→2 bits (4 levels). Ultra-coarse mins (2-bit) near enough for FWHT-symmetric distribution; fine scales recover precision** | **REGRESSION** |
-| exp-046 | **Asymmetric sc/m bit allocation across frequency bands — allocate more sc bits to low-frequency sub-blocks, more m bits to high-freq. Same 140B struct, same 8-byte scales, same 64-bit total budget. Instead of uniform 5+3, use 6+2 for sub-blocks 0-1 (lowest freq), 5+3 for 2-3 (mid freq), 4+4 for 4-7 (highest freq)** | TBD |
+| exp-046 | **Asymmetric sc/m bit allocation across frequency bands — allocate more sc bits to low-frequency sub-blocks, more m bits to high-freq. Same 140B struct, same 8-byte scales, same 64-bit total budget. Instead of uniform 5+3, use 6+2 for sub-blocks 0-1 (lowest freq), 5+3 for 2-3 (mid freq), 4+4 for 4-7 (highest freq)** | **REGRESSION** |
 | exp-043 | **Reduce sub-blocks 8→4 (64 elem each), scales 8→4 bytes, struct 140→136B — FWHT homogenization makes sub-block precision less needed** | **REGRESSION** |
 | exp-042 | **CAQ 140-byte block with complete dispatch path support — trade exp-040's 18.7% headroom for block struct compression, FIX ALL dispatch paths** | **SUCCESS** |
 | exp-040 | **Revert m to 6-bit (sc=5,m=6) + add local d/dmin/ls/lm MSE search — massive quality headroom (KLD -18.7%, STP +1.48pp)** | **SUCCESS** |
@@ -1252,4 +1252,6 @@ Total budget: 2×(6+2) + 2×(5+3) + 4×(4+4) = 16+16+32 = 64 bits = 8 bytes = sa
 
 **Expected outcome:** Same struct size (140B = 8B scales, GGUF 512,267,968 B). KLD should be better than exp-045's uniform 6+2 (0.078) and hopefully better than exp-044's uniform 5+3 (0.059). The asymmetric allocation gives structural components the extra scale precision they need while giving noise-like components only what they need.
 
-**Actual outcome:** TBD
+**Actual outcome:** REGRESSION — size 512,267,968 B (unchanged vs exp-044, same 140B struct), KLD 0.066134 (+12.8% vs exp-044's 0.058633, +5.06% above baseline threshold of 0.062947), same top p 86.454% (-0.71pp vs exp-044's 87.162%, +0.067pp vs baseline but KLD failed).
+
+**Lesson:** Asymmetric bit allocation (6+2 for low-freq, 4+4 for high-freq) degrades quality compared to the uniform 5+3 baseline (exp-044). The extra scale precision (6-bit, 64 levels) on sub-blocks 0-1 doesn't compensate for the 2-bit min precision loss there, and the coarser 4-bit scales on sub-blocks 4-7 introduce additional error on high-freq positions despite getting better min precision (4-bit). The uniform 5+3 remains the optimal trade-off found so far. The d_val computation formula (max_j scales[j]/ls_max[j]) worked correctly — the quality degradation is from the bit allocation itself, not from implementation bugs. The asymmetry introduces more total error than the uniform allocation, suggesting that the FWHT frequency bands don't have sufficiently different scale/min sensitivity to justify trading precision between them.
