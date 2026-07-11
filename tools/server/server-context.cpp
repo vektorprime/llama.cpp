@@ -51,7 +51,8 @@ static uint32_t server_n_outputs_max(const common_params & params) {
 
     const uint64_t n_outputs = (uint64_t) params.n_parallel * n_outputs_per_seq;
 
-    return std::max<uint32_t>(1, std::min<uint64_t>(n_batch, n_outputs));
+    // Echo requests need logits for all prompt positions; allow up to n_batch outputs
+    return n_batch;
 }
 
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
@@ -201,6 +202,9 @@ struct server_slot {
     llama_tokens generated_tokens;
 
     std::vector<completion_token_output> generated_token_probs;
+    std::vector<completion_token_output> prompt_probs;
+
+    bool echo = false;
 
     bool has_next_token = true;
     bool has_new_line   = false;
@@ -317,6 +321,8 @@ struct server_slot {
         }
         generated_tokens.clear();
         generated_token_probs.clear();
+        prompt_probs.clear();
+        echo = false;
         json_schema = json();
 
         // clear speculative decoding stats
@@ -1847,6 +1853,7 @@ private:
         }
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+        slot.echo = slot.task->params.echo;
 
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
@@ -2181,6 +2188,9 @@ private:
                         slot.generated_token_probs.end());
             }
         }
+
+        res->echo                    = slot.echo;
+        res->prompt_probs_output     = std::move(slot.prompt_probs);
 
         res->generation_params = slot.task->params; // copy the parameters
 
@@ -3482,10 +3492,12 @@ private:
                         // embedding requires all tokens in the batch to be output;
                         // MTP also wants logits at every prompt position so the
                         // streaming hook can mirror t_h_nextn into ctx_dft.
+                        // When echo is requested, we need logits for all prompt tokens too.
+                        const bool need_logits = slot.need_embd() || slot.echo;
                         add_ok &= batch.add(slot.id,
                             cur_tok,
                             slot.prompt.tokens.pos_next(),
-                            slot.need_embd());
+                            need_logits);
                         slot.prompt.tokens.push_back(cur_tok);
 
                         slot.n_prompt_tokens_processed++;
@@ -3667,6 +3679,42 @@ private:
 
             return false; // retry with the updated n_batch
         }
+
+        // Collect prompt logprobs for slots that requested echo
+        iterate(slots, [&](server_slot & slot) {
+            if (!slot.echo) return;
+            if (slot.state != SLOT_STATE_PROCESSING_PROMPT && slot.state != SLOT_STATE_DONE_PROMPT) return;
+
+            int n_probs = (int)slot.task->params.sampling.n_probs;
+            if (n_probs == 0) n_probs = 20;
+
+            for (int i = 0; i < batch_view.n_tokens; i++) {
+                if (!batch_view.logits[i]) continue;
+                if (batch_view.seq_id[i][0] != slot.id) continue;
+
+                completion_token_output result;
+                result.tok = batch_view.token[i];
+                result.text_to_send = common_token_to_piece(ctx_tgt, result.tok, true);
+
+                std::vector<llama_token_data> cur = get_token_probabilities(ctx_tgt, i, n_probs);
+                for (size_t j = 0; j < cur.size(); j++) {
+                    if (cur[j].id == result.tok) {
+                        result.prob = cur[j].p;
+                        break;
+                    }
+                }
+                size_t n_top = std::min(cur.size(), (size_t)n_probs);
+                result.probs.reserve(n_top);
+                for (size_t j = 0; j < n_top; j++) {
+                    result.probs.push_back({
+                        cur[j].id,
+                        common_token_to_piece(ctx_tgt, cur[j].id, true),
+                        cur[j].p
+                    });
+                }
+                slot.prompt_probs.push_back(result);
+            }
+        });
 
         // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
         //       for now, always re-evaluate for simplicity

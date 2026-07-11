@@ -398,11 +398,32 @@ json server_task_result_cmpl_final::usage_json_oaicompat() {
 json server_task_result_cmpl_final::to_json_oaicompat() {
     std::time_t t = std::time(0);
     json logprobs = json(nullptr); // OAI default to null
-    if (!stream && probs_output.size() > 0) {
-        logprobs = json{
-            {"content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs)},
-        };
+
+    auto make_content = [&]() -> json {
+        json arr = json::array();
+        // When echo=true, include prompt token logprobs first
+        if (echo && !prompt_probs_output.empty()) {
+            auto prompt_probs_json = completion_token_output::probs_vector_to_json(prompt_probs_output, post_sampling_probs);
+            for (auto & pp : prompt_probs_json) {
+                arr.push_back(std::move(pp));
+            }
+        }
+        if (!stream && probs_output.size() > 0) {
+            auto gen_probs_json = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+            for (auto & gp : gen_probs_json) {
+                arr.push_back(std::move(gp));
+            }
+        }
+        return arr;
+    };
+
+    json content_arr = make_content();
+    if (!content_arr.empty()) {
+        logprobs = json{{"content", std::move(content_arr)}};
     }
+
+    // When echo=true, include prompt in the text field
+    std::string display_text = echo ? (prompt + content) : content;
     json finish_reason = "length";
     if (stop == STOP_TYPE_WORD || stop == STOP_TYPE_EOS) {
         finish_reason = "stop";
@@ -410,7 +431,7 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
     json res = json {
         {"choices",            json::array({
             json{
-                {"text",          content},
+                {"text",          display_text},
                 {"index",         index},
                 {"logprobs",      logprobs},
                 {"finish_reason", finish_reason},
