@@ -984,3 +984,22 @@ By re-applying the 0xFFC0 mask at write time, we ensure ALL blocks' d and dmin v
 - Quantize time: 69.91s
 
 **Lesson:** The d/dmin refinement steps (±1-2% candidate search) are NOT optional — they are ESSENTIAL for quality. The Step 2.5 fp16 rounding provides a coarse starting point on the 4-bit mantissa grid, but the refinement intentionally finds slightly off-grid values that produce better MSE. Snapping back to the grid at write time completely negates the refinement benefit, causing 4.4x KLD increase. The 0.91 MB size reduction is real (zstd responds to on-grid d/dmin) but the quality cost is unacceptable. The refinement's ability to escape the grid is a FEATURE, not a bug — the coarse grid from Step 2.5 is just a guardrail to prevent the refinement from wandering too far. For future: do NOT re-round at write time. Instead, if further zstd compression is wanted, consider approaches that don't constrain per-block parameters (e.g., post-GGUF compression, different block layout, or entropy coding).
+
+---
+
+## exp-035: Collapsed Sub-Block Scales (2026-07-11)
+
+**Research:** The per-block quantization literature consistently shows that finer granularity (smaller sub-blocks) improves quality — going from global-scale to per-channel to per-block to per-sub-block each yields significant quality improvements. The Q4_K_M format's 8 sub-blocks with independent (sc,m) pairs is near-optimal; going to a single global (sc,m) for all 256 elements discards per-sub-block adaptivity. However, the FWHT preprocessing (from exp-016) makes weight distributions more uniform across sub-blocks, potentially reducing the need for per-sub-block precision. The key question: does FWHT homogenize distributions enough that a single global scale/min can substitute for 8 per-sub-block pairs?
+
+**Hypothesis:** Collapsing 8 per-sub-block (sc,m) pairs into 1 global (sc,m) pair will reduce the block struct from 144 to 136 bytes (scales shrinks from 12 to 2 bytes, with 2 bytes of tail padding from ggml_half2 alignment forcing 4-byte multiples). This is a 5.56% per-block reduction, translating to ~2.3% overall GGUF size reduction (~12 MB). However, the quality impact is expected to be severe: per-sub-block scale adaptivity is the core mechanism that makes 4-bit quantization work at ~22 PPL. A single global scale forces all 8 sub-blocks to use the same quantization grid, which cannot track per-sub-block variance. KLD is expected to increase by 10-50x (to 0.6-3.0 range), same_top_p will drop to 60-80%.
+
+The FWHT homogenization may mitigate this somewhat but won't eliminate it — sub-blocks in FWHT space still have varying ranges on the ~10-15% level, and a single global scale cannot capture this. The only plausible recovery mechanism is the 4-bit nibble values themselves implicitly encoding sub-block scale information (i.e., sub-blocks with larger variance will have more extreme nibble values on average), but this is a weak signal that can't substitute for explicit per-sub-block scale parameters.
+
+**Changes:**
+1. `ggml/src/ggml-common.h`: Change `uint8_t scales[K_SCALE_SIZE]` to `uint8_t scales[2]` in block_q4_K_M_CLONE struct (lines 339-342), update static_assert
+2. `ggml/src/ggml-quants.c`: Rewrite quantize_row_q4_K_M_CLONE_ref (lines 1721-1733) — self-contained using single global scale/min
+3. `ggml/src/ggml-quants.c`: Rewrite dequantize_row_q4_K_M_CLONE (lines 1735-1744) — self-contained using global sc/mn
+4. `ggml/src/ggml-quants.c`: Fix quantize_q4_K_M_CLONE row_size calculation (line 1749) from sizeof(block_q4_K) to sizeof(block_q4_K_M_CLONE)
+5. `ggml/src/ggml-cuda/convert.cu`: Rewrite dequantize_block_q4_K_M_CLONE GPU kernel (lines 235-287) — use global sc/mn, simple loop over QK_K/32
+
+**Expected outcome:** GGUF size ~517-520 MB (vs stock 529 MB, ~2.3% reduction). KLD > 0.5 (well above threshold of 0.063). Same top p < 75%. Expected status: REGRESSION.
