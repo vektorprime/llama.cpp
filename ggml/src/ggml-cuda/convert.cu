@@ -200,6 +200,31 @@ static inline __device__ void get_scale_min_k4(int j, const uint8_t * q, uint8_t
     }
 }
 
+static inline __device__ void get_scale_min_k4_10b(int j, const uint8_t * q, uint8_t & d, uint8_t & m) {
+    const uint8_t * sc_buf = q;
+    const uint8_t * m_buf  = q + 5;
+    switch (j) {
+        case 0: d = sc_buf[0] & 0x1F; break;
+        case 1: d = (sc_buf[0] >> 5) | ((sc_buf[1] & 0x03) << 3); break;
+        case 2: d = (sc_buf[1] >> 2) & 0x1F; break;
+        case 3: d = (sc_buf[1] >> 7) | ((sc_buf[2] & 0x0F) << 1); break;
+        case 4: d = (sc_buf[2] >> 4) | ((sc_buf[3] & 0x01) << 4); break;
+        case 5: d = (sc_buf[3] >> 1) & 0x1F; break;
+        case 6: d = (sc_buf[3] >> 6) | ((sc_buf[4] & 0x07) << 2); break;
+        case 7: d = (sc_buf[4] >> 3) & 0x1F; break;
+    }
+    switch (j) {
+        case 0: m = m_buf[0] & 0x1F; break;
+        case 1: m = (m_buf[0] >> 5) | ((m_buf[1] & 0x03) << 3); break;
+        case 2: m = (m_buf[1] >> 2) & 0x1F; break;
+        case 3: m = (m_buf[1] >> 7) | ((m_buf[2] & 0x0F) << 1); break;
+        case 4: m = (m_buf[2] >> 4) | ((m_buf[3] & 0x01) << 4); break;
+        case 5: m = (m_buf[3] >> 1) & 0x1F; break;
+        case 6: m = (m_buf[3] >> 6) | ((m_buf[4] & 0x07) << 2); break;
+        case 7: m = (m_buf[4] >> 3) & 0x1F; break;
+    }
+}
+
 template<typename dst_t>
 static __global__ void dequantize_block_q4_K(const void * __restrict__ vx, dst_t * __restrict__ yy) {
     const block_q4_K * x = (const block_q4_K *) vx;
@@ -246,14 +271,14 @@ static __global__ void dequantize_block_q4_K_M_CLONE(const void * __restrict__ v
     const int64_t is  = 2*il;
     const int64_t n   = 4;
 
-    const float dall = __low2half(x[i].dm);
-    const float dmin = __high2half(x[i].dm);
+    const float dall = __half2float(x[i].d);
+    const float dmin = __half2float(x[i].dmin);
 
     const uint8_t * q = x[i].qs + 32*il + n*ir;
 
     uint8_t sc0, mn0, sc1, mn1;
-    get_scale_min_k4(is + 0, x[i].scales, sc0, mn0);
-    get_scale_min_k4(is + 1, x[i].scales, sc1, mn1);
+    get_scale_min_k4_10b(is + 0, x[i].scales, sc0, mn0);
+    get_scale_min_k4_10b(is + 1, x[i].scales, sc1, mn1);
     const float d1 = dall * sc0; const float dm1 = dmin * mn0;
     const float d2 = dall * sc1; const float dm2 = dmin * mn1;
 

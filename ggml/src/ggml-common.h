@@ -327,19 +327,14 @@ typedef struct {
 } block_q4_K;
 static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
-// Q4_K_M_CLONE — 144-byte block with 6+6 bit scale/min encoding (max quality)
+// Q4_K_M_CLONE — 142-byte block with 5+5 bit scale/min encoding (2-byte alignment, no union)
 typedef struct {
-    GGML_EXTENSION union {
-        struct {
-            ggml_half d;
-            ggml_half dmin;
-        } GGML_COMMON_AGGR_S;
-        ggml_half2 dm;
-    } GGML_COMMON_AGGR_U;
-    uint8_t scales[K_SCALE_SIZE];
-    uint8_t qs[QK_K/2];
+    ggml_half d;           // offset 0, 2 bytes
+    ggml_half dmin;        // offset 2, 2 bytes
+    uint8_t scales[10];    // offset 4, 10 bytes (8×(5+5 bit sc/m))
+    uint8_t qs[QK_K/2];    // offset 14, 128 bytes
 } block_q4_K_M_CLONE;
-static_assert(sizeof(block_q4_K_M_CLONE) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K_M_CLONE block size/padding");
+static_assert(sizeof(block_q4_K_M_CLONE) == 2 + 2 + 10 + QK_K/2, "wrong q4_K_M_CLONE block size/padding");
 
 // 5-bit quantization
 // 8 blocks of 32 elements each
