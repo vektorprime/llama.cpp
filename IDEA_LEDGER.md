@@ -1227,6 +1227,27 @@ The local search improves on the heuristic by: (a) finding better ls/lm values (
 
 **Actual outcome:** REGRESSION — size 512,267,968 B (unchanged), KLD 0.077962 (+33% vs exp-044's 0.058633, +23.9% vs baseline 0.062947), STP 85.676% (-1.49pp vs exp-044, -0.71pp vs baseline). 2-bit mins (4 levels) are below the quality floor even with FWHT symmetrization.
 
+## exp-047: 136-byte block — 8-bit log d/dmin + 3+3 bit sc/m within 6-byte scales
+
+**Hypothesis:** exp-044 (140-byte block, 5+3 bit sc/m, KLD 0.058633, STP 87.162%) has 4 bytes of alignment waste from the ggml_half2 alignment padding (removed by exp-042 but the struct naturally padded to 140). We target 136 bytes (4 more bytes saved, 2.86% vs 140B, cumulative 5.56% vs 144B). Two independent changes:
+
+1. **8-bit logarithmic encoding for d/dmin**: Replace `ggml_half d; ggml_half dmin;` (4 bytes) with `uint8_t d8; uint8_t m8;` (2 bytes). Encode: `d8 = round(127 + 16*log2(d))`, decode: `d = exp2((d8-127)/16)`. With bias 127 and step 1/16, the dynamic range is exp2((0-127)/16) = 2^(-7.9375) ≈ 0.004 to exp2((255-127)/16) = 2^8 = 256 — more than sufficient for superblock scales (typically 0.01 to 10). The 8-bit quantization gives 256 levels vs fp16's 1024 effective mantissa bits but with nonzero-centered log spacing that's better-suited to positive-scale values. Same encoding for dmin (which is always positive).
+
+2. **3+3 bit sc/m within 6-byte scales**: Reduce sc from 5→3 bits (0-7, 8 levels) and m from 3→3 bits (unchanged). Pack 8×(3+3)=48 bits into 6 bytes. This is a single-variable change from exp-044: only sc loses 2 bits precision (5→3). The 3-bit sc (8 levels) is severe — whether FWHT symmetrization makes sc less critical (like exp-044 showed m can be 3-bit vs exp-042's 4-bit) is the key open question.
+
+**Total: 2(d8+m8) + 6(scales) + 128(qs) = 136 bytes** — the smallest block achievable with 4-bit weights and 8 sub-blocks without reducing qs[] precision.
+
+**Risk assessment:** HIGH risk. The 8-bit log encoding introduces about 3% relative error on d/dmin (256 uniformly spaced points across a log-scale domain) — comparable to the good-quality 4-bit fp16 mantissa rounding (6.25% relative). But the 3-bit sc (8 levels) is a major reduction from 5-bit (32 levels) in exp-044. This is the weakest scale precision ever attempted in the 140B series — worse than CAQ's 4-bit (16 levels) in exp-042. The FWHT makes scale precision potentially less critical (uniform distributions need less range), but 3 bits may be below even the FWHT-symmetrized threshold.
+
+**Changes (5 files only):**
+1. `ggml-common.h`: struct with uint8_t d8, uint8_t m8, uint8_t scales[6], uint8_t qs[128]. Remove GGML_EXTENSION/ggml_half2 union. static_assert sizeof==136
+2. `ggml-quants.c`: New self-contained quantize/dequant with log encoding + 3+3 bit packing. FWHT preprocessing preserved. Local search tuned for new bounds.
+3. `ggml-cuda/convert.cu`: CUDA dequant kernel with log decode + 3+3 unpacking
+4. `ggml.c`: type_size auto-updates from sizeof
+5. `ggml-cpu/ggml-cpu.c`: type_size auto-updates
+
+**Expected outcome:** GGUF raw size ~506 MB (vs exp-044's ~512 MB, saving ~6 MB). KLD expected to increase moderately (3-bit sc is aggressive) but log d/dmin encoding may not be the quality bottleneck. If FWHT makes scales less critical, KLD stays near exp-044 levels. If sc precision dominates, KLD degrades beyond threshold.
+
 ## exp-046: Asymmetric sc/m bit allocation across frequency bands
 
 **Hypothesis:** FWHT energy concentrates at low position indices (position 0 = DC, highest energy; higher positions = lower energy). Sub-blocks 0-3 cover low-frequency positions 0-127 and carry structural information; sub-blocks 4-7 cover high-frequency positions 128-255 with noise-like detail. Instead of uniform 5+3 bit sc/m across all 8 sub-blocks (exp-044), allocate bits asymmetrically:
