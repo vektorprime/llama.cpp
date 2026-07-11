@@ -172,7 +172,9 @@ The 3-bit block (108 bytes, 3.375 bpw) would save 48.7 MB (9.5%) vs the 140-byte
 
 2. **The remaining path is metadata/format level**: GGUF metadata stripping (exp-039, 6.1 MB saved) and per-tensor mixing (exp-011, 20.3 MB saved) are the only remaining levers. These operate above the block level and don't require structural changes.
 
-3. **The research question has been answered**: Starting from the stock Q4_K_M 144-byte block (4.5 bpw), the minimum achievable is 140 bytes (4.375 bpw) with quality maintained. This is a 2.78% per-block saving (~4.4% overall, ~23 MB). Combined with per-tensor mixing and metadata stripping, the total achievable savings approach the 50 MB range (~10% of the model).<｜end▁of▁thinking｜>
+3. **The research question has been answered**: Starting from the stock Q4_K_M 144-byte block (4.5 bpw), the minimum achievable is 140 bytes (4.375 bpw) with quality maintained. This is a 2.78% per-block saving (~4.4% overall, ~23 MB). Combined with per-tensor mixing and metadata stripping, the total achievable savings approach the 50 MB range (~10% of the model).
+
+4. **Quality improvement via non-uniform grids is a dead end (exp-051)**: Attempting to improve quality within the 140-byte struct by replacing linear quantization grids with non-uniform power-law grids failed. The 8-bit scale byte is fully saturated — stealing 1 bit from lm (3→2, 8→4 levels) to encode template selection costs more in min precision than the non-uniform grid gains in better distribution modeling. KLD degraded from 0.059 (baseline) to 0.068 (+15%), confirming that the scale-min encoding is at its Pareto frontier: any reallocation of the 8-bit budget degrades quality.<｜end▁of▁thinking｜>
 
 <｜｜DSML｜｜tool_calls>
 <｜｜DSML｜｜invoke name="bash">
