@@ -4,6 +4,7 @@
 
 | Exp | Description | Outcome |
 |-----|-------------|---------|
+| **exp-058** | **GGUF Binary Format Optimization — compact string length encoding (uint64_t→uint8_t/0xFF escape), eliminate alignment padding (32→1), remove general.alignment key. No tensor data changes. Targets ~7KB savings from header overhead.** | **TBD** |
 | **exp-056** | **Symmetric quantization (no dmin, no per-sub-block mins) with 136-byte struct. d(2) + 8×6-bit sc packed into 6B scales + qs(128B) = 136B. FWHT-preprocessed weights are Gaussian with zero mean → mins redundant. Signed nibble (-8 to +7) stored as nibble+8.** | **TBD** |
 | **exp-053** | **Mixed precision: 4-bit for low-freq elements 0-127, 3-bit for high-freq 128-255. 112B qs + 12B scales (6+6 bit) = 128B struct. Recovers full scale precision from 3-bit high-freq savings.** | **TBD** |
 | **exp-052** | **Aggressive MSE local search on d/dmin (±5% 21-step), ls/lm (±2 5-step), + simulated annealing — REGRESSION vs exp-044. Wider search overfits MSE objective.** | **REGRESSION** |
@@ -1406,3 +1407,23 @@ Option A (most aggressive): 136-byte struct with 6-bit scales packed into 6 byte
 5. `ggml-cpu/ggml-cpu.c`: type_size auto from sizeof, vec_dot stays NULL
 
 **Expected outcome:** GGUF 504-508 MB (vs 512.3 MB baseline, ~4-8 MB savings). Quality: KLD may increase slightly from 0.0586 but the symmetric formula in FWHT space should retain most quality. Same top p expected ≥86.387%.
+
+---
+
+### exp-058 — GGUF Binary Format Optimization
+
+**Date:** 2026-07-11
+
+**Hypothesis:** The GGUF binary format itself contains structural overhead independent of tensor data:
+1. **String length prefixes:** Every string (KV keys, string values, tensor names) uses uint64_t (8 bytes) for length. Compact encoding to 1 byte (with 0xFF escape for long strings) saves ~7 bytes per string. With ~345 remaining strings after metadata stripping, this saves ~2415 bytes.
+2. **Alignment padding:** GGUF_DEFAULT_ALIGNMENT=32 adds ~16 bytes padding per tensor (~5KB total) plus up to 31 bytes metadata padding. Reducing to 1 eliminates all padding, saving ~5150 bytes.
+3. **Redundant general.alignment key:** The reader defaults to GGUF_DEFAULT_ALIGNMENT if key missing. Removing saves ~35 bytes.
+
+Total expected savings: ~7.6 KB. No tensor data changes — this is pure header overhead reduction.
+
+**Changes:**
+1. `ggml/include/gguf.h`: GGUF_DEFAULT_ALIGNMENT 32→1
+2. `ggml/src/gguf.cpp`: Compact string encoding (uint8_t for len<255, 0xFF+uint64_t for long strings) in both writer and reader
+3. `src/llama-quant.cpp`: Add general.alignment to metadata removal list
+
+**Quality expectation:** Identical — zero tensor data changes. KLD=0.058633, STP=87.162% (same as exp-057).
