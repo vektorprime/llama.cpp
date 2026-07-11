@@ -327,7 +327,7 @@ typedef struct {
 } block_q4_K;
 static_assert(sizeof(block_q4_K) == 2*sizeof(ggml_half) + K_SCALE_SIZE + QK_K/2, "wrong q4_K block size/padding");
 
-// Q4_K_M_CLONE — 140-byte block with 4+4 bit scale/min encoding (CAQ format)
+// Q4_K_M_CLONE — 140-byte block with 5+3 bit scale/min encoding (CAQ format)
 #define K_SCALE_SIZE_CLONE 8
 typedef struct {
     GGML_EXTENSION union {
