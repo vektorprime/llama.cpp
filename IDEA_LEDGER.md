@@ -6,6 +6,7 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
+| **exp-039** | **GGUF Metadata Stripping — strip redundant tokenizer data (chat_template, token_type, merges) + minimize token list with empty strings. Zero struct changes, quality identical to baseline.** | **TBD** |
 | **exp-038** | **5-bit sc + 5-bit m COMBINED — both variables at 5 bits simultaneously, clean FWHT base, quantize-side only, same 144B struct. Compounds regularization benefits from both variables' first coarsening steps.** | **SUCCESS — 529.3MB, KLD 0.0607 (-3.6% vs baseline), STP 86.78% (+0.39pp)** |
 | **exp-037** | **5-bit sc (scale) quantization — sc 6→5 bits, single variable, clean FWHT base, quantize-side only, same 144B struct. Complement to exp-030's 5-bit m. First sc coarsening provides regularization — KLD -7.3%, STP +0.82pp.** | **SUCCESS — 529.3MB, KLD 0.0583 (-7.3%), STP 87.21% (+0.82pp)** |
 | **exp-035** | **Collapsed Sub-Block Scales — 144→136 byte block, global sc/mn — eval segfault, offset shift killed all paths** | **FAILED** |
@@ -1098,3 +1099,21 @@ From the clean FWHT base (exp-037's code), changing m from 6→5 bits is the ONL
 - Quantize time: 9.63s
 
 **Lesson:** The regularization benefits of sc and m coarsening DO NOT compound additively — they substantially overlap. exp-037 (5-bit sc, 6-bit m) achieved KLD 0.058347 (-7.3% vs baseline). Adding m coarsening on top (exp-038: 5-bit sc, 5-bit m) DEGRADED to KLD 0.060695 — still better than baseline but significantly WORSE than sc-only. The "first coarsening free lunch" is a single-shot phenomenon: once sc is at 5 bits, the m parameter's 6-bit precision is already sufficient and further coarsening causes genuine precision loss. The optimal configuration from these experiments is exp-037 (sc=5, m=6) — a single variable change to sc alone captures the full regularization benefit. Combined sc+m coarsening is NOT recommended — it's strictly worse than sc-only on both KLD and same_top_p, though still marginally better than baseline. This matches the PITFALLS.md pattern: the first coarsening step on each parameter is beneficial, but the benefit is largely overlapping (both prevent the same overfitting pathway in the greedy heuristic), and the second parameter's coarsening provides negligible additional regularization while introducing genuine precision loss.
+
+## exp-039: GGUF Metadata Stripping — reduce raw GGUF bytes by stripping redundant metadata from output
+
+**Hypothesis:** The GGUF file contains ~6.4 MB of metadata (tokenizer tokens, merges, token types, chat template, general fields) copied verbatim from input to output during quantize via `gguf_set_kv()`. For perplexity eval with pre-tokenized text, the tokenizer data is used only during model loading for vocab construction — the forward pass never references token strings or merge rules. By stripping non-essential metadata and minimizing tokenizer arrays (replacing 248K token strings with empty strings, removing merges, removing token types), we save ~4-5 MB with ZERO quality impact. Quantized weights are unchanged, block struct is unchanged, only the GGUF metadata shrinks.
+
+For the model loader to tolerate this:
+1. `tokenizer.ggml.merges` — currently throws for BPE models if missing; modify to make optional
+2. `tokenizer.ggml.token_type` — already optional (defaults to UNDEFINED if missing)
+3. `tokenizer.ggml.tokens` — already handles empty strings gracefully with "[EMPTY_i]" fallback
+4. `tokenizer.chat_template` — only used for chat apps, optional for inference
+
+Key: n_vocab (248320) is preserved via the array length of the minimized tokens list, so output layer dimensions remain correct.
+
+**Changes:**
+1. `src/llama-quant.cpp`: After `gguf_set_kv()`, strip metadata (remove chat_template, merges, token_type; replace tokens with empty strings; remove general.* non-essential fields)
+2. `src/llama-vocab.cpp`: Make `tokenizer.ggml.merges` optional for BPE models
+
+**Expected outcome:** GGUF raw size reduces by ~4-5 MB. KLD and same top p identical to baseline (0.062947, 86.387%) since all tensor data is unchanged.
