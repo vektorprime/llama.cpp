@@ -1967,11 +1967,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             const bool is_kimi_k2 = (tokenizer_pre == "kimi-k2");
 
             if (merges_keyidx == -1) {
-                if (!is_kimi_k2) {
-                    throw std::runtime_error("cannot find tokenizer merges in model file\n");
-                }
-                // Kimi-K2 doesn't need merges, skip
-                LLAMA_LOG_INFO("%s: Kimi-K2 tokenizer detected, skipping BPE merges\n", __func__);
+                // merges are optional — missing means stripped metadata or Kimi-K2
+                // the model still works for perplexity eval with pre-tokenized input
+                LLAMA_LOG_WARN("%s: BPE tokenizer merges not found, skipping merge table\n", __func__);
             } else {
                 const int n_merges = gguf_get_arr_n(ctx, merges_keyidx);
                 for (int i = 0; i < n_merges; i++) {

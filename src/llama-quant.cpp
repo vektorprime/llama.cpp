@@ -947,6 +947,46 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
     gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_SPLIT_COUNT).c_str());
     gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_SPLIT_TENSORS_COUNT).c_str());
 
+    // Strip redundant GGUF metadata to reduce raw byte count
+    // The quantized weights are unchanged — only the GGUF header shrinks
+    {
+        const char * tokens_key = ml.llm_kv(LLM_KV_TOKENIZER_LIST).c_str();
+        const int tokens_id = gguf_find_key(ctx_out.get(), tokens_key);
+        if (tokens_id >= 0) {
+            // Save n_vocab from the original tokens array then replace with empty strings
+            const int n_tokens = gguf_get_arr_n(ctx_out.get(), tokens_id);
+            gguf_remove_key(ctx_out.get(), tokens_key);
+            if (n_tokens > 0) {
+                std::vector<const char *> empty_tokens(n_tokens, "");
+                gguf_set_arr_str(ctx_out.get(), tokens_key, empty_tokens.data(), n_tokens);
+            }
+        }
+
+        // Remove merges (now optional in loader, saves ~3.4 MB)
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_TOKENIZER_MERGES).c_str());
+
+        // Remove token_type array (optional, defaults to UNDEFINED in loader)
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_TOKENIZER_TOKEN_TYPE).c_str());
+
+        // Remove chat template (only needed for chat apps)
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_TOKENIZER_CHAT_TEMPLATE).c_str());
+
+        // Remove non-essential general.* metadata (display names, URLs, license, etc.)
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_GENERAL_NAME).c_str());
+        gguf_remove_key(ctx_out.get(), "general.basename");
+        gguf_remove_key(ctx_out.get(), "general.quantized_by");
+        gguf_remove_key(ctx_out.get(), "general.size_label");
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_GENERAL_LICENSE).c_str());
+        gguf_remove_key(ctx_out.get(), "general.license.link");
+        gguf_remove_key(ctx_out.get(), "general.repo_url");
+        gguf_remove_key(ctx_out.get(), "general.base_model.count");
+        gguf_remove_key(ctx_out.get(), "general.base_model.0.name");
+        gguf_remove_key(ctx_out.get(), "general.base_model.0.organization");
+        gguf_remove_key(ctx_out.get(), "general.base_model.0.repo_url");
+        gguf_remove_key(ctx_out.get(), "general.tags");
+        gguf_remove_key(ctx_out.get(), ml.llm_kv(LLM_KV_GENERAL_TYPE).c_str());
+    }
+
     if (params->kv_overrides) {
         for (const llama_model_kv_override * o = params->kv_overrides; o->key[0] != 0; ++o) {
             if (o->tag == LLAMA_KV_OVERRIDE_TYPE_FLOAT) {
