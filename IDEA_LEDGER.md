@@ -6,7 +6,7 @@
 |-----|-------------|---------|
 | EXAMPLE | This is an example entry — format reference only | Example — not a real experiment |
 | exp-036 | FWHT+CSE: Compact Scale Encoding within 140-byte struct, 4+4 bit sc/m, FWHT preproc, all dispatch paths updated | FAILED |
-| **exp-038** | **5-bit sc + 5-bit m COMBINED — sc 6→5 AND m 6→5 simultaneously, clean FWHT base, quantize-side only, same 144B struct. Compounds regularization benefits from both variables' first coarsening steps.** | **PENDING** |
+| **exp-038** | **5-bit sc + 5-bit m COMBINED — both variables at 5 bits simultaneously, clean FWHT base, quantize-side only, same 144B struct. Compounds regularization benefits from both variables' first coarsening steps.** | **SUCCESS — 529.3MB, KLD 0.0607 (-3.6% vs baseline), STP 86.78% (+0.39pp)** |
 | **exp-037** | **5-bit sc (scale) quantization — sc 6→5 bits, single variable, clean FWHT base, quantize-side only, same 144B struct. Complement to exp-030's 5-bit m. First sc coarsening provides regularization — KLD -7.3%, STP +0.82pp.** | **SUCCESS — 529.3MB, KLD 0.0583 (-7.3%), STP 87.21% (+0.82pp)** |
 | **exp-035** | **Collapsed Sub-Block Scales — 144→136 byte block, global sc/mn — eval segfault, offset shift killed all paths** | **FAILED** |
 | **exp-034** | **CAQ d/dmin write-time re-rounding: apply 0xFFC0 at final write — catastrophic regression, refinement escape from grid is essential** | **REGRESSION — 505.0MB, KLD 0.2477, top_p 73.99%** |
@@ -1088,3 +1088,13 @@ From the clean FWHT base (exp-037's code), changing m from 6→5 bits is the ONL
 4. No changes to dequantize functions, CUDA kernel, struct, or dispatch paths
 
 **Expected outcome:** GGUF raw size unchanged (same 144B struct). KLD may improve further from exp-037's already-improved 0.058347 (perhaps to ~0.055-0.057). Same top p may improve from 87.21%. If the regularization effects partially overlap, the benefit will be smaller than additive but still positive. If they compound cleanly, this could produce the best quality metrics yet (surpassing exp-030's KLD 0.054105).
+
+**Actual outcome:** SUCCESS — quality improved vs baseline but REGRESSED vs exp-037 (sc-only):
+- GGUF size (raw): 529,297,440 bytes (identical — same 144B struct)
+- KLD mean: 0.060695 (vs baseline 0.062947: -3.6%; vs exp-037 0.058347: +4.0% REGRESSION)
+- Same top p: 86.775% (vs baseline 86.387%: +0.39pp; vs exp-037 87.209%: -0.43pp REGRESSION)
+- RMS Δp: 5.546% (vs baseline 5.753%: -3.6%; vs exp-037 5.302%: +4.6% REGRESSION)
+- PPL: 22.772 (vs baseline 22.450: +1.4%; vs exp-037 22.896: slight improvement)
+- Quantize time: 9.63s
+
+**Lesson:** The regularization benefits of sc and m coarsening DO NOT compound additively — they substantially overlap. exp-037 (5-bit sc, 6-bit m) achieved KLD 0.058347 (-7.3% vs baseline). Adding m coarsening on top (exp-038: 5-bit sc, 5-bit m) DEGRADED to KLD 0.060695 — still better than baseline but significantly WORSE than sc-only. The "first coarsening free lunch" is a single-shot phenomenon: once sc is at 5 bits, the m parameter's 6-bit precision is already sufficient and further coarsening causes genuine precision loss. The optimal configuration from these experiments is exp-037 (sc=5, m=6) — a single variable change to sc alone captures the full regularization benefit. Combined sc+m coarsening is NOT recommended — it's strictly worse than sc-only on both KLD and same_top_p, though still marginally better than baseline. This matches the PITFALLS.md pattern: the first coarsening step on each parameter is beneficial, but the benefit is largely overlapping (both prevent the same overfitting pathway in the greedy heuristic), and the second parameter's coarsening provides negligible additional regularization while introducing genuine precision loss.

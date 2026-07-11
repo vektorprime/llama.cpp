@@ -1752,12 +1752,12 @@ void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_C
         }
 
         float inv_scale = max_scale > 0 ? 31.f/max_scale : 0.f;
-        float inv_min   = max_min   > 0 ? 63.f/max_min   : 0.f;
+        float inv_min   = max_min   > 0 ? 31.f/max_min   : 0.f;
         for (int j = 0; j < QK_K/32; ++j) {
             uint8_t ls = nearest_int(inv_scale*scales[j]);
             uint8_t lm = nearest_int(inv_min*mins[j]);
             ls = MIN(31, ls);
-            lm = MIN(63, lm);
+            lm = MIN(31, lm);
             if (j < 4) {
                 y[i].scales[j] = ls;
                 y[i].scales[j+4] = lm;
@@ -1768,7 +1768,7 @@ void quantize_row_q4_K_M_CLONE_ref(const float * GGML_RESTRICT x, block_q4_K_M_C
             }
         }
         y[i].d = GGML_FP32_TO_FP16(max_scale/31.f);
-        y[i].dmin = GGML_FP32_TO_FP16(max_min/63.f);
+        y[i].dmin = GGML_FP32_TO_FP16(max_min/31.f);
 
         uint8_t sc, m;
         for (int j = 0; j < QK_K/32; ++j) {
@@ -1848,12 +1848,12 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
                 }
 
                 float inv_scale = max_scale > 0 ? 31.f/max_scale : 0.f;
-                float inv_min   = max_min   > 0 ? 63.f/max_min   : 0.f;
+                float inv_min   = max_min   > 0 ? 31.f/max_min   : 0.f;
                 for (int j = 0; j < QK_K/32; ++j) {
                     uint8_t ls = nearest_int(inv_scale*scales[j]);
                     uint8_t lm = nearest_int(inv_min*mins[j]);
                     ls = MIN(31, ls);
-                    lm = MIN(63, lm);
+                    lm = MIN(31, lm);
                     if (j < 4) {
                         y[i].scales[j] = ls;
                         y[i].scales[j+4] = lm;
@@ -1864,7 +1864,7 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
                     }
                 }
                 y[i].d = GGML_FP32_TO_FP16(max_scale/31.f);
-                y[i].dmin = GGML_FP32_TO_FP16(max_min/63.f);
+                y[i].dmin = GGML_FP32_TO_FP16(max_min/31.f);
 
                 uint8_t sc, m;
                 for (int j = 0; j < QK_K/32; ++j) {
@@ -1925,7 +1925,7 @@ size_t quantize_q4_K_M_CLONE(const float * GGML_RESTRICT src, void * GGML_RESTRI
                 }
 
                 float d_block = make_qp_quants(QK_K/32, 31, scales, Ls, sw);
-                float m_block = make_qp_quants(QK_K/32, 63, mins,   Lm, sw);
+                float m_block = make_qp_quants(QK_K/32, 31, mins,   Lm, sw);
                 for (int j = 0; j < QK_K/32; ++j) {
                     uint8_t ls = Ls[j];
                     uint8_t lm = Lm[j];
