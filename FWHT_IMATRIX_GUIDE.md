@@ -127,10 +127,28 @@ for (int i = 1; i < argc; i++) {
 
 - `llama-imatrix` and `llama-quantize` built with the changes above
 - BF16/F16 full-precision GGUF of the model
-- Calibration text file (plain UTF-8, ~50k tokens or more)
+- **Calibration text file**: use `bartowski_calibration_data_v5.txt` (NOT wikitext —
+  wikitext is the eval set and would taint the evaluation)
 - A tensor-type file mapping tensors → quantization types
 
 ### 1. Create the tensor-type file
+
+**The easiest way**: run a throwaway quantize and extract the tensor→type mapping:
+
+```bash
+build/bin/llama-quantize "$MODEL_BF16" /tmp/tmp.gguf Q4_K_M_CLONE 2>&1 \
+  | grep "converting to" \
+  | sed 's/^.*\] //' \
+  | sed 's/ -.*converting to / /' \
+  | awk '{print $1 "=" tolower($2)}' \
+  > tensor_map.txt
+rm -f /tmp/tmp.gguf
+```
+
+This captures exactly which tensors the clone quantizer will target (only Q4_K_M →
+Q4_K_M_CLONE; boosted tensors keep their Q5_K/Q6_K types). The collector uses
+only the `q4_k_m_clone` entries to decide where to apply FWHT during activation
+accumulation.
 
 Format: one `tensor_name=type` per line (same format as `--tensor-type-file`
 accepted by `llama-quantize`).
