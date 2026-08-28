@@ -505,7 +505,73 @@ ggml_tensor * llama_model_glm5next::graph::build_dsa_layer(
     ggml_tensor * k = ggml_reshape_3d(ctx0, kv, kv_lora_rank, 1, n_tokens);
     cb(k, "dsa_kv_latent", il);
 
-    if (top_k) {
+    // Fix A: compact-gather sparse attention (decode, long context, flash_attn)
+    bool use_gather = false;
+    if (top_k && inp_kp && inp_kp->tail_cells && inp_kp->tail_mask) {
+        const int64_t n_kv_max = inp_attn->mctx->get_n_kv();
+        const int64_t n_stream = cparams.kv_unified ? 1 : (int64_t) ubatch.n_seqs_unq;
+        const int64_t n_tps    = n_tokens / n_stream;
+        // gate: flash_attn on, single-stream, decode (1 token per stream), long context
+        if (cparams.glm5next_sparse_gather && cparams.flash_attn && n_stream == 1 && n_tps == 1 && n_kv_max >= 16384) {
+            // also require get_rows support for K type (all types supported per R-A2)
+            use_gather = true;
+        }
+        // env override already reflected in cparams.glm5next_sparse_gather
+        if (cparams.auto_sparse && n_kv_max < 16384) {
+            use_gather = false;
+        }
+    }
+
+    if (top_k && use_gather) {
+        // compact gather: gather selected 2048 cells + tail 4 cells -> 2304 (9*256)
+        // K cache is [512, n_kv,1,1] 4D, top_k is [2048,1,1] 3D, tail is [4,1,1] 3D
+        ggml_tensor * k_cache = inp_attn->mctx->get_k(ctx0, il); // [512, n_kv,1,1]
+        const int64_t n_kv = k_cache->ne[1];
+        (void) n_kv;
+
+        // gather K_sel [512,2048] and K_tail [512,4] (both F32, get_rows always F32)
+        ggml_tensor * top_k_1d = ggml_reshape_1d(ctx0, top_k, 2048);
+        ggml_tensor * tail_1d  = ggml_reshape_1d(ctx0, inp_kp->tail_cells, hparams.indexer_kpool);
+        // k_cache is 4D, get_rows works with 1D idx -> [512, k,1,1]
+        ggml_tensor * K_sel  = ggml_get_rows(ctx0, k_cache, top_k_1d);
+        ggml_tensor * K_tail = ggml_get_rows(ctx0, k_cache, tail_1d);
+        // K_sel is [512,2048,1,1] F32, K_tail is [512,4,1,1] F32
+        ggml_tensor * K_concat = ggml_concat(ctx0, K_sel, K_tail, 1); // [512,2052,1,1] F32
+        // pad to 2304 (FATTN_KQ_STRIDE 256): 252 columns of zeros (masked)
+        const int64_t n_sel = 2048 + (int64_t) hparams.indexer_kpool; // 2052
+        const int64_t n_pad = 2304 - n_sel; // 252
+        ggml_tensor * K_pad = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, k_cache->ne[0], n_pad, 1, 1);
+        K_pad = ggml_scale(ctx0, K_pad, 0.0f);
+        // concat pad along dim1 -> [512,2304,1,1] F32
+        ggml_tensor * K_compact_f32 = ggml_concat(ctx0, K_concat, K_pad, 1);
+        // cast to F16 for FA (no F32-K FA kernel)
+        ggml_tensor * K_compact = ggml_cast(ctx0, K_compact_f32, GGML_TYPE_F16);
+        // V is same latent as K for MLA
+        ggml_tensor * V_compact = K_compact;
+
+        // mask: [2304,1,1,1] F16  (0 for valid, -inf for pad/tail-invalid)
+        // m_sel: 2048 zeros (all selected pools assumed valid at long context, see R-A1)
+        ggml_tensor * m_sel = ggml_new_tensor_4d(ctx0, GGML_TYPE_F16, 2048, 1, 1, 1);
+        m_sel = ggml_fill(ctx0, m_sel, 0.0f);
+        // m_tail: from host tail_mask [4,1,1] F16
+        ggml_tensor * m_tail = ggml_reshape_4d(ctx0, inp_kp->tail_mask, hparams.indexer_kpool, 1, 1, 1);
+        // pad mask: 252 * -inf
+        ggml_tensor * m_pad = ggml_new_tensor_4d(ctx0, GGML_TYPE_F16, n_pad, 1, 1, 1);
+        m_pad = ggml_fill(ctx0, m_pad, -INFINITY);
+        ggml_tensor * mask_tmp = ggml_concat(ctx0, m_sel, m_tail, 0); // [2052,1,1,1]
+        ggml_tensor * mask = ggml_concat(ctx0, mask_tmp, m_pad, 0); // [2304,1,1,1] F16
+        // FA expects mask shape [n_kv_sel, n_batch,1,n_stream] = [2304,1,1,1]
+        cb(K_compact, "dsa_k_gather", il);
+        cb(mask, "dsa_mask_gather", il);
+
+        cur = build_attn_mha(q, K_compact, V_compact, nullptr, mask, nullptr, layer.wv_b, kq_scale, il);
+        // Wo is applied inside build_attn_mha when wo passed, but we passed wo via build_attn_mha's wo param
+        // build_attn_mha handles wo via build_lora_mm after; we need to apply Wo here
+        // Instead call build_attn_mha with wo handling? Use same pattern as build_attn_sparse's tail:
+        // build_attn_mha returns cur before Wo, then we apply Wo
+        // For gather path we already have q,K,V, need to apply Wo as in build_attn_sparse
+        cur = build_lora_mm(layer.wo, cur, nullptr);
+    } else if (top_k) {
         cur = build_attn_sparse(inp_attn,
                 layer.wo, nullptr, nullptr,
                 q, k, k, nullptr, nullptr, layer.wv_b,

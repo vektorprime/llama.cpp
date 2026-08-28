@@ -439,8 +439,14 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
         return build_delta_net_autoregressive(q, k, v, g, b, s, il);
     }
 
+    // B1: fused chunked kernel is serial over all tokens (loop in gated_delta_net.cu:63);
+    // at >1 chunk it loses to the parallel chunked op chain. Use fused only for one chunk.
     if (cparams.fused_gdn_ch) {
-        return build_delta_net_fused(q, k, v, g, b, s, il);
+        const bool kda = (g->ne[0] == q->ne[0] && g->ne[0] != 1);
+        const int CS = kda ? 16 : 64;
+        if (n_seq_tokens <= CS) {
+            return build_delta_net_fused(q, k, v, g, b, s, il);
+        }
     }
 
     return build_delta_net_chunking(q, k, v, g, b, s, il);

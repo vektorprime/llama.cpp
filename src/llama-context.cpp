@@ -245,6 +245,31 @@ llama_context::llama_context(
         }
     }
 
+    cparams.glm5next_sparse_gather = true;
+    cparams.auto_sparse            = true;
+
+    {
+        const char * v = getenv("LLAMA_GLM5NEXT_SPARSE");
+        if (v) {
+            if (strcmp(v, "gather") == 0) {
+                cparams.glm5next_sparse_gather = true;
+                cparams.auto_sparse = false;
+            } else if (strcmp(v, "mask") == 0) {
+                cparams.glm5next_sparse_gather = false;
+                cparams.auto_sparse = false;
+            }
+        }
+    }
+
+    {
+        const char * v = getenv("LLAMA_FUSED_GDN_DISABLE");
+        if (v && atoi(v) != 0) {
+            cparams.fused_gdn_ar = false;
+            cparams.fused_gdn_ch = false;
+            cparams.auto_fgdn    = false;
+        }
+    }
+
     cparams.fused_dsv4_hc_pre  = true;
     cparams.fused_dsv4_hc_comb = true;
     cparams.fused_dsv4_hc_post = true;

@@ -3614,6 +3614,16 @@ llm_graph_input_kpool * llm_graph_context::build_inp_kpool(
         inp->cand_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F16, n_kv, n_tps, 1, n_stream);
         ggml_set_input(inp->cand_mask);
         ggml_set_name(inp->cand_mask, "kpool_cand_mask");
+
+        // Fix A: tail of the query's own incomplete pool (host-derived)
+        // One entry per slot of the tail, per query, per stream. Small: kpool*n_tps*n_stream I32 + F16.
+        inp->tail_cells = ggml_new_tensor_3d(ctx0, GGML_TYPE_I32, kpool, n_tps, n_stream);
+        ggml_set_input(inp->tail_cells);
+        ggml_set_name(inp->tail_cells, "kpool_tail_cells");
+
+        inp->tail_mask = ggml_new_tensor_3d(ctx0, GGML_TYPE_F16, kpool, n_tps, n_stream);
+        ggml_set_input(inp->tail_mask);
+        ggml_set_name(inp->tail_mask, "kpool_tail_mask");
     }
 
     return (llm_graph_input_kpool *) res->add_input(std::move(inp));

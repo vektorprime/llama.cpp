@@ -73,6 +73,21 @@ void llama_kv_cache_set_input_kpool(
               ggml_tensor    * cand_mask,
         const llama_ubatch   * ubatch,
               uint32_t         kpool) {
+    llama_kv_cache_set_input_kpool(kv, cell_pool, pool_cells, bias, pool_bias, sel_mask, cand_mask, nullptr, nullptr, ubatch, kpool);
+}
+
+void llama_kv_cache_set_input_kpool(
+        const llama_kv_cache * kv,
+              ggml_tensor    * cell_pool,
+              ggml_tensor    * pool_cells,
+              ggml_tensor    * bias,
+              ggml_tensor    * pool_bias,
+              ggml_tensor    * sel_mask,
+              ggml_tensor    * cand_mask,
+              ggml_tensor    * tail_cells,
+              ggml_tensor    * tail_mask,
+        const llama_ubatch   * ubatch,
+              uint32_t         kpool) {
     GGML_ASSERT(kv != nullptr);
     GGML_ASSERT(kpool > 0);
 
@@ -80,17 +95,24 @@ void llama_kv_cache_set_input_kpool(
     GGML_ASSERT(ggml_backend_buffer_is_host(pool_bias ->buffer));
     GGML_ASSERT(ggml_backend_buffer_is_host(sel_mask  ->buffer));
     GGML_ASSERT(ggml_backend_buffer_is_host(cand_mask ->buffer));
+    // tail inputs are only backed when the gather path is taken (they have no consumer on the mask path)
+    if (tail_cells && tail_cells->buffer) GGML_ASSERT(ggml_backend_buffer_is_host(tail_cells->buffer));
+    if (tail_mask  && tail_mask->buffer)  GGML_ASSERT(ggml_backend_buffer_is_host(tail_mask->buffer));
 
     GGML_ASSERT(pool_cells->type == GGML_TYPE_I32);
     GGML_ASSERT(pool_bias ->type == GGML_TYPE_F32);
     GGML_ASSERT((sel_mask->type == GGML_TYPE_F16 || sel_mask->type == GGML_TYPE_F32) &&
             "sel_mask must be f16 or f32");
     GGML_ASSERT(cand_mask->type == sel_mask->type && "both masks must have the KQ mask's type");
+    if (tail_cells) GGML_ASSERT(tail_cells->type == GGML_TYPE_I32);
+    if (tail_mask)  GGML_ASSERT(tail_mask->type  == GGML_TYPE_F16);
 
     GGML_ASSERT(ggml_is_contiguous(pool_cells));
     GGML_ASSERT(ggml_is_contiguous(pool_bias));
     GGML_ASSERT(ggml_is_contiguous(sel_mask));
     GGML_ASSERT(ggml_is_contiguous(cand_mask));
+    if (tail_cells) GGML_ASSERT(ggml_is_contiguous(tail_cells));
+    if (tail_mask)  GGML_ASSERT(ggml_is_contiguous(tail_mask));
 
     const int64_t n_kv     = sel_mask->ne[0];
     const int64_t n_ns     = sel_mask->ne[3];
@@ -142,6 +164,8 @@ void llama_kv_cache_set_input_kpool(
     float   * dst_pool_bias  = (float   *) pool_bias ->data;
     char    * dst_sel_mask   = (char    *) sel_mask  ->data;
     char    * dst_cand_mask  = (char    *) cand_mask ->data;
+    int32_t * dst_tail_cells = tail_cells ? (int32_t *) tail_cells->data : nullptr;
+    ggml_fp16_t * dst_tail_mask = tail_mask ? (ggml_fp16_t *) tail_mask->data : nullptr;
 
     const bool   mask_f16 = sel_mask->type == GGML_TYPE_F16;
     const size_t mask_ts  = ggml_type_size(sel_mask->type);
@@ -166,6 +190,8 @@ void llama_kv_cache_set_input_kpool(
 
         std::fill(cur_pool_cells, cur_pool_cells + r*n_pools, 0);
         std::fill(cur_pool_bias,  cur_pool_bias  + n_tps*n_pools, -INFINITY);
+        if (dst_tail_cells) std::fill(dst_tail_cells + s*r*n_tps, dst_tail_cells + (s+1)*r*n_tps, 0);
+        if (dst_tail_mask)  kpool_mask_fill(dst_tail_mask + s*r*n_tps, r*n_tps);
 
         // the token loop writes rows < n_tps in full; only the padding rows need clearing
         if (mask_f16) {
@@ -293,6 +319,19 @@ void llama_kv_cache_set_input_kpool(
                 }
             }
 
+            // Fix A: inverse map pos -> cell for tail derivation (O(n_kv) once per sequence)
+            std::vector<int32_t> cell_at;
+            if (dst_tail_cells || dst_tail_mask) {
+                cell_at.assign(n_run * r, -1);
+                for (int64_t j = 0; j < n_kv; ++j) {
+                    if (pos_at[j] < 0) continue;
+                    int64_t idx = (int64_t) pos_at[j] - b_base * r;
+                    if (idx >= 0 && idx < (int64_t) cell_at.size()) {
+                        cell_at[idx] = (int32_t) j;
+                    }
+                }
+            }
+
             for (int64_t ii = 0; ii < n_tps; ++ii) {
                 const int64_t   i = s*n_tps + ii;
 
@@ -345,6 +384,27 @@ void llama_kv_cache_set_input_kpool(
 
                     q_pool_bias[p] = valid && visible ? 0.0f : -INFINITY;
                 }
+
+                // Fix A: tail cells for compact-gather (per query, kpool slots)
+                if (dst_tail_cells || dst_tail_mask) {
+                    int32_t * q_tail_cells = dst_tail_cells ? dst_tail_cells + s*r*n_tps + ii*r : nullptr;
+                    ggml_fp16_t * q_tail_mask = dst_tail_mask ? dst_tail_mask + s*r*n_tps + ii*r : nullptr;
+                    for (int64_t t = 0; t < r; ++t) {
+                        llama_pos pos = tail_start + t;
+                        bool valid = false;
+                        int32_t cell = 0;
+                        if (pos <= q && pos >= b_base * r && pos < b_base * r + n_run * r) {
+                            int64_t idx = pos - b_base * r;
+                            int32_t c = cell_at[idx];
+                            if (c >= 0) {
+                                cell = c;
+                                valid = true;
+                            }
+                        }
+                        if (q_tail_cells) q_tail_cells[t] = cell;
+                        if (q_tail_mask)  q_tail_mask[t]  = ggml_fp32_to_fp16(valid ? 0.0f : -INFINITY);
+                    }
+                }
             }
         }
 
@@ -366,5 +426,5 @@ void llm_graph_input_kpool::set_input(const llama_ubatch * ubatch) {
     llama_kv_cache_set_input_kpool(
             mctx_attn->get_kv(),
             /* cell_pool */ nullptr, pool_cells, /* bias */ nullptr, pool_bias,
-            sel_mask, cand_mask, ubatch, kpool);
+            sel_mask, cand_mask, tail_cells, tail_mask, ubatch, kpool);
 }

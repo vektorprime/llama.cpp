@@ -43,6 +43,18 @@ void llama_kv_cache_set_input_kpool(
               ggml_tensor    * cand_mask,
         const llama_ubatch   * ubatch,
               uint32_t         kpool);
+void llama_kv_cache_set_input_kpool(
+        const llama_kv_cache * kv,
+              ggml_tensor    * cell_pool,
+              ggml_tensor    * pool_cells,
+              ggml_tensor    * bias,
+              ggml_tensor    * pool_bias,
+              ggml_tensor    * sel_mask,
+              ggml_tensor    * cand_mask,
+              ggml_tensor    * tail_cells,
+              ggml_tensor    * tail_mask,
+        const llama_ubatch   * ubatch,
+              uint32_t         kpool);
 
 // One pooling map per ubatch; rebuilding it per indexer layer costs O(n_kv * n_tokens)
 // host writes and dominates prefill. sharing is valid only while every indexer layer sees
@@ -67,6 +79,10 @@ public:
 
     ggml_tensor * sel_mask   = nullptr;   // F16 [n_kv, n_batch, 1, n_stream]
     ggml_tensor * cand_mask  = nullptr;   // F16 [n_kv, n_batch, 1, n_stream]
+
+    // Fix A: tail of the query's own incomplete pool (host-derived, per query)
+    ggml_tensor * tail_cells = nullptr;   // I32 [kpool, n_tps, n_stream]
+    ggml_tensor * tail_mask  = nullptr;   // F16 [kpool, n_tps, n_stream] 0 / -inf per tail slot
 
     const llama_kv_cache_context * mctx_attn;
     const llama_kv_cache_context * mctx_idx;
