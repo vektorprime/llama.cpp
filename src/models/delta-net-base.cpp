@@ -58,7 +58,7 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     g = ggml_permute(ctx0, g, 0, 2, 1, 3); // [g_0, n_tokens, H_v, n_seqs]
     b = ggml_permute(ctx0, b, 0, 2, 1, 3); // [  1, n_tokens, H_v, n_seqs]
 
-    const int CS = kda ? 16 : 64; // chunk size
+    const int CS = n_tokens == 1 ? (kda ? 16 : 64) : 64; // chunk size: 16 for KDA decode (AR), 64 for prefill (all)
 
     const int pad = (CS - n_tokens % CS) % CS;
     const int n_chunks = (n_tokens + pad) / CS;
